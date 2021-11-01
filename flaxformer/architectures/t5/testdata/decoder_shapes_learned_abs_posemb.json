@@ -1,0 +1,76 @@
+{
+  "decoder": {
+    "decoder_norm": {
+      "scale": [13]
+    },
+    "layers_0": {
+      "mlp": {
+        "wi": {
+          "kernel": [13, 2048]
+        },
+        "wo": {
+          "kernel": [2048, 13]
+        }
+      },
+      "pre_mlp_layer_norm": {
+        "scale": [13]
+      },
+      "pre_self_attention_layer_norm": {
+        "scale": [13]
+      },
+      "self_attention": {
+        "key": {
+          "kernel": [13, 512]
+        },
+        "out": {
+          "kernel": [512, 13]
+        },
+        "query": {
+          "kernel": [13, 512]
+        },
+        "value": {
+          "kernel": [13, 512]
+        }
+      }
+    },
+    "layers_1": {
+      "mlp": {
+        "wi": {
+          "kernel": [13, 2048]
+        },
+        "wo": {
+          "kernel": [2048, 13]
+        }
+      },
+      "pre_mlp_layer_norm": {
+        "scale": [13]
+      },
+      "pre_self_attention_layer_norm": {
+        "scale": [13]
+      },
+      "self_attention": {
+        "key": {
+          "kernel": [13, 512]
+        },
+        "out": {
+          "kernel": [512, 13]
+        },
+        "query": {
+          "kernel": [13, 512]
+        },
+        "value": {
+          "kernel": [13, 512]
+        }
+      }
+    },
+    "logits_dense": {
+      "kernel": [13, 4]
+    },
+    "position_embedder": {
+      "pos_embedding": [2048, 13]
+    },
+    "token_embedder": {
+      "embedding": [4, 13]
+    }
+  }
+}

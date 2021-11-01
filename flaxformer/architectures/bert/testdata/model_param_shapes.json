@@ -1,0 +1,105 @@
+{
+  "embedder": {
+    "embedders_position_ids": {
+      "embedding": [11, 4]
+    },
+    "embedders_segment_ids": {
+      "embedding": [2, 4]
+    },
+    "embedders_token_ids": {
+      "embedding": [10, 4]
+    }
+  },
+  "encoder_block": {
+    "layer_sequence": {
+      "layers_0": {
+        "attention_block": {
+          "attention_layer": {
+            "key": {
+              "bias": [4],
+              "kernel": [4, 4]
+            },
+            "query": {
+              "bias": [4],
+              "kernel": [4, 4]
+            },
+            "value": {
+              "bias": [4],
+              "kernel": [4, 4]
+            }
+          },
+          "dense_layer": {
+            "bias": [4],
+            "kernel": [4, 4]
+          },
+          "layer_norm": {
+            "bias": [4],
+            "scale": [4]
+          }
+        },
+        "mlp_block": {
+          "dense_layer": {
+            "bias": [4],
+            "kernel": [5, 4]
+          },
+          "layer_norm": {
+            "bias": [4],
+            "scale": [4]
+          },
+          "mlp": {
+            "dense_layer": {
+              "bias": [5],
+              "kernel": [4, 5]
+            }
+          }
+        }
+      },
+      "layers_1": {
+        "attention_block": {
+          "attention_layer": {
+            "key": {
+              "bias": [4],
+              "kernel": [4, 4]
+            },
+            "query": {
+              "bias": [4],
+              "kernel": [4, 4]
+            },
+            "value": {
+              "bias": [4],
+              "kernel": [4, 4]
+            }
+          },
+          "dense_layer": {
+            "bias": [4],
+            "kernel": [4, 4]
+          },
+          "layer_norm": {
+            "bias": [4],
+            "scale": [4]
+          }
+        },
+        "mlp_block": {
+          "dense_layer": {
+            "bias": [4],
+            "kernel": [5, 4]
+          },
+          "layer_norm": {
+            "bias": [4],
+            "scale": [4]
+          },
+          "mlp": {
+            "dense_layer": {
+              "bias": [5],
+              "kernel": [4, 5]
+            }
+          }
+        }
+      }
+    }
+  },
+  "layer_norm": {
+    "bias": [4],
+    "scale": [4]
+  }
+}

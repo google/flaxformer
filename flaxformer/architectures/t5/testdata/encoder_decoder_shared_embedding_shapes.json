@@ -1,0 +1,214 @@
+{
+  "decoder": {
+    "decoder_norm": {
+      "scale": [13]
+    },
+    "layers_0": {
+      "encoder_decoder_attention": {
+        "key": {
+          "kernel": [13, 512]
+        },
+        "out": {
+          "kernel": [512, 13]
+        },
+        "query": {
+          "kernel": [13, 512]
+        },
+        "value": {
+          "kernel": [13, 512]
+        }
+      },
+      "mlp": {
+        "wi": {
+          "kernel": [13, 2048]
+        },
+        "wo": {
+          "kernel": [2048, 13]
+        }
+      },
+      "pre_cross_attention_layer_norm": {
+        "scale": [13]
+      },
+      "pre_mlp_layer_norm": {
+        "scale": [13]
+      },
+      "pre_self_attention_layer_norm": {
+        "scale": [13]
+      },
+      "relpos_bias": {
+        "rel_embedding": [8, 32]
+      },
+      "self_attention": {
+        "key": {
+          "kernel": [13, 512]
+        },
+        "out": {
+          "kernel": [512, 13]
+        },
+        "query": {
+          "kernel": [13, 512]
+        },
+        "value": {
+          "kernel": [13, 512]
+        }
+      }
+    },
+    "layers_1": {
+      "encoder_decoder_attention": {
+        "key": {
+          "kernel": [13, 512]
+        },
+        "out": {
+          "kernel": [512, 13]
+        },
+        "query": {
+          "kernel": [13, 512]
+        },
+        "value": {
+          "kernel": [13, 512]
+        }
+      },
+      "mlp": {
+        "wi": {
+          "kernel": [13, 2048]
+        },
+        "wo": {
+          "kernel": [2048, 13]
+        }
+      },
+      "pre_cross_attention_layer_norm": {
+        "scale": [13]
+      },
+      "pre_mlp_layer_norm": {
+        "scale": [13]
+      },
+      "pre_self_attention_layer_norm": {
+        "scale": [13]
+      },
+      "relpos_bias": {
+        "rel_embedding": [8, 32]
+      },
+      "self_attention": {
+        "key": {
+          "kernel": [13, 512]
+        },
+        "out": {
+          "kernel": [512, 13]
+        },
+        "query": {
+          "kernel": [13, 512]
+        },
+        "value": {
+          "kernel": [13, 512]
+        }
+      }
+    }
+  },
+  "encoder": {
+    "encoder_norm": {
+      "scale": [13]
+    },
+    "layers_0": {
+      "attention": {
+        "key": {
+          "kernel": [13, 512]
+        },
+        "out": {
+          "kernel": [512, 13]
+        },
+        "query": {
+          "kernel": [13, 512]
+        },
+        "value": {
+          "kernel": [13, 512]
+        }
+      },
+      "mlp": {
+        "wi": {
+          "kernel": [13, 2048]
+        },
+        "wo": {
+          "kernel": [2048, 13]
+        }
+      },
+      "pre_attention_layer_norm": {
+        "scale": [13]
+      },
+      "pre_mlp_layer_norm": {
+        "scale": [13]
+      },
+      "relpos_bias": {
+        "rel_embedding": [8, 32]
+      }
+    },
+    "layers_1": {
+      "attention": {
+        "key": {
+          "kernel": [13, 512]
+        },
+        "out": {
+          "kernel": [512, 13]
+        },
+        "query": {
+          "kernel": [13, 512]
+        },
+        "value": {
+          "kernel": [13, 512]
+        }
+      },
+      "mlp": {
+        "wi": {
+          "kernel": [13, 2048]
+        },
+        "wo": {
+          "kernel": [2048, 13]
+        }
+      },
+      "pre_attention_layer_norm": {
+        "scale": [13]
+      },
+      "pre_mlp_layer_norm": {
+        "scale": [13]
+      },
+      "relpos_bias": {
+        "rel_embedding": [8, 32]
+      }
+    },
+    "layers_2": {
+      "attention": {
+        "key": {
+          "kernel": [13, 512]
+        },
+        "out": {
+          "kernel": [512, 13]
+        },
+        "query": {
+          "kernel": [13, 512]
+        },
+        "value": {
+          "kernel": [13, 512]
+        }
+      },
+      "mlp": {
+        "wi": {
+          "kernel": [13, 2048]
+        },
+        "wo": {
+          "kernel": [2048, 13]
+        }
+      },
+      "pre_attention_layer_norm": {
+        "scale": [13]
+      },
+      "pre_mlp_layer_norm": {
+        "scale": [13]
+      },
+      "relpos_bias": {
+        "rel_embedding": [8, 32]
+      }
+    }
+  },
+  "token_embedder": {
+    "embedding": [71, 13]
+  }
+}

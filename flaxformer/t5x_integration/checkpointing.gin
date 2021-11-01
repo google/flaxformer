@@ -1,0 +1,18 @@
+# Enables checkpoint parameter remapping for a t5x run.
+
+from __gin__ import dynamic_registration
+
+from flaxformer.t5x_integration import checkpointing_util
+from t5x import utils
+
+ARCHITECTURE = %gin.REQUIRED
+
+utils.SaveCheckpointConfig:
+  state_transformation_fns = [@checkpointing_util.make_to_save_format_fn()]
+checkpointing_util.make_to_save_format_fn:
+  module = %ARCHITECTURE
+
+utils.RestoreCheckpointConfig:
+  state_transformation_fns = [@checkpointing_util.make_from_save_format_fn()]
+checkpointing_util.make_from_save_format_fn:
+  module = %ARCHITECTURE

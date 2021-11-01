@@ -1,0 +1,100 @@
+{
+  "encoder": {
+    "encoder_norm": {
+      "scale": ["float32", 13]
+    },
+    "layers_0": {
+      "attention": {
+        "key": {
+          "kernel": ["float32", 13, 512]
+        },
+        "out": {
+          "kernel": ["float32", 512, 13]
+        },
+        "query": {
+          "kernel": ["float32", 13, 512]
+        },
+        "value": {
+          "kernel": ["float32", 13, 512]
+        }
+      },
+      "layer_norm": {
+        "scale": ["float32", 13]
+      },
+      "mlp": {
+        "wi": {
+          "kernel": ["float32", 13, 2048]
+        },
+        "wo": {
+          "kernel": ["float32", 2048, 13]
+        }
+      },
+      "relpos_bias": {
+        "rel_embedding": ["float32", 8, 32]
+      }
+    },
+    "layers_1": {
+      "attention": {
+        "key": {
+          "kernel": ["float32", 13, 512]
+        },
+        "out": {
+          "kernel": ["float32", 512, 13]
+        },
+        "query": {
+          "kernel": ["float32", 13, 512]
+        },
+        "value": {
+          "kernel": ["float32", 13, 512]
+        }
+      },
+      "layer_norm": {
+        "scale": ["float32", 13]
+      },
+      "mlp": {
+        "wi": {
+          "kernel": ["float32", 13, 2048]
+        },
+        "wo": {
+          "kernel": ["float32", 2048, 13]
+        }
+      },
+      "relpos_bias": {
+        "rel_embedding": ["float32", 8, 32]
+      }
+    },
+    "layers_2": {
+      "attention": {
+        "key": {
+          "kernel": ["float32", 13, 512]
+        },
+        "out": {
+          "kernel": ["float32", 512, 13]
+        },
+        "query": {
+          "kernel": ["float32", 13, 512]
+        },
+        "value": {
+          "kernel": ["float32", 13, 512]
+        }
+      },
+      "layer_norm": {
+        "scale": ["float32", 13]
+      },
+      "mlp": {
+        "wi": {
+          "kernel": ["float32", 13, 2048]
+        },
+        "wo": {
+          "kernel": ["float32", 2048, 13]
+        }
+      },
+      "relpos_bias": {
+        "rel_embedding": ["float32", 8, 32]
+      }
+    },
+    "token_embedder": {
+      "embedding": ["float32", 2000, 13]
+    }
+  }
+}
