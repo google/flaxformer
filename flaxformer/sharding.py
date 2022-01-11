@@ -15,11 +15,10 @@
 """APIs for emitting sharding annotations from Flaxformer."""
 
 import re
-from typing import Tuple
 
 from flax import traverse_util
 from flax.core import frozen_dict
-import flax.struct
+from flax.linen import partitioning
 
 
 class AxisNames(tuple):
@@ -33,22 +32,16 @@ class AxisNames(tuple):
   pass
 
 
-@flax.struct.dataclass
-class AxisMetadata:
-  """PyTree containing tuple of axis names, which is passed through jax.jit."""
-  names: Tuple[str, ...] = flax.struct.field(pytree_node=False)
-
-
-def axis_names(*names: str) -> AxisMetadata:
+def axis_names(*names: str) -> partitioning.AxisMetadata:
   """Generates axis name metadata to be sown.
 
   Args:
     *names: Names for each parameter axis.
 
   Returns:
-    AxisMetadata metadata struct.
+    partitioning.AxisMetadata metadata struct.
   """
-  return AxisMetadata(names=names)
+  return partitioning.AxisMetadata(names=names)
 
 
 def reduce_fn(x, y):
@@ -61,10 +54,11 @@ def reduce_fn(x, y):
   Returns:
     New axis names.
   """
-  if not isinstance(y, AxisMetadata):
-    raise TypeError("Expected newly sown value to be an AxisMetadata")
+  if not isinstance(y, partitioning.AxisMetadata):
+    raise TypeError(
+        "Expected newly sown value to be an partitioning.AxisMetadata")
 
-  if isinstance(x, AxisMetadata):
+  if isinstance(x, partitioning.AxisMetadata):
     if x != y:
       raise ValueError("If axis names are sown twice, expected them to match. "
                        f"Got {x} and {y}.")
@@ -86,10 +80,10 @@ def _get_single_sowed_value(value) -> AxisNames:
   Raises:
     TypeError: If any objects are of the wrong type.
   """
-  if not isinstance(value, AxisMetadata):
+  if not isinstance(value, partitioning.AxisMetadata):
     raise TypeError(
-        "Expected AxisMetadata, please make sure to use `reduce_fn`. "
-        "Got {value}")
+        "Expected partitioning.AxisMetadata, please make sure to use "
+        "`reduce_fn`. Got {value}")
   return AxisNames(value.names)
 
 
@@ -104,7 +98,7 @@ def get_axis_names(variables):
     Struct matching `variables` with sown `AxisNames` as leaves.
   """
   variables = frozen_dict.unfreeze(variables)  # pytype: disable=wrong-arg-types
-  flat_param_axes = traverse_util.flatten_dict(variables["param_axes"])
+  flat_param_axes = traverse_util.flatten_dict(variables["params_axes"])
   flat_axis_names = {}
   for keys, v in flat_param_axes.items():
     # Remove '_axes' suffix from axis metadata path to match param tree.

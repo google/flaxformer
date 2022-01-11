@@ -108,8 +108,7 @@ def encoder_layer(num_heads,
           dtype=dtype),
       dropout_factory=dropout_factory,
       layer_norm_factory=functools.partial(layer_norm.T5LayerNorm, dtype=dtype),
-      shared_relative_position_bias=shared_relative_position_bias,
-      activation_partitioning_dims=1)  # pytype: disable=wrong-keyword-args
+      shared_relative_position_bias=shared_relative_position_bias)  # pytype: disable=wrong-keyword-args
 
 
 def decoder_layer(num_heads,
@@ -139,8 +138,7 @@ def decoder_layer(num_heads,
           dtype=dtype),
       dropout_factory=dropout_factory,
       layer_norm_factory=functools.partial(layer_norm.T5LayerNorm, dtype=dtype),
-      shared_relative_position_bias=shared_relative_position_bias,
-      activation_partitioning_dims=0)  # pytype: disable=wrong-keyword-args
+      shared_relative_position_bias=shared_relative_position_bias)  # pytype: disable=wrong-keyword-args
 
 
 def encoder(num_heads,

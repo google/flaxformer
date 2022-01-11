@@ -13,6 +13,11 @@
 # limitations under the License.
 
 """APIs to assist with partitioning activations."""
+import traceback
+from typing import Optional, Tuple, TypeVar
+
+from absl import logging
+from flax.linen import partitioning as flax_partitioning
 import jax
 from jax.experimental.pjit import with_sharding_constraint as jax_pjit_wsc
 from jax.interpreters import sharded_jit
@@ -96,6 +101,60 @@ def with_sharding(x, partitioning_dims: int):
         return jax_pjit_wsc(x,
                             sharded_jit.PartitionSpec('data', None, 'model',
                                                       None))  # pytype: disable=wrong-arg-count,wrong-arg-types
+      else:
+        raise ValueError(
+            f'do not know how to partition array of shape {x.shape}')
     else:
       raise ValueError('only 1D or 2D activation partitioning is supported, '
                        f'got {partitioning_dims}')
+
+
+T = TypeVar('T')
+
+
+def with_sharding_migration(
+    x: T,
+    activation_partitioning_dims: Optional[int],
+    logical_axis_names: Tuple[str, ...],
+) -> T:
+  """Helper function for migrating from old to new sharding annotations.
+
+  Calls to this function were previously `with_sharding(x, dims)` (where the
+  latter argument is defaulted to 1), and will become
+  `flax_partitioning.with_sharding_constraint(x, logical_axis_names)`.
+
+  Currently, if `activation_partitioning_dims` is unset, then the new logic will
+  be used (it effectively does not issue a sharding annotation if there are no
+  logical to physical mapping rules). If it is set, then a warning is issued,
+  and it is used in all cases except when it is 1, where with standard logical
+  axis rules, it is equivalent.
+
+  Therefore, this function _mostly_ preserves the old semantics, but exercises
+  the new codepath whenever possible.
+
+  Args:
+    x: Input array.
+    activation_partitioning_dims: List of activation partitioning dimensions.
+    logical_axis_names: List of names for each axis in `x`.
+
+  Returns:
+    Version of `x` with sharding annotations attached.
+  """
+  if activation_partitioning_dims is not None:
+    last_tb = traceback.extract_stack()[-2]
+    logging.warning(
+        'In %s:%d, activation_partitioning_dims was set, but it '
+        'is deprecated and will be removed soon.', last_tb.filename,
+        last_tb.lineno)
+    if not flax_partitioning.get_axis_rules():
+      # If logical axis rules are not present, fall back to old behavior.
+      return with_sharding(x, activation_partitioning_dims)
+    else:
+      if activation_partitioning_dims != 1:
+        raise ValueError(
+            'Both logical axis rules and activation_partitioning_dims'
+            ' were present!')
+      else:
+        return flax_partitioning.with_sharding_constraint(x, logical_axis_names)
+  else:
+    return flax_partitioning.with_sharding_constraint(x, logical_axis_names)

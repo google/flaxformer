@@ -17,6 +17,7 @@ from absl.testing import absltest
 from absl.testing import parameterized
 
 from flax import linen as nn
+from flax.linen import partitioning as flax_partitioning
 import jax
 import numpy as np
 
@@ -24,7 +25,7 @@ from flaxformer.components import embedding
 from flaxformer.components import initializers
 
 
-class EmbeddingTest(parameterized.TestCase):
+class EmbedTest(parameterized.TestCase):
 
   def test_embedder_raises_exception_for_incorrect_input_type(self):
     """Tests that inputs are integers and that an exception is raised if not."""
@@ -82,6 +83,21 @@ class EmbeddingTest(parameterized.TestCase):
     result = embed.apply(variables, query, method=embed.attend)
     expected = np.sum(variables['params']['embedding'], -1)
     np.testing.assert_array_almost_equal(result, expected)
+
+  def test_embedding_axis_names(self):
+    rules = [
+        ('my_batch_dim', 'data'),
+        ('embed', None),
+        ('vocab', None),
+    ]
+    with flax_partitioning.axis_rules(rules):
+      embed = embedding.Embed(num_embeddings=10, features=5)
+      inputs = np.array([1], dtype=np.int64)
+      embed.init(
+          jax.random.PRNGKey(0), inputs, input_axis_names=('my_batch_dim',))
+
+
+class MultiEmbedTest(parameterized.TestCase):
 
   def test_multi_embed_returns_correct_shape(self):
     """Tests that we can build a generic combined embedder."""
@@ -182,6 +198,9 @@ class EmbeddingTest(parameterized.TestCase):
     self.assertIn('token_embed', embeddings)
     self.assertIn('segment_embed', embeddings)
     self.assertIn('position_embed', embeddings)
+
+
+class EmbeddingTest(parameterized.TestCase):
 
   def test_add_position_embs(self):
     """Tests that positional embeddings are correctly applied."""

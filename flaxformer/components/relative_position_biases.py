@@ -27,11 +27,11 @@ is shared for all layers).
 from typing import Any, Callable
 
 from flax import linen as nn
+from flax.linen import partitioning
 from jax import lax
 import jax.numpy as jnp
 import numpy as np
 
-from flaxformer import sharding
 from flaxformer.types import Array
 
 
@@ -152,14 +152,11 @@ class RelativePositionBiases(nn.Module):
         bidirectional=bidirectional,
         num_buckets=self.num_buckets,
         max_distance=self.max_distance)
-    relative_attention_bias = self.param('rel_embedding', self.embedding_init,
-                                         (self.num_heads, self.num_buckets),
-                                         jnp.float32)
-    self.sow(
-        'param_axes',
-        'rel_embedding_axes',
-        sharding.axis_names('heads', 'unmodeled'),
-        reduce_fn=sharding.reduce_fn)
+    relative_attention_bias = partitioning.param_with_axes(
+        'rel_embedding',
+        self.embedding_init, (self.num_heads, self.num_buckets),
+        jnp.float32,
+        axes=('heads', 'relpos_buckets'))
     relative_attention_bias = jnp.asarray(relative_attention_bias, self.dtype)
     # Instead of using a slow gather, we create a leading-dimension one-hot
     # array from rp_bucket and use it to perform the gather-equivalent via a

@@ -2,7 +2,7 @@
 
 from __gin__ import dynamic_registration
 
-from flaxformer.t5x_integration import checkpointing_util
+from flaxformer.t5x import checkpointing_util
 from t5x import utils
 
 ARCHITECTURE = %gin.REQUIRED

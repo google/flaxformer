@@ -14,9 +14,12 @@
 
 """Tests for dense modules."""
 
+from unittest import mock
+
 from absl.testing import absltest
 from absl.testing import parameterized
 from flax import linen as nn
+from flax.linen import partitioning
 import jax
 from jax import random
 from jax.nn import initializers
@@ -73,7 +76,7 @@ class DenseTest(parameterized.TestCase):
 
     # The output sharding dimensions have been collapsed.
     sharding.check_params_and_axis_names_match(variables)
-    self.assertEqual(variables['param_axes']['kernel_axes'],
+    self.assertEqual(variables['params_axes']['kernel_axes'],
                      sharding.axis_names('a', 'b * c'))
 
   def test_dense_general_two_axes(self):
@@ -93,7 +96,7 @@ class DenseTest(parameterized.TestCase):
 
     # The input sharding dimensions have been collapsed.
     sharding.check_params_and_axis_names_match(variables)
-    self.assertEqual(variables['param_axes']['kernel_axes'],
+    self.assertEqual(variables['params_axes']['kernel_axes'],
                      sharding.axis_names('a * b', 'c'))
 
   def test_mlp_same_out_dim(self):
@@ -134,14 +137,14 @@ class DenseTest(parameterized.TestCase):
                                [0.2934272289276123, 0.8181164264678955]],
                 },
             },
-            'param_axes': {
+            'params_axes': {
                 'wi': {
                     'kernel_axes':
-                        sharding.AxisMetadata(names=('embed', 'intermediate'))
+                        partitioning.AxisMetadata(names=('embed', 'mlp'))
                 },
                 'wo': {
                     'kernel_axes':
-                        sharding.AxisMetadata(names=('intermediate', 'embed'))
+                        partitioning.AxisMetadata(names=('mlp', 'embed'))
                 },
             }
         })
@@ -175,42 +178,67 @@ class DenseTest(parameterized.TestCase):
             [[2, 2], [3, 1], [2, 2]],
         ],
         dtype=np.float32)
-    params = module.init(
-        random.PRNGKey(0), inputs, enable_dropout=False, mutable=['params'])
+    variables = module.init(
+        random.PRNGKey(0),
+        inputs,
+        enable_dropout=False,
+        mutable=['params', 'params_axes'])
     self.assertEqual(
-        jax.tree_map(lambda a: a.tolist(), params), {
+        jax.tree_map(lambda a: a.tolist(), variables), {
             'params': {
                 'wi': {
-                    'kernel': [[
-                        -0.8675811290740967, 0.08417510986328125,
-                        0.022586345672607422, -0.9124102592468262
+                    'kernel': [
+                        [
+                            -0.8675811290740967,
+                            0.08417510986328125,
+                            0.022586345672607422,
+                            -0.9124102592468262,
+                        ],
+                        [
+                            -0.19464373588562012,
+                            0.49809837341308594,
+                            0.7808468341827393,
+                            0.9267289638519287,
+                        ],
                     ],
-                               [
-                                   -0.19464373588562012, 0.49809837341308594,
-                                   0.7808468341827393, 0.9267289638519287
-                               ]],
                 },
                 'wo': {
-                    'kernel': [[
-                        -0.7511187791824341, 0.6027762293815613,
-                        0.08945237100124359
+                    'kernel': [
+                        [
+                            -0.7511187791824341,
+                            0.6027762293815613,
+                            0.08945237100124359,
+                        ],
+                        [
+                            0.09322204440832138,
+                            0.7264236211776733,
+                            -0.187033012509346,
+                        ],
+                        [
+                            0.18425928056240082,
+                            -0.45850488543510437,
+                            0.06437449157238007,
+                        ],
+                        [
+                            -0.35469120740890503,
+                            0.05190309137105942,
+                            0.28195270895957947,
+                        ],
                     ],
-                               [
-                                   0.09322204440832138, 0.7264236211776733,
-                                   -0.187033012509346
-                               ],
-                               [
-                                   0.18425928056240082, -0.45850488543510437,
-                                   0.06437449157238007
-                               ],
-                               [
-                                   -0.35469120740890503, 0.05190309137105942,
-                                   0.28195270895957947
-                               ]],
+                },
+            },
+            'params_axes': {
+                'wi': {
+                    'kernel_axes':
+                        nn.partitioning.AxisMetadata(names=('embed', 'mlp')),
+                },
+                'wo': {
+                    'kernel_axes':
+                        nn.partitioning.AxisMetadata(names=('mlp', 'embed')),
                 },
             },
         })
-    result = module.apply(params, inputs, enable_dropout=False)
+    result = module.apply(variables, inputs, enable_dropout=False)
     np.testing.assert_allclose(
         result.tolist(),
         [[[0.19724202156066895, 0.055342353880405426, -0.05314655974507332],
@@ -229,6 +257,26 @@ class DenseTest(parameterized.TestCase):
         intermediate_dim=4,
         fuse_kernels=True,
         activations=('gelu', 'linear'))
+
+    # Check default axis names.
+    variables = fused.init(
+        random.PRNGKey(0),
+        x,
+        enable_dropout=False,
+        mutable=['params', 'params_axes'])
+    self.assertEqual(
+        jax.tree_map(lambda a: a.tolist(), variables['params_axes']), {
+            'wi_fused': {
+                'kernel_axes':
+                    nn.partitioning.AxisMetadata(
+                        names=('embed', 'activations', 'mlp')),
+            },
+            'wo': {
+                'kernel_axes':
+                    nn.partitioning.AxisMetadata(names=('mlp', 'embed')),
+            },
+        })
+
     not_fused = dense.MlpBlock(
         use_bias=False,
         intermediate_dim=4,
@@ -265,6 +313,28 @@ class DenseTest(parameterized.TestCase):
                                   x,
                                   enable_dropout=False)
     np.testing.assert_allclose(y_fused, y_not_fused, rtol=1e-5)
+
+  def test_mlp_sharding_rules_doesnt_error(self):
+    module = dense.MlpBlock(
+        use_bias=False,
+        intermediate_dim=4,
+        activations=('relu',),
+        kernel_init=nn.initializers.xavier_uniform(),
+        bias_init=nn.initializers.normal(stddev=1e-6),
+        dtype=jnp.float32,
+        activation_partitioning_dims=2,
+    )
+    inputs = np.array(
+        [
+            # Batch 1.
+            [[1, 1], [1, 1], [1, 2]],
+            # Batch 2.
+            [[2, 2], [3, 1], [2, 2]],
+        ],
+        dtype=np.float32)
+    with mock.patch.object(
+        partitioning, 'get_axis_rules', return_value=['rule']):
+      module.init(random.PRNGKey(0), inputs, enable_dropout=False)
 
 
 if __name__ == '__main__':

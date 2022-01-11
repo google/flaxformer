@@ -292,8 +292,8 @@ class EncoderDecoderTest(absltest.TestCase):
       for name in axis_names:
         self.assertIn(
             name, {
-                'embed', 'heads * head_dim', 'heads', 'head_dim',
-                'intermediate', 'unmodeled', 'vocab'
+                'embed', 'joined_kv', 'heads', 'head_dim', 'relpos_buckets',
+                'mlp', 'vocab'
             },
             msg='unrecognized axis in variable')
 

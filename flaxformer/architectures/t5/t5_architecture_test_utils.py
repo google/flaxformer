@@ -364,7 +364,6 @@ def make_config3_shared_token_embedder() -> t5_architecture.EncoderDecoder:
   num_attn_heads = 8
   make_dropout = lambda: nn.Dropout(rate=0.1, broadcast_dims=(-2,))
   make_layer_norm = layer_norm.T5LayerNorm
-  activation_partitioning_dims = 3
   sow_intermediates = True
 
   def _make_encoder_layer(shared_relative_position_bias):
@@ -376,7 +375,6 @@ def make_config3_shared_token_embedder() -> t5_architecture.EncoderDecoder:
         layer_norm_factory=make_layer_norm,
         relative_position_bias_factory=(
             lambda: _make_relative_position_bias(num_attn_heads, dtype)),
-        activation_partitioning_dims=activation_partitioning_dims,
         sow_intermediates=sow_intermediates)
 
   def _make_decoder_layer(shared_relative_position_bias):
@@ -389,7 +387,6 @@ def make_config3_shared_token_embedder() -> t5_architecture.EncoderDecoder:
         layer_norm_factory=make_layer_norm,
         relative_position_bias_factory=(
             lambda: _make_relative_position_bias(num_attn_heads, dtype)),
-        activation_partitioning_dims=activation_partitioning_dims,
         sow_intermediates=sow_intermediates)
 
   def _make_encoder(*, shared_token_embedder=None):

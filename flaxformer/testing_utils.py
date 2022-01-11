@@ -20,6 +20,7 @@ import re
 from typing import Any, Dict, Mapping
 
 from absl.testing import absltest
+from flax import traverse_util
 from flax.core import frozen_dict
 import jax
 
@@ -37,6 +38,49 @@ def param_dtypes_shapes(params: Mapping[str, Any]) -> Dict[str, Any]:
   params = param_remapping.filter_out_metadata(params)
   return jax.tree_map(lambda x: [str(x.dtype)] + list(x.shape),
                       frozen_dict.unfreeze(params))  # pytype: disable=wrong-arg-types
+
+
+def param_dtypes_shapes_axes(params: Mapping[str, Any],
+                             params_axes: Mapping[str, Any]) -> Dict[str, Any]:
+  """Construct a tree of param info including dtypes, shapes, and axis names.
+
+  The leaf of the constructed dtree are of format [<dtype>, <axis_dim>, ...],
+  where each <axis_dim> is of format <axis_name>=<dim>.
+
+  Args:
+    params: Model params.
+    params_axes: Axis annotations, typically under state["params_axes"].
+
+  Returns:
+    A pytree with params info.
+  """
+  params = param_remapping.filter_out_metadata(params)
+  params = frozen_dict.unfreeze(params)  # pytype: disable=wrong-arg-types
+
+  def remove_axes_suffix(ks):
+    if not ks[-1].endswith('_axes'):
+      raise ValueError(
+          f'Param axes name should end with `_axes`, found {ks[-1]}')
+    return tuple(ks[:-1]) + (ks[-1][:-len('_axes')],)
+
+  params_axes = frozen_dict.unfreeze(params_axes)  # pytype: disable=wrong-arg-types
+  flatten_axes = {
+      remove_axes_suffix(ks): v
+      for ks, v in traverse_util.flatten_dict(params_axes).items()
+  }
+  params_axes = traverse_util.unflatten_dict(flatten_axes)
+
+  def _create_entry(param, param_axes):
+    output = [str(param.dtype)]
+    # The param axes should be paired with param dimension, so we check that.
+    if param.ndim != len(param_axes.names):
+      raise ValueError('Length of param dimension does not match axes, '
+                       f'{param.shape} != {param_axes.names}.')
+    for dim, axis_name in zip(param.shape, param_axes.names):
+      output.append(f'{axis_name}={dim}')
+    return output
+
+  return jax.tree_map(_create_entry, params, params_axes)
 
 
 def format_params_shapes(params_shapes: Dict[str, Any]) -> str:
@@ -100,6 +144,22 @@ class ExpectedJsonFiles:
   ) -> None:
     """Checks parameter dtypes and shapes against expected values."""
     actual = param_dtypes_shapes(actual_params)
+    expected = self.get_params(expected_filename)
+
+    if actual != expected:
+      print(format_params_shapes(actual))
+      raise AssertionError(
+          f'Didn\'t match JSON params in {expected_filename}. See actual '
+          'values above.')
+
+  def check_params_and_axes(
+      self,
+      actual_params: Mapping[str, Any],
+      actual_params_axes: Mapping[str, Any],
+      expected_filename: str,
+  ) -> None:
+    """Check parameter dtypes, shapes and axis names against expected values."""
+    actual = param_dtypes_shapes_axes(actual_params, actual_params_axes)
     expected = self.get_params(expected_filename)
 
     if actual != expected:

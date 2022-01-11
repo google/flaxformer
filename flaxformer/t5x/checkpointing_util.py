@@ -101,10 +101,12 @@ def make_from_save_format_fn(
   def remap(params: Mapping[str, Any]) -> Mapping[str, Any]:
     return module.apply({}, params, method=module.from_save_format)
 
-  def from_save_format(
-      state_dict: checkpoints.PyTreeDef,
-      target_state_dict: checkpoints.PyTreeDef) -> checkpoints.PyTreeDef:
+  def from_save_format(state_dict: checkpoints.PyTreeDef,
+                       target_state_dict: checkpoints.PyTreeDef,
+                       *,
+                       is_resuming: bool = False) -> checkpoints.PyTreeDef:
     del target_state_dict  # Unused.
+    del is_resuming  # Unused.
 
     for name in _flattened_names(state_dict):
       logging.info('from_save_format input state_dict: %s', name)

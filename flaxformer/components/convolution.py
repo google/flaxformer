@@ -86,7 +86,9 @@ class Depthwise1dConv(Module):
   radius: int = 2
   autoregressive: bool = True
   dtype: Any = jnp.float32
-  length_dim: int = -2
+  length_dim: int = 1
+  num_feature_dims: int = 1
+  use_in_mlp_parallel_fused_layer: bool = False
 
   @nn.compact
   def __call__(self,
@@ -107,7 +109,7 @@ class Depthwise1dConv(Module):
       Normalized inputs (the same shape as inputs).
     """
     x = jnp.asarray(x, jnp.float32)
-    features = x.shape[-1]
+    features = tuple(x.shape[-self.num_feature_dims:])
     kernel_size = 1 + self.radius * (1 if self.autoregressive else 2)
 
     def _make_scale_variable(shift_distance):
@@ -116,8 +118,7 @@ class Depthwise1dConv(Module):
         name = 'conv_m%d' % -shift_distance
       else:
         name = 'conv_%d' % shift_distance
-      return self.param(name, constant_init(init_value), (features,),
-                        jnp.float32)
+      return self.param(name, constant_init(init_value), features, jnp.float32)
 
     if prefill and decode:
       raise ValueError('prefill and decode cannot both be true at the same'
@@ -164,9 +165,11 @@ class Depthwise1dConv(Module):
         for shift_distance in range(0, self.radius):
           length = x.shape[self.length_dim]
           position = prefill_lengths - (1 + shift_distance)
-          selected = jnp.einsum(
-              '...l, ...ld->...d',
-              common_utils.onehot(position, num_classes=length), x)
+          onehot = common_utils.onehot(position, num_classes=length)
+          if len(x.shape) == 4 or self.use_in_mlp_parallel_fused_layer:
+            selected = jnp.einsum('...l, ...lmd->...md', onehot, x)
+          else:
+            selected = jnp.einsum('...l, ...ld->...d', onehot, x)
           selected = jnp.expand_dims(selected, 1)
           cached_x[shift_distance].value = selected
 

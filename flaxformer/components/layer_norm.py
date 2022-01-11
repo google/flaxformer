@@ -17,10 +17,10 @@
 from typing import Optional
 
 from flax import linen as nn
+from flax.linen import partitioning
 from jax import lax
 from jax import numpy as jnp
 
-from flaxformer import sharding
 from flaxformer.architectures.common import param_remapping
 from flaxformer.types import Array
 from flaxformer.types import DType
@@ -38,12 +38,18 @@ class T5LayerNorm(nn.Module, param_remapping.ParameterRemappable):
     scale_init: Initializer for scale, by default, one.
     use_scale: boolean - whether to scale by a learned per-channel value
     conv: optional convolution to happen after layer norm
+    center_scale_at_zero: boolean - If True, the scale weights will be
+      initialized to 0.0 and a constant 1.0 will be added before they are
+      applied. Preferable if you use weight decay in the optimizer.
+    scale_axis_name: Axis name of the scale variable.
   """
   epsilon: float = 1e-6
   dtype: DType = jnp.float32
   scale_init: Initializer = nn.initializers.ones
   use_scale: bool = True
   conv: Optional[nn.Module] = None
+  center_scale_at_zero: bool = False
+  scale_axis_name: str = 'embed'
 
   @nn.compact
   def __call__(self,
@@ -76,11 +82,21 @@ class T5LayerNorm(nn.Module, param_remapping.ParameterRemappable):
           prefill_lengths=prefill_lengths)
     if not self.use_scale:
       return y
-    scale = self.param('scale', self.scale_init, (features,), jnp.float32)
-    self.sow(
-        'param_axes',
-        'scale_axes',
-        sharding.axis_names('embed'),
-        reduce_fn=sharding.reduce_fn)
-    scale = jnp.asarray(scale, self.dtype)
-    return y * scale
+    if self.center_scale_at_zero:
+      # use zero initialization
+      scale = partitioning.param_with_axes(
+          'scale',
+          nn.initializers.zeros, (features,),
+          jnp.float32,
+          axes=(self.scale_axis_name,))
+      scale += 1.0
+      scale = jnp.asarray(scale, self.dtype)
+      return y * scale
+    else:
+      scale = partitioning.param_with_axes(
+          'scale',
+          self.scale_init, (features,),
+          jnp.float32,
+          axes=(self.scale_axis_name,))
+      scale = jnp.asarray(scale, self.dtype)
+      return y * scale

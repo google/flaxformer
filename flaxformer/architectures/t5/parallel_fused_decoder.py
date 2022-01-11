@@ -16,6 +16,7 @@
 
 from typing import Callable, Optional
 
+from absl import logging
 from flax import linen as nn
 from jax import lax
 import jax.numpy as jnp
@@ -60,6 +61,10 @@ class ParallelFusedDecoderLayer(nn.Module, param_remapping.ParameterRemappable):
   scanned: bool = False
 
   def setup(self):
+    if self.activation_partitioning_dims != 1:
+      logging.warning('ParallelFusedDecoderLayer.activation_partitioning_dims '
+                      'is deprecated and will soon be removed.')
+
     if (self.relative_position_bias_factory is not None and
         self.shared_relative_position_bias is not None):
       raise ValueError(
@@ -172,12 +177,29 @@ class ParallelFusedDecoderLayer(nn.Module, param_remapping.ParameterRemappable):
 
     # Decoder block.
     assert layer_input.ndim == 3
-    layer_input = activation_partitioning.with_sharding(
-        layer_input, self.activation_partitioning_dims)
+    layer_input = activation_partitioning.with_sharding_migration(
+        layer_input,
+        self.activation_partitioning_dims,
+        logical_axis_names=('batch', 'length', 'embed'))
 
-    x = self.layer_norm(layer_input, decode=decode)
-    x = activation_partitioning.with_sharding(x,
-                                              self.activation_partitioning_dims)
+    if prefill and prefill_lengths is None:
+      # Figure out how far each element in the batch fills the cache based
+      # on the mask. We index each element in the batch, the first head
+      # dim (because this is always set to one), and the first query
+      # vector. If there is any prefix at all, the first element in the
+      # prefix would be part of it.
+      prefill_lengths = jnp.sum(
+          decoder_mask[:, 0, 0, :], axis=-1).astype(jnp.int32)
+
+    x = self.layer_norm(
+        layer_input,
+        decode=decode,
+        prefill=prefill,
+        prefill_lengths=prefill_lengths)
+    x = activation_partitioning.with_sharding_migration(
+        x,
+        self.activation_partitioning_dims,
+        logical_axis_names=('batch', 'length', 'embed'))
 
     num_heads = self.self_attention.num_heads
     if self.self_attention.head_dim is not None:
@@ -216,14 +238,20 @@ class ParallelFusedDecoderLayer(nn.Module, param_remapping.ParameterRemappable):
         decode=decode,
         prefill=prefill,
         prefill_lengths=prefill_lengths)
-    y_mlp = self.mlp(wi, decode=decode, enable_dropout=enable_dropout)
+    y_mlp = self.mlp(
+        wi,
+        decode=decode,
+        prefill=prefill,
+        prefill_lengths=prefill_lengths,
+        enable_dropout=enable_dropout)
     y_fused = jnp.concatenate([y_att, y_mlp], axis=-1)
     y_out = self.o_wo_fused(y_fused)
     # y *= 2**-0.5
     z = layer_input + self.dropout(y_out, deterministic=not enable_dropout)
-
-    z = activation_partitioning.with_sharding(z,
-                                              self.activation_partitioning_dims)
+    z = activation_partitioning.with_sharding_migration(
+        z,
+        self.activation_partitioning_dims,
+        logical_axis_names=('batch', 'length', 'embed'))
     if self.sow_intermediates:
       self.sow('intermediates', 'activations', z)
 

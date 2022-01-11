@@ -16,6 +16,7 @@
 
 from absl.testing import absltest
 from flax import linen as nn
+from flax.linen import partitioning
 import jax
 from jax import numpy as jnp
 
@@ -27,7 +28,7 @@ class BasicModule(nn.Module):
   def setup(self):
     self.x = self.param("x", nn.initializers.ones, (1, 2))
     self.sow(
-        "param_axes",
+        "params_axes",
         "x_axes",
         sharding.axis_names("heads", "unmodeled"),
         reduce_fn=sharding.reduce_fn)
@@ -41,19 +42,19 @@ class ShardingTest(absltest.TestCase):
   def test_axis_names(self):
     self.assertEqual(
         sharding.axis_names("embed", "unsharded"),
-        sharding.AxisMetadata(names=("embed", "unsharded")))
+        partitioning.AxisMetadata(names=("embed", "unsharded")))
 
   def test_sowing_reduction(self):
     module = BasicModule()
 
     # Check the initial axes annotations.
     variables = module.init(jax.random.PRNGKey(0), jnp.array([[6, 7]]))
-    self.assertDictEqual(variables["param_axes"].unfreeze(),
+    self.assertDictEqual(variables["params_axes"].unfreeze(),
                          {"x_axes": sharding.axis_names("heads", "unmodeled")})
 
     # Re-run and make sure that axes are the same.
     _, variables = module.apply(variables, jnp.array([[6, 7]]), mutable=True)
-    self.assertDictEqual(variables["param_axes"].unfreeze(),
+    self.assertDictEqual(variables["params_axes"].unfreeze(),
                          {"x_axes": sharding.axis_names("heads", "unmodeled")})
 
   def test_check_params_and_axis_names_match_matches(self):
@@ -64,7 +65,7 @@ class ShardingTest(absltest.TestCase):
                     "bar": jnp.array([1, 2, 3])
                 }
             },
-            "param_axes": {
+            "params_axes": {
                 "foo": {
                     "bar_axes": sharding.axis_names("unsharded")
                 }
@@ -79,7 +80,7 @@ class ShardingTest(absltest.TestCase):
                   "bar": jnp.array([1, 2, 3])
               }
           },
-          "param_axes": {},
+          "params_axes": {},
       })
 
   def test_check_params_and_axis_names_wrong_size(self):
@@ -91,7 +92,7 @@ class ShardingTest(absltest.TestCase):
                       "bar": jnp.array([1, 2, 3])
                   }
               },
-              "param_axes": {
+              "params_axes": {
                   "foo": {
                       "bar_axes":
                           sharding.axis_names("unsharded", "model", "vocab")
@@ -107,7 +108,7 @@ class ShardingTest(absltest.TestCase):
                 "bar": jnp.array([1, 2, 3])
             }
         },
-        "param_axes": {
+        "params_axes": {
             "foo": {
                 "bar_axes": sharding.axis_names("unsharded", "model", "vocab")
             }

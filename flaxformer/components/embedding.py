@@ -25,6 +25,7 @@ from typing import (Any, Callable, DefaultDict, Dict, Generic, List, Mapping,
 
 import chex
 from flax import linen as nn
+from flax.linen import partitioning
 from flax.training import common_utils
 import jax
 from jax import lax
@@ -32,7 +33,6 @@ from jax import numpy as jnp
 import numpy as np
 
 from flaxformer import activation_partitioning
-from flaxformer import sharding
 from flaxformer.components import initializers
 from flaxformer.types import Array
 from flaxformer.types import DType
@@ -60,6 +60,7 @@ class Embedder(Generic[_Inputs], metaclass=abc.ABCMeta):
   def __call__(self,
                inputs: _Inputs,
                *,
+               segment_ids: Optional[Array] = None,
                decode: bool = False,
                enable_dropout: bool = True) -> Array:
     """Returns embeddings of the inputs.
@@ -73,6 +74,7 @@ class Embedder(Generic[_Inputs], metaclass=abc.ABCMeta):
 
     Args:
       inputs: The inputs to embed.
+      segment_ids: Input segmentation info for packed examples.
       decode: True if running in single-position autoregressive decode mode.
       enable_dropout: Enables dropout if set to True.
 
@@ -87,18 +89,23 @@ class InspectableMultiEmbedder(Generic[_Inputs], Embedder[_Inputs]):
   def __call__(self,
                inputs: _Inputs,
                *,
+               segment_ids: Optional[Array] = None,
                decode: bool = False,
                enable_dropout: bool = True) -> Array:
     """Embeds inputs using get_individual_embeddings and combine_embeddings."""
     # Embed the inputs and pass results directly into `combine_embeddings`.
     return self.combine_embeddings(
         self.get_individual_embeddings(
-            inputs, decode=decode, enable_dropout=enable_dropout))
+            inputs,
+            segment_ids=segment_ids,
+            decode=decode,
+            enable_dropout=enable_dropout))
 
   @abc.abstractmethod
   def get_individual_embeddings(self,
                                 inputs: Array,
                                 *,
+                                segment_ids: Optional[Array] = None,
                                 decode: bool = False,
                                 enable_dropout: bool = True) -> Sequence[Array]:
     """Embeds the contents of each input array and returns the results."""
@@ -128,6 +135,7 @@ class DictEmbedder(nn.Module, InspectableMultiEmbedder[Mapping[str, Any]]):
   def get_individual_embeddings(self,
                                 inputs: Mapping[str, Any],
                                 *,
+                                segment_ids: Optional[Array] = None,
                                 decode: bool = False,
                                 enable_dropout: bool = True) -> Sequence[Array]:
     """Embeds each keyword argument with its corresponding embedder.
@@ -137,6 +145,7 @@ class DictEmbedder(nn.Module, InspectableMultiEmbedder[Mapping[str, Any]]):
         `self.embedders`. The shape of each input tensor should be <int>[...,
         seq_len]. When using a first batch dimension, the batch dimensions also
         need to match, or be 1 (to broadcast).
+      segment_ids: Input segmentation info for packed examples.
       decode: Decoding parameter to pass through to all embedders.
       enable_dropout: Enables dropout if set to True.
 
@@ -153,7 +162,10 @@ class DictEmbedder(nn.Module, InspectableMultiEmbedder[Mapping[str, Any]]):
     embeddings = []
     for k, v in inputs.items():
       embeddings.append(self.embedders[k](
-          v, decode=decode, enable_dropout=enable_dropout))
+          v,
+          segment_ids=segment_ids,
+          decode=decode,
+          enable_dropout=enable_dropout))
     return embeddings
 
   def combine_embeddings(self, embeddings: Sequence[Array]) -> Array:
@@ -183,6 +195,7 @@ class Embed(nn.Module, Embedder[Array]):
     embedding_init: embedding initializer.
     one_hot: performs the gather with a one-hot contraction rather than a true
       gather. This is currently needed for SPMD partitioning.
+    axes: default axis metadata names for the embedding table.
   """
   num_embeddings: int
   features: int
@@ -191,34 +204,44 @@ class Embed(nn.Module, Embedder[Array]):
   attend_dtype: Optional[DType] = None
   embedding_init: Initializer = default_embed_init
   one_hot: bool = False
+  axes: Sequence[str] = ('vocab', 'embed')
   embedding: Array = dataclasses.field(init=False)
 
   def setup(self):
-    self.embedding = self.param('embedding', self.embedding_init,
-                                (self.num_embeddings, self.features),
-                                jnp.float32)
-    self.sow(
-        'param_axes',
-        'embedding_axes',
-        sharding.axis_names('vocab', 'embed'),
-        reduce_fn=sharding.reduce_fn)
+    self.embedding = partitioning.param_with_axes(
+        'embedding',
+        self.embedding_init,
+        (self.num_embeddings, self.features),
+        jnp.float32,
+        axes=tuple(self.axes),
+    )
 
-  def __call__(self,
-               inputs: Array,
-               *,
-               decode: bool = False,
-               enable_dropout: bool = True) -> Array:
+  def __call__(
+      self,
+      inputs: Array,
+      *,
+      segment_ids: Optional[Array] = None,
+      decode: bool = False,
+      enable_dropout: bool = True,
+      input_axis_names: Optional[Sequence[str]] = ('batch', 'length'),
+  ) -> Array:
     """Embeds the inputs along the last dimension.
 
     Args:
       inputs: input data, all dimensions are considered batch dimensions.
+      segment_ids: Input segmentation info for packed examples.
       decode: True if running in single-position autoregressive decode mode.
       enable_dropout: Enables dropout if set to True.
+      input_axis_names: Names of axes of input array. Used for logical
+        activation sharding annotation. If None, then no output sharding
+        annotation will be generated.
 
     Returns:
       Output which is embedded input data.  The output shape follows the input,
       with an additional `features` dimension appended.
     """
+    del segment_ids  # Unused.
+
 
     if self.cast_input_dtype:
       inputs = inputs.astype(self.cast_input_dtype)
@@ -230,8 +253,10 @@ class Embed(nn.Module, Embedder[Array]):
       output = jnp.dot(one_hot, jnp.asarray(self.embedding, self.dtype))
     else:
       output = jnp.asarray(self.embedding, self.dtype)[inputs]
-    # Hint to partitioner that embedding activations are data sharded.
-    output = activation_partitioning.with_sharding(output, 1)
+    if input_axis_names is not None:
+      embedded_axes = tuple([*input_axis_names, self.axes[-1]])
+      output = activation_partitioning.with_sharding_migration(
+          output, 1, logical_axis_names=embedded_axes)
     return output
 
   def attend(self, query: Array) -> Array:
@@ -271,6 +296,7 @@ class MultiEmbed(nn.Module):
       self,
       decode: bool = False,
       deterministic: bool = False,
+      segment_ids: Optional[Array] = None,
       **input_kwargs: Mapping[str, Array]) -> Dict[str, Array]:
     """Embeds each keyword argument with its corresponding embedder.
 
@@ -280,6 +306,7 @@ class MultiEmbed(nn.Module):
     Args:
       decode: Decoding parameter to pass through to all embedders.
       deterministic: Deterministic parameter to pass through to all embedders.
+      segment_ids: Input segmentation info for packed examples.
       **input_kwargs: The input tensors to be embedded, with a name that matches
         the embedder in self.embedders. The shape of each input tensor should be
         <int64>[..., seq_len]. When using a first batch dimension, the batch
@@ -291,6 +318,10 @@ class MultiEmbed(nn.Module):
       If the embeddings are to be summed by `combine_embeddings`, then their
       embedding sizes should match.
     """
+    if 'segment_ids' in self.embedders:
+      if segment_ids is not None:
+        input_kwargs = dict(**input_kwargs, segment_ids=segment_ids)
+
     embeddings = {}
     for k, v in input_kwargs.items():
       embedder: Callable[..., Array] = self.embedders[k]
@@ -299,6 +330,8 @@ class MultiEmbed(nn.Module):
         passthru_kwargs['decode'] = decode
       if isinstance(embedder, EmbedderWithDeterministic):
         passthru_kwargs['deterministic'] = deterministic
+      if isinstance(embedder, Embedder):
+        passthru_kwargs['segment_ids'] = segment_ids
       embeddings[k] = embedder(v, **passthru_kwargs)
     return embeddings
 
@@ -336,6 +369,7 @@ class MultiEmbed(nn.Module):
   def __call__(self,
                combine_method: EmbedCombineMethod = EmbedCombineMethod.SUM,
                *,
+               segment_ids: Optional[Array] = None,
                decode: bool = False,
                deterministic: bool = False,
                **input_kwargs: Mapping[str, Array]) -> Array:
@@ -343,6 +377,7 @@ class MultiEmbed(nn.Module):
 
     Args:
       combine_method: The method used for combination: sum or concat.
+      segment_ids: Input segmentation info for packed examples.
       decode: Parameter to pass through to all embedders.
       deterministic: Parameter to pass through to all embedders.
       **input_kwargs: The input tensors to be embedded, with a name that matches
@@ -356,7 +391,10 @@ class MultiEmbed(nn.Module):
     """
     return self.combine_embeddings(
         self.get_individual_embeddings(
-            decode=decode, deterministic=deterministic, **input_kwargs),
+            segment_ids=segment_ids,
+            decode=decode,
+            deterministic=deterministic,
+            **input_kwargs),
         combine_method=combine_method)
 
 
@@ -382,18 +420,22 @@ class FixedEmbed(nn.Module, EmbedderWithDecode[Array]):
   def __call__(self,
                inputs,
                *,
+               segment_ids: Optional[Array] = None,
                decode: bool = False,
                enable_dropout: bool = True):
     """Returns the fixed position embeddings specified by the initializer.
 
     Args:
       inputs: <int>[batch_size, seq_len] input position indices.
+      segment_ids: Input segmentation info for packed examples.
       decode: True if running in single-position autoregressive decode mode.
       enable_dropout: Enables dropout if set to True.
 
     Returns:
       The fixed position embeddings <float32>[batch_size, seq_len, features].
     """
+    del segment_ids  # Unused.
+
     # We use a cache position index for tracking decoding position.
     # TODO: Keep track of this index in the decoder instead.
     if decode:
@@ -424,30 +466,33 @@ class PositionEmbed(nn.Module, EmbedderWithDecode[Array]):
 
   def setup(self):
     shape = (self.num_embeddings, self.features)
-    self.embedding = self.param('pos_embedding', self.embedding_init, shape,
-                                jnp.float32)
-    self.sow(
-        'param_axes',
-        'pos_embedding_axes',
-        sharding.axis_names('unmodeled', 'embed'),
-        reduce_fn=sharding.reduce_fn)
+    self.embedding = partitioning.param_with_axes(
+        'pos_embedding',
+        self.embedding_init,
+        shape,
+        jnp.float32,
+        axes=('abspos_buckets', 'embed'))
 
   @nn.compact
   def __call__(self,
                inputs,
                *,
+               segment_ids: Optional[Array] = None,
                decode: bool = False,
                enable_dropout: bool = True):
     """Applies PositionEmbed module.
 
     Args:
       inputs: <int>[batch_size, seq_len] input position indices.
+      segment_ids: Input segmentation info for packed examples.
       decode: True if running in single-position autoregressive decode mode.
       enable_dropout: Enables dropout if set to True.
 
     Returns:
       The position embeddings <float32>[batch_size, seq_len, features].
     """
+    del segment_ids  # Unused.
+
     # We use a cache position index for tracking decoding position.
     # TODO: Keep track of this index in the decoder instead.
     if decode:
@@ -631,12 +676,14 @@ class HashEmbed(nn.Module, Embedder[Array]):
   def __call__(self,
                input_ids: Array,
                *,
+               segment_ids: Optional[Array] = None,
                decode: bool = False,
                enable_dropout: bool = True) -> Array:
     """Converts IDs into embeddings via multiple hashing.
 
     Args:
       input_ids: The IDs to be hashed. <int>[..., seq_length]
+      segment_ids: Input segmentation info for packed examples.
       decode: True if running in single-position autoregressive decode mode.
       enable_dropout: Enables dropout if set to True.
 
@@ -654,7 +701,10 @@ class HashEmbed(nn.Module, Embedder[Array]):
                          self.num_embeddings_per_table)
       # `shard_embeddings`: <float>[batch, seq, features/num_tables]
       shard_embeddings: Array = table(
-          hash_bucket_ids, decode=decode, enable_dropout=enable_dropout)
+          hash_bucket_ids,
+          segment_ids=segment_ids,
+          decode=decode,
+          enable_dropout=enable_dropout)
       embedding_shards.append(shard_embeddings)
     # RESULT: <float>[batch, seq, features]
     return jnp.concatenate(embedding_shards, axis=-1)
@@ -718,7 +768,7 @@ class NgramHashEmbed(nn.Module, Embedder[Array]):
   def __call__(self,
                input_ids: Array,
                *,
-               segment_ids: Optional[Array] = None,
+               segment_ids: Optional[Array],
                decode: bool = False,
                enable_dropout: bool = True) -> Array:
     """Converts IDs to ngram embeddings via multiple hashing.
@@ -730,7 +780,7 @@ class NgramHashEmbed(nn.Module, Embedder[Array]):
 
     Args:
       input_ids: The IDs to be hashed. <int>[batch..., seq_length]
-      segment_ids: Segment IDs for packing examples. <int>[batch..., seq_length]
+      segment_ids: Segment IDs for packed examples. <int>[batch..., seq_length]
       decode: True if running in single-position autoregressive decode mode.
       enable_dropout: Enables dropout if set to True.
 
@@ -789,15 +839,19 @@ class NgramHashEmbed(nn.Module, Embedder[Array]):
     for order in self.ngram_orders:
       tables: Sequence[Embed] = self._tables_by_order[str(order)]
       hash_keys_by_table: Sequence[Array] = hash_keys_by_table_by_order[order]
-      embedding_shards: List[Array] = [
-          table(hash_keys, decode=decode, enable_dropout=enable_dropout)
-          for table, hash_keys in zip(tables, hash_keys_by_table)
-      ]
+      embedding_shards: List[Array] = []
+      for table, hash_keys in zip(tables, hash_keys_by_table):
+        embedding_shards.append(
+            table(
+                hash_keys,
+                segment_ids=segment_ids,
+                decode=decode,
+                enable_dropout=enable_dropout))
       ngram_embeddings.append(jnp.concatenate(embedding_shards, axis=-1))
 
     # TODO: Fancier aggregation function?
     result = sum(ngram_embeddings)
-    chex.assert_shape(result, (input_ids.shape + (self.features,)))
+    chex.assert_shape(result, (*input_ids.shape, self.features))
     return result
 
   def _shift_left(self, ids: Array) -> Array:

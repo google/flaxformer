@@ -18,6 +18,8 @@ These are combinators which assemble components (LayerNorm, MLP, etc.) into
 networks.
 """
 
+from __future__ import annotations
+
 import inspect
 from typing import Callable, Optional, Any, Tuple
 
@@ -45,7 +47,7 @@ class MakeEncoderLayerFn(Protocol):
 
   def __call__(
       self, *,
-      shared_relative_position_bias: Optional[nn.Module]) -> 'EncoderLayer':
+      shared_relative_position_bias: Optional[nn.Module]) -> EncoderLayer:
     """Makes an encoder layer.
 
     Args:
@@ -66,7 +68,7 @@ class MakeDecoderLayerFn(Protocol):
 
   def __call__(
       self, *,
-      shared_relative_position_bias: Optional[nn.Module]) -> 'DecoderLayer':
+      shared_relative_position_bias: Optional[nn.Module]) -> DecoderLayer:
     """Makes a decoder layer.
 
     Args:
@@ -88,9 +90,9 @@ class MakeEncoderFn(Protocol):
   def __call__(
       self,
       *,
-      shared_token_embedder: Optional[embedding.Embed] = None,
+      shared_token_embedder: Optional[embedding.Embedder[Array]] = None,
       spmd_annotations: Any = None,
-  ) -> 'Encoder':
+  ) -> Encoder:
     """Makes a low-level Encoder instance.
 
     Args:
@@ -111,9 +113,9 @@ class MakeDecoderFn(Protocol):
   def __call__(
       self,
       *,
-      shared_token_embedder: Optional[embedding.Embed] = None,
+      shared_token_embedder: Optional[embedding.Embedder[Array]] = None,
       spmd_annotations: Any = None,
-  ) -> 'Decoder':
+  ) -> Decoder:
     """Makes a low-level Decoder instance.
 
     Args:
@@ -219,6 +221,23 @@ class EncoderLayer(nn.Module, param_remapping.ParameterRemappable):
       self.post_attention_dropout = self.dropout_factory()
       self.post_mlp_dropout = self.dropout_factory()
 
+  def get_bias(self, layer_input: Array) -> Optional[Array]:
+    encoder_bias = None
+    if self.relpos_bias:
+      if isinstance(self.relpos_bias,
+                    relative_position_biases.RelativePositionBiases):
+        encoder_bias = self.relpos_bias(
+            layer_input.shape[-2], layer_input.shape[-2], bidirectional=True)
+      elif isinstance(self.relpos_bias,
+                      rich_attention_position_scores.RichAttentionApi):
+        encoder_bias = self.relpos_bias(
+            layer_input, layer_input, bidirectional=True)
+      else:
+        raise TypeError(
+            f'{type(self.relpos_bias)} is not a supported relative position '
+            f'bias factory.\nInstance value: {self.relpos_bias}')
+    return encoder_bias
+
   def __call__(self,
                inputs: Array,
                encoder_mask: Optional[Array] = None,
@@ -239,30 +258,21 @@ class EncoderLayer(nn.Module, param_remapping.ParameterRemappable):
     layer_input = inputs
     del inputs
     # Shared relative position embedding attention biases.
-    if self.relpos_bias:
-      if isinstance(self.relpos_bias,
-                    relative_position_biases.RelativePositionBiases):
-        encoder_bias = self.relpos_bias(
-            layer_input.shape[-2], layer_input.shape[-2], bidirectional=True)
-      elif isinstance(self.relpos_bias,
-                      rich_attention_position_scores.RichAttentionApi):
-        encoder_bias = self.relpos_bias(
-            layer_input, layer_input, bidirectional=True)
-      else:
-        raise TypeError(
-            f'{type(self.relpos_bias)} is not a supported relative position '
-            f'bias factory.\nInstance value: {self.relpos_bias}')
-    else:
-      encoder_bias = None
 
     assert layer_input.ndim == 3
-    # TODO: Move to a better shared location.
-    layer_input = activation_partitioning.with_sharding(
-        layer_input, self.activation_partitioning_dims)
+    layer_input = activation_partitioning.with_sharding_migration(
+        layer_input,
+        self.activation_partitioning_dims,
+        logical_axis_names=('batch', 'length', 'embed'))
     if self.parallel:
       x = self.layer_norm(layer_input)
-      x = activation_partitioning.with_sharding(
-          x, self.activation_partitioning_dims)
+      x = activation_partitioning.with_sharding_migration(
+          x,
+          self.activation_partitioning_dims,
+          logical_axis_names=('batch', 'length', 'embed'))
+
+      encoder_bias = self.get_bias(layer_input=x)
+
       y = (
           self.attention(
               x, x, encoder_mask, encoder_bias, enable_dropout=enable_dropout) +
@@ -273,11 +283,15 @@ class EncoderLayer(nn.Module, param_remapping.ParameterRemappable):
     else:
       # Attention block.
       x = self.pre_attention_layer_norm(layer_input)
-      x = activation_partitioning.with_sharding(
-          x, self.activation_partitioning_dims)
+      x = activation_partitioning.with_sharding_migration(
+          x,
+          self.activation_partitioning_dims,
+          logical_axis_names=('batch', 'length', 'embed'))
 
       if logit_mask is not None:
         x = logit_mask * x
+
+      encoder_bias = self.get_bias(layer_input=x)
 
       # The shape should be maintained for the residual connection.
       # [batch, length, emb_dim] -> [batch, length, emb_dim]
@@ -285,13 +299,17 @@ class EncoderLayer(nn.Module, param_remapping.ParameterRemappable):
           x, x, encoder_mask, encoder_bias, enable_dropout=enable_dropout)
       x = layer_input + self.post_attention_dropout(
           x, deterministic=not enable_dropout)
-      x = activation_partitioning.with_sharding(
-          x, self.activation_partitioning_dims)
+      x = activation_partitioning.with_sharding_migration(
+          x,
+          self.activation_partitioning_dims,
+          logical_axis_names=('batch', 'length', 'embed'))
 
       # MLP block.
       y = self.pre_mlp_layer_norm(x)
-      y = activation_partitioning.with_sharding(
-          y, self.activation_partitioning_dims)
+      y = activation_partitioning.with_sharding_migration(
+          y,
+          self.activation_partitioning_dims,
+          logical_axis_names=('batch', 'length', 'embed'))
 
       if logit_mask is not None:
         y = logit_mask * y
@@ -299,9 +317,10 @@ class EncoderLayer(nn.Module, param_remapping.ParameterRemappable):
       # [batch, length, emb_dim] -> [batch, length, emb_dim]
       y = self.mlp(y, enable_dropout=enable_dropout)
       y = x + self.post_mlp_dropout(y, deterministic=not enable_dropout)
-
-    y = activation_partitioning.with_sharding(y,
-                                              self.activation_partitioning_dims)
+    y = activation_partitioning.with_sharding_migration(
+        y,
+        self.activation_partitioning_dims,
+        logical_axis_names=('batch', 'length', 'embed'))
     if self.sow_intermediates:
       self.sow('intermediates', 'activations', y)
 
@@ -370,6 +389,44 @@ class DecoderLayer(nn.Module, param_remapping.ParameterRemappable):
       self.pre_mlp_layer_norm = self.layer_norm_factory()
       self.post_mlp_dropout = self.dropout_factory()
 
+  def get_bias(self, max_decode_length: Optional[int], decode: bool,
+               layer_input: Array,
+               encoded: Array) -> Tuple[Optional[Array], Optional[Array]]:
+    decoder_bias = None
+    encoder_decoder_bias = None
+    if self.relpos_bias:
+      if isinstance(self.relpos_bias,
+                    relative_position_biases.RelativePositionBiases):
+        if max_decode_length:
+          relpos_length = max_decode_length
+        else:
+          relpos_length = layer_input.shape[-2]
+
+        # during decoding, the layer will be called with decode=True first to
+        # initialize the decoder cache, including a cached relpos bias cache.
+        # the prefill codepath will call this once again with decode=False,
+        # which is slightly wasteful but generally harmless. During subsequent
+        # decode steps, this will be called with decode=True and will reuse the
+        # cached bias. this significantly improves performance during decoding
+        # with many decode steps.
+        decoder_bias = self.relpos_bias(
+            relpos_length, relpos_length, False, decode=decode)
+
+      elif isinstance(self.relpos_bias,
+                      rich_attention_position_scores.RichAttentionApi):
+        decoder_bias = self.relpos_bias(
+            layer_input,
+            layer_input,
+            bidirectional=False,
+            is_cross_attention=False)
+        encoder_decoder_bias = self.relpos_bias(
+            layer_input, encoded, bidirectional=False, is_cross_attention=True)
+      else:
+        raise TypeError(
+            f'{type(self.relpos_bias)} is not a supported relative position '
+            f'bias factory.\nInstance value: {self.relpos_bias}')
+    return decoder_bias, encoder_decoder_bias
+
   def __call__(self,
                targets,
                encoded,
@@ -410,46 +467,12 @@ class DecoderLayer(nn.Module, param_remapping.ParameterRemappable):
     layer_input = targets
     del targets
 
-    decoder_bias = None
-    encoder_decoder_bias = None
-
-    # Shared relative position embedding attention biases.
-    if self.relpos_bias:
-      if isinstance(self.relpos_bias,
-                    relative_position_biases.RelativePositionBiases):
-        if max_decode_length:
-          relpos_length = max_decode_length
-        else:
-          relpos_length = layer_input.shape[-2]
-
-        # during decoding, the layer will be called with decode=True first to
-        # initialize the decoder cache, including a cached relpos bias cache.
-        # the prefill codepath will call this once again with decode=False,
-        # which is slightly wasteful but generally harmless. During subsequent
-        # decode steps, this will be called with decode=True and will reuse the
-        # cached bias. this significantly improves performance during decoding
-        # with many decode steps.
-        decoder_bias = self.relpos_bias(
-            relpos_length, relpos_length, False, decode=decode)
-
-      elif isinstance(self.relpos_bias,
-                      rich_attention_position_scores.RichAttentionApi):
-        decoder_bias = self.relpos_bias(
-            layer_input,
-            layer_input,
-            bidirectional=False,
-            is_cross_attention=False)
-        encoder_decoder_bias = self.relpos_bias(
-            layer_input, encoded, bidirectional=False, is_cross_attention=True)
-      else:
-        raise TypeError(
-            f'{type(self.relpos_bias)} is not a supported relative position '
-            f'bias factory.\nInstance value: {self.relpos_bias}')
-
     # Decoder block.
     assert layer_input.ndim == 3
-    layer_input = activation_partitioning.with_sharding(
-        layer_input, self.activation_partitioning_dims)
+    layer_input = activation_partitioning.with_sharding_migration(
+        layer_input,
+        self.activation_partitioning_dims,
+        logical_axis_names=('batch', 'length', 'embed'))
 
     if prefill and prefill_lengths is None:
       # Figure out how far each element in the batch fills the cache based
@@ -466,8 +489,15 @@ class DecoderLayer(nn.Module, param_remapping.ParameterRemappable):
           decode=decode,
           prefill=prefill,
           prefill_lengths=prefill_lengths)
-      x = activation_partitioning.with_sharding(
-          x, self.activation_partitioning_dims)
+      x = activation_partitioning.with_sharding_migration(
+          x,
+          self.activation_partitioning_dims,
+          logical_axis_names=('batch', 'length', 'embed'))
+
+      # Shared relative position embedding attention biases.
+      decoder_bias, encoder_decoder_bias = self.get_bias(
+          max_decode_length, decode, layer_input=x, encoded=encoded)
+
       y = (
           self.self_attention(
               x,
@@ -499,11 +529,17 @@ class DecoderLayer(nn.Module, param_remapping.ParameterRemappable):
           decode=decode,
           prefill=prefill,
           prefill_lengths=prefill_lengths)
-      x = activation_partitioning.with_sharding(
-          x, self.activation_partitioning_dims)
+      x = activation_partitioning.with_sharding_migration(
+          x,
+          self.activation_partitioning_dims,
+          logical_axis_names=('batch', 'length', 'embed'))
 
       if logit_mask is not None:
         x = logit_mask * x
+
+      # Shared relative position embedding attention biases.
+      decoder_bias, encoder_decoder_bias = self.get_bias(
+          max_decode_length, decode, layer_input=x, encoded=encoded)
 
       # The first and second arguments to the attention are the same,
       # i.e., this is a self-attention layer.
@@ -518,8 +554,10 @@ class DecoderLayer(nn.Module, param_remapping.ParameterRemappable):
           prefill_lengths=prefill_lengths)
       x = layer_input + self.post_self_attention_dropout(
           x, deterministic=not enable_dropout)
-      x = activation_partitioning.with_sharding(
-          x, self.activation_partitioning_dims)
+      x = activation_partitioning.with_sharding_migration(
+          x,
+          self.activation_partitioning_dims,
+          logical_axis_names=('batch', 'length', 'embed'))
 
       # Encoder-Decoder block.
       if encoded is None:
@@ -532,8 +570,10 @@ class DecoderLayer(nn.Module, param_remapping.ParameterRemappable):
                            'when called with `encoded` inputs.')
         y = self.pre_cross_attention_layer_norm(
             x, decode=decode, prefill=prefill, prefill_lengths=prefill_lengths)
-        y = activation_partitioning.with_sharding(
-            y, self.activation_partitioning_dims)
+        y = activation_partitioning.with_sharding_migration(
+            y,
+            self.activation_partitioning_dims,
+            logical_axis_names=('batch', 'length', 'embed'))
 
         if logit_mask is not None:
           y = logit_mask * y
@@ -546,14 +586,18 @@ class DecoderLayer(nn.Module, param_remapping.ParameterRemappable):
             enable_dropout=enable_dropout)
         y = x + self.post_cross_attention_dropout(
             y, deterministic=not enable_dropout)
-        y = activation_partitioning.with_sharding(
-            y, self.activation_partitioning_dims)
+        y = activation_partitioning.with_sharding_migration(
+            y,
+            self.activation_partitioning_dims,
+            logical_axis_names=('batch', 'length', 'embed'))
 
       # MLP block.
       z = self.pre_mlp_layer_norm(
           y, decode=decode, prefill=prefill, prefill_lengths=prefill_lengths)
-      z = activation_partitioning.with_sharding(
-          z, self.activation_partitioning_dims)
+      z = activation_partitioning.with_sharding_migration(
+          z,
+          self.activation_partitioning_dims,
+          logical_axis_names=('batch', 'length', 'embed'))
 
       if logit_mask is not None:
         z = logit_mask * z
@@ -565,9 +609,10 @@ class DecoderLayer(nn.Module, param_remapping.ParameterRemappable):
           prefill_lengths=prefill_lengths,
           enable_dropout=enable_dropout)
       z = y + self.post_mlp_dropout(z, deterministic=not enable_dropout)
-
-    z = activation_partitioning.with_sharding(z,
-                                              self.activation_partitioning_dims)
+    z = activation_partitioning.with_sharding_migration(
+        z,
+        self.activation_partitioning_dims,
+        logical_axis_names=('batch', 'length', 'embed'))
     if self.sow_intermediates:
       self.sow('intermediates', 'activations', z)
 
@@ -625,9 +670,11 @@ class Encoder(nn.Module, param_remapping.ParameterRemappable):
   # Embedders: Either a token_embedder_factory factory or shared token embedder
   # must be provided. The position embedder is optional and provided when
   # absolute position embeddings are desired.
-  token_embedder_factory: Optional[Callable[[], embedding.Embed]] = None
+  token_embedder_factory: Optional[Callable[[],
+                                            embedding.Embedder[Array]]] = None
   shared_token_embedder: Optional[embedding.Embed] = None
-  position_embedder_factory: Optional[Callable[[], embedding.Embed]] = None
+  position_embedder_factory: Optional[Callable[
+      [], embedding.Embedder[Array]]] = None
 
   def setup(self):
     # Set up the embedders.
@@ -697,18 +744,19 @@ class Encoder(nn.Module, param_remapping.ParameterRemappable):
                                inputs,
                                inputs_positions=None,
                                *,
+                               segment_ids: Optional[Array] = None,
                                enable_dropout: bool = True):
     """Returns the combined embedded inputs for further encoding."""
     assert inputs.ndim == 2  # (batch, len)
 
+    embedder_inputs = {'token_ids': inputs}
     if 'position_ids' in self.embedder.embedders:
       if inputs_positions is None:
         seq_length = inputs.shape[-1]
         inputs_positions = jnp.arange(seq_length)[None, :]
-      embedded_inputs = self.embedder(
-          token_ids=inputs, position_ids=inputs_positions)
-    else:
-      embedded_inputs = self.embedder(token_ids=inputs)
+      embedder_inputs['position_ids'] = inputs_positions
+    # TODO: Pass `deterministic=not enable_dropout`?
+    embedded_inputs = self.embedder(segment_ids=segment_ids, **embedder_inputs)
 
     embedded_inputs = self.input_dropout(
         embedded_inputs, deterministic=not enable_dropout)
@@ -749,6 +797,7 @@ class Encoder(nn.Module, param_remapping.ParameterRemappable):
                inputs_positions=None,
                encoder_mask=None,
                *,
+               segment_ids: Optional[Array] = None,
                enable_dropout: bool = True):
     """Applies Transformer model on the inputs.
 
@@ -756,6 +805,7 @@ class Encoder(nn.Module, param_remapping.ParameterRemappable):
       inputs: input data
       inputs_positions: input subsequence positions for packed examples.
       encoder_mask: decoder self-attention mask.
+      segment_ids: Input segmentation info for packed examples.
       enable_dropout: Enables dropout if set to True.
 
     Returns:
@@ -764,6 +814,7 @@ class Encoder(nn.Module, param_remapping.ParameterRemappable):
     embedded_inputs = self.embed_and_combine_inputs(
         inputs,
         inputs_positions=inputs_positions,
+        segment_ids=segment_ids,
         enable_dropout=enable_dropout)
     logit_mask = jnp.expand_dims(
         jnp.array((inputs > 0), dtype=embedded_inputs.dtype), axis=-1)
@@ -825,9 +876,11 @@ class Decoder(nn.Module, param_remapping.ParameterRemappable):
   # Embedders: Either a token_embedder_factory factory or shared token embedder
   # must be provided. The position embedder is optional and provided when
   # absolute position embeddings are desired.
-  token_embedder_factory: Optional[Callable[[], embedding.Embed]] = None
+  token_embedder_factory: Optional[Callable[[],
+                                            embedding.Embedder[Array]]] = None
   shared_token_embedder: Optional[embedding.Embed] = None
-  position_embedder_factory: Optional[Callable[[], embedding.Embed]] = None
+  position_embedder_factory: Optional[Callable[
+      [], embedding.Embedder[Array]]] = None
 
   sow_intermediates: bool = False
 
@@ -919,23 +972,22 @@ class Decoder(nn.Module, param_remapping.ParameterRemappable):
       decoder_input_tokens,
       decoder_positions=None,
       *,
+      segment_ids: Optional[Array] = None,
       enable_dropout: bool = True,
       decode: bool = False,
   ):
     """Returns the combined embedded decoder inputs for further processing."""
     assert decoder_input_tokens.ndim == 2  # (batch, len)
 
+    embedder_inputs = {'token_ids': decoder_input_tokens}
     if 'position_ids' in self.embedder.embedders:
       if decoder_positions is None:
         seq_length = decoder_input_tokens.shape[-1]
         decoder_positions = jnp.arange(seq_length)[None, :]
-      embedded_inputs = self.embedder(
-          token_ids=decoder_input_tokens,
-          position_ids=decoder_positions,
-          decode=decode)
-    else:
-      embedded_inputs = self.embedder(
-          token_ids=decoder_input_tokens, decode=decode)
+      embedder_inputs['position_ids'] = decoder_positions
+    # TODO: Pass `deterministic=not enable_dropout`?
+    embedded_inputs = self.embedder(
+        segment_ids=segment_ids, decode=decode, **embedder_inputs)
 
     embedded_inputs = self.input_dropout(
         embedded_inputs, deterministic=not enable_dropout)
@@ -1012,6 +1064,7 @@ class Decoder(nn.Module, param_remapping.ParameterRemappable):
                decoder_mask=None,
                encoder_decoder_mask=None,
                *,
+               segment_ids: Optional[Array] = None,
                enable_dropout: bool = True,
                decode: bool = False,
                max_decode_length: Optional[int] = None,
@@ -1030,6 +1083,7 @@ class Decoder(nn.Module, param_remapping.ParameterRemappable):
       decoder_positions: Decoder subsequence positions for packed examples.
       decoder_mask: Decoder self-attention mask.
       encoder_decoder_mask: The attention mask for the encoder outputs.
+      segment_ids: Input segmentation info for packed examples.
       enable_dropout: Enables dropout if set to True.
       decode: Whether to prepare and use an autoregressive cache.
       max_decode_length: An optional integer specifying the maximum decoding
@@ -1045,6 +1099,7 @@ class Decoder(nn.Module, param_remapping.ParameterRemappable):
     embedded_inputs = self.embed_and_combine_inputs(
         decoder_input_tokens,
         decoder_positions=decoder_positions,
+        segment_ids=segment_ids,
         enable_dropout=enable_dropout,
         decode=decode,
     )
@@ -1094,7 +1149,7 @@ class EncoderDecoder(nn.Module, param_remapping.ParameterRemappable):
   # Configures behavior when the model is called. Many of these might eventually
   # be better as call parameters.
   dtype: DType = jnp.float32
-  scan_layers: bool = False  # only used to smuggle this option to predict_fn.
+  scan_layers: bool = False  # only used to pass this option to predict_fn.
   spmd_annotations: Any = None  # only used for scanned spmd layers
 
   shared_token_embedder_factory: Optional[Callable[[], embedding.Embed]] = None
@@ -1167,6 +1222,7 @@ class EncoderDecoder(nn.Module, param_remapping.ParameterRemappable):
         encoder_input_tokens,
         inputs_positions=encoder_positions,
         encoder_mask=encoder_mask,
+        segment_ids=encoder_segment_ids,
         enable_dropout=enable_dropout)
 
   def decode(
@@ -1203,10 +1259,11 @@ class EncoderDecoder(nn.Module, param_remapping.ParameterRemappable):
     """
     # Make padding attention masks.
     if decode:
-      # Fast autoregressive decoding uses only a special encoder-decoder mask.
+      # Do not mask decoder attention based on targets padding at
+      # decoding/inference time.
       decoder_mask = None
       encoder_decoder_mask = dense_attention.make_attention_mask(
-          jnp.ones_like(decoder_target_tokens) > 0,
+          jnp.ones_like(decoder_target_tokens),
           encoder_input_tokens > 0,
           dtype=self.dtype)
     else:
@@ -1240,6 +1297,7 @@ class EncoderDecoder(nn.Module, param_remapping.ParameterRemappable):
         decoder_positions=decoder_positions,
         decoder_mask=decoder_mask,
         encoder_decoder_mask=encoder_decoder_mask,
+        segment_ids=decoder_segment_ids,
         enable_dropout=enable_dropout,
         decode=decode,
         max_decode_length=max_decode_length)
@@ -1323,6 +1381,9 @@ class DecoderOnly(nn.Module, param_remapping.ParameterRemappable):
   # Core sub-component.
   decoder_factory: MakeDecoderFn
 
+  # Only used to pass this option to predict_fn.
+  scan_layers: bool = False
+
   # Configures behavior when the model is called. Many of these might eventually
   # be better as call parameters.
   dtype: DType = jnp.float32
@@ -1392,6 +1453,7 @@ class DecoderOnly(nn.Module, param_remapping.ParameterRemappable):
         decoder_positions=decoder_positions,
         decoder_mask=decoder_mask,
         encoder_decoder_mask=None,
+        segment_ids=decoder_segment_ids,
         enable_dropout=enable_dropout,
         decode=decode,
         max_decode_length=max_decode_length,

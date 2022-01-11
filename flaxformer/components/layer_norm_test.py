@@ -13,7 +13,10 @@
 # limitations under the License.
 
 """Tests for layer_norm."""
+
 from absl.testing import absltest
+import chex
+from flax import linen as nn
 from jax import numpy as jnp
 from jax import random
 
@@ -34,6 +37,19 @@ class T5LayerNormTest(absltest.TestCase):
     y, _ = model_fn(jnp.int32).init_with_output(key3, x)
     self.assertEqual(y.dtype, jnp.int32)
 
+  def test_default_axis_name(self):
+    module = layer_norm.T5LayerNorm()
+    rng = random.PRNGKey(0)
+    variables = module.init(rng, jnp.zeros([2, 3, 4], dtype=jnp.float32))
+    chex.assert_trees_all_equal_shapes(
+        variables["params"], nn.FrozenDict({
+            "scale": jnp.zeros([4]),
+        }))
+    chex.assert_trees_all_equal(
+        variables["params_axes"],
+        nn.FrozenDict({
+            "scale_axes": nn.partitioning.AxisMetadata(names=("embed",)),
+        }))
 
 if __name__ == "__main__":
   absltest.main()
