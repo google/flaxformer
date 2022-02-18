@@ -1,4 +1,4 @@
-# Copyright 2021 Google LLC.
+# Copyright 2022 Google LLC.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -55,6 +55,7 @@ def param_dtypes_shapes_axes(params: Mapping[str, Any],
     A pytree with params info.
   """
   params = param_remapping.filter_out_metadata(params)
+  params_axes = param_remapping.filter_out_metadata(params_axes)
   params = frozen_dict.unfreeze(params)  # pytype: disable=wrong-arg-types
 
   def remove_axes_suffix(ks):

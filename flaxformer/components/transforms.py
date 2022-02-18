@@ -1,4 +1,4 @@
-# Copyright 2021 Google LLC.
+# Copyright 2022 Google LLC.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -21,6 +21,7 @@ import flax
 from flax import linen as nn
 from flax.core.lift import In as ScanIn  # pylint: disable=unused-import
 from flax.core.lift import Out as ScanOut  # pylint: disable=unused-import
+from flax.linen import partitioning
 import jax
 from jax.experimental.pjit import with_sharding_constraint as jax_pjit_wsc
 
@@ -183,6 +184,7 @@ def canonicalized_class_transform(trafo, clz, *t_args, **t_kwargs):
 
 def apply_transform_to_module_factory(trafo, factory, *args, **kwargs):
   """Fix to apply flax transforms to a module factories via re-instantiation."""
+
   def new_factory():
     # Create the Module instance from the factory in a disconnected dynamic
     # context solely to collect the construction arguments and class.
@@ -205,7 +207,10 @@ def apply_transform_to_module_factory(trafo, factory, *args, **kwargs):
 
 
 factory_remat = functools.partial(apply_transform_to_module_factory, remat)
-factory_scan = functools.partial(apply_transform_to_module_factory, nn.scan)
+factory_scan = functools.partial(
+    apply_transform_to_module_factory,
+    partitioning.scan_with_axes,
+)
 factory_vmap = functools.partial(apply_transform_to_module_factory, nn.vmap)
 
 # Scan inner-function SPMD re-annotation.

@@ -1,4 +1,4 @@
-# Copyright 2021 Google LLC.
+# Copyright 2022 Google LLC.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -28,17 +28,17 @@ install_requires = [
     "numpy>=1.12",
     "jax>=0.2.21",
     "flax>=0.3.6",
+    "aqtp>=0.0.3",
 ]
 
 tests_require = [
-    "absl-py",
-    "pytest",
-    "tensorflow>=2.4.1",
+    "absl-py", "pytest", "tensorflow>=2.4.1", "gin-config",
+    "t5x @ git+https://github.com/google-research/t5x"
 ]
 
 setup(
     name="flaxformer",
-    version="0.1.1",
+    version="0.2",
     description="Flaxformer: Transformer implementations in Flax",
     long_description="\n\n".join([README]),
     long_description_content_type="text/markdown",

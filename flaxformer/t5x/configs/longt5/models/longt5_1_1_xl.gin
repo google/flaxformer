@@ -1,0 +1,13 @@
+# LongT5 XL model.
+# Provides MODEL
+
+include 'flaxformer/t5x/configs/longt5/architectures/longt5_1_1_flaxformer.gin'
+include 'flaxformer/t5x/configs/longt5/models/longt5_1_1_base.gin'  # imports vocab, optimizer and model.
+
+# Architecture overrides
+NUM_HEADS = 32
+NUM_ENCODER_LAYERS = 24
+NUM_DECODER_LAYERS = 24
+HEAD_DIM = 64
+EMBED_DIM = 2048
+MLP_DIM = 5120

@@ -1,0 +1,43 @@
+{
+  "encoder": {
+    "encoder": {
+      "attention": {
+        "key": {
+          "kernel": ["float32", "embed=13", "layers=3", "joined_kv=512"]
+        },
+        "out": {
+          "kernel": ["float32", "joined_kv=512", "layers=3", "embed=13"]
+        },
+        "query": {
+          "kernel": ["float32", "embed=13", "layers=3", "joined_kv=512"]
+        },
+        "value": {
+          "kernel": ["float32", "embed=13", "layers=3", "joined_kv=512"]
+        }
+      },
+      "mlp": {
+        "wi": {
+          "kernel": ["float32", "embed=13", "layers=3", "mlp=2048"]
+        },
+        "wo": {
+          "kernel": ["float32", "mlp=2048", "layers=3", "embed=13"]
+        }
+      },
+      "pre_attention_layer_norm": {
+        "scale": ["float32", "embed=13", "layers=3"]
+      },
+      "pre_mlp_layer_norm": {
+        "scale": ["float32", "embed=13", "layers=3"]
+      },
+      "relpos_bias": {
+        "rel_embedding": ["float32", "heads=8", "layers=3", "relpos_buckets=32"]
+      }
+    },
+    "encoder_norm": {
+      "scale": ["float32", "embed=13"]
+    },
+    "token_embedder": {
+      "embedding": ["float32", "vocab=2000", "embed=13"]
+    }
+  }
+}

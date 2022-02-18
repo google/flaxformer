@@ -1,4 +1,4 @@
-# Copyright 2021 Google LLC.
+# Copyright 2022 Google LLC.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -15,6 +15,7 @@
 """Tests for attention classes."""
 
 import dataclasses
+import functools
 import itertools
 from typing import Optional
 from unittest import mock
@@ -24,6 +25,7 @@ from absl.testing import parameterized
 from flax import linen as nn
 from flax.core import freeze
 import jax
+from jax import dtypes
 from jax import random
 import jax.numpy as jnp
 import numpy as np
@@ -96,6 +98,9 @@ class SelfAttentionArgs:
 
 
 class AttentionTest(parameterized.TestCase):
+
+  def _mock_initializer(self, key, shape, dtype=jnp.float_, val=1.0):  # pylint: disable=unused-argument
+    return jnp.ones(shape, dtypes.canonicalize_dtype(dtype)) * val
 
   def test_dot_product_attention_shape(self):
     # This test only checks for shape but tries to make sure all code paths are
@@ -1295,6 +1300,124 @@ class AttentionTest(parameterized.TestCase):
         **args_fused_kernels).apply({'params': freeze(params)}, inputs_q,
                                     inputs_q)
     np.testing.assert_allclose(y, y_fused_kernels, rtol=1e-5, atol=1e-5)
+
+  @parameterized.named_parameters([
+      ('no_fuse_kernel_none', None, False, False, False),
+      ('no_fuse_kernel_qkv', None, True, False, False),
+      ('no_fuse_kernel_qkv_kv', None, True, True, False),
+      ('no_fuse_kernel_qkv_kv_q', None, True, True, True),
+      ('qkv_fuse_kernel_none', 'qkv', False, False, False),
+      ('qkv_fuse_kernel_qkv', 'qkv', True, False, False),
+      ('qkv_fuse_kernel_qkv_kv', 'qkv', True, True, False),
+      ('qkv_fuse_kernel_qkv_kv_q', 'qkv', True, True, True),
+      ('kv_fuse_kernel_none', 'kv', False, False, False),
+      ('kv_fuse_kernel_qkv', 'kv', True, False, False),
+      ('kv_fuse_kernel_qkv_kv', 'kv', True, True, False),
+      ('kv_fuse_kernel_qkv_kv_q', 'kv', True, True, True)
+  ])
+  def test_multihead_dot_product_attention_kernel_kernel_init(
+      self, fused_kernels, set_qkv_kernel_init, set_kv_kernel_init,
+      set_q_kernel_init):
+    # b: batch, f: qkv_features, q: q_len, k: kv_len, h: num_head, d: head_dim
+    f = 20
+    b, q, h, d = 2, 3, 4, 5
+
+    base_args = SelfAttentionArgs(
+        num_heads=h,
+        qkv_features=f,
+        out_features=f,
+        dropout_rate=0,
+        rescale_logits=False,
+        use_bias=False)
+    args = base_args.init_args()
+    args['split_head_kernel'] = True
+    args['rescale_logits'] = True
+    args['kernel_init'] = functools.partial(self._mock_initializer, val=1.0)
+    if fused_kernels:
+      args['kernels_to_fuse'] = fused_kernels
+    if set_qkv_kernel_init:
+      args['qkv_kernel_init'] = functools.partial(
+          self._mock_initializer, val=2.0)
+    if set_kv_kernel_init:
+      args['kv_kernel_init'] = functools.partial(
+          self._mock_initializer, val=3.0)
+    if set_q_kernel_init:
+      args['q_kernel_init'] = functools.partial(self._mock_initializer, val=4.0)
+
+    if f != h * d:
+      args['head_dim'] = d
+
+    np.random.seed(0)
+    inputs_q = np.random.randn(b, q, f)
+
+    params = dense_attention.MultiHeadDotProductAttention(**args).init(
+        random.PRNGKey(0), inputs_q, inputs_q, enable_dropout=False)
+
+    # Construct expected param
+    # Projection: [b, q, f] -> [b, q, h, d]
+    # So the kernels have to be [f, h, d]
+    query_kernel = np.ones((f, h, d))
+    key_kernel = np.ones((f, h, d))
+    value_kernel = np.ones((f, h, d))
+    # `out` calculation: [b, q, h, d] -> [b, q, f]
+    # So kernel has to be [h, d, f]
+    out_kernel = np.ones((h, d, f))
+    if fused_kernels is None:
+      if set_q_kernel_init:
+        query_kernel = np.ones((f, h, d)) * 4.0
+
+      expected_params = {
+          'query': {
+              'kernel': query_kernel.tolist()
+          },
+          'key': {
+              'kernel': key_kernel.tolist()
+          },
+          'value': {
+              'kernel': value_kernel.tolist()
+          },
+          'out': {
+              'kernel': out_kernel.tolist()
+          }
+      }
+    elif fused_kernels == 'qkv':
+      if set_qkv_kernel_init:
+        query_kernel = np.ones((f, h, d)) * 2.0
+        key_kernel = np.ones((f, h, d)) * 2.0
+        value_kernel = np.ones((f, h, d)) * 2.0
+
+      fused_kernel = np.stack([query_kernel, key_kernel, value_kernel], axis=1)
+      expected_params = {
+          'qkv_fused': {
+              'kernel': fused_kernel.tolist()
+          },
+          'out': {
+              'kernel': out_kernel.tolist()
+          }
+      }
+    elif fused_kernels == 'kv':
+      if set_kv_kernel_init:
+        key_kernel = np.ones((f, h, d)) * 3.0
+        value_kernel = np.ones((f, h, d)) * 3.0
+      if set_q_kernel_init:
+        query_kernel = np.ones((f, h, d)) * 4.0
+
+      kv_fused_kernel = np.stack([key_kernel, value_kernel], axis=1)
+      expected_params = {
+          'kv_fused': {
+              'kernel': kv_fused_kernel.tolist()
+          },
+          'query': {
+              'kernel': query_kernel.tolist()
+          },
+          'out': {
+              'kernel': out_kernel.tolist()
+          }
+      }
+
+    self.assertDictEqual(
+        jax.tree_map(lambda a: a.tolist(), params['params'].unfreeze()),
+        expected_params)
 
   def test_decoder_logits_mask_unpacked(self):
     # [batch, length]

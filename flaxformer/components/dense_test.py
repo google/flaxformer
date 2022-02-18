@@ -1,4 +1,4 @@
-# Copyright 2021 Google LLC.
+# Copyright 2022 Google LLC.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,26 +14,32 @@
 
 """Tests for dense modules."""
 
-from unittest import mock
+import functools
 
 from absl.testing import absltest
 from absl.testing import parameterized
 from flax import linen as nn
 from flax.linen import partitioning
 import jax
+from jax import dtypes
 from jax import random
 from jax.nn import initializers
 import jax.numpy as jnp
 import numpy as np
 
 from flaxformer import sharding
+from flaxformer import testing_utils
 from flaxformer.components import dense
+from aqt import quantization as aqt
 
 # Parse absl flags test_srcdir and test_tmpdir.
 jax.config.parse_flags_with_absl()
 
 
 class DenseTest(parameterized.TestCase):
+
+  def _mock_initializer(self, key, shape, dtype=jnp.float_, val=1.0):  # pylint: disable=unused-argument
+    return jnp.ones(shape, dtypes.canonicalize_dtype(dtype)) * val
 
   def test_dense_general_no_bias(self):
     rng = random.PRNGKey(0)
@@ -250,6 +256,81 @@ class DenseTest(parameterized.TestCase):
         rtol=1e-6,
     )
 
+  def test_mlp_quantized_weights(self):
+    weight_params = aqt.QuantOps.WeightParams(
+        prec=8, half_shift=False, axis=None)
+    module = dense.MlpBlock(
+        use_bias=False,
+        intermediate_dim=4,
+        activations=('relu',),
+        kernel_init=nn.initializers.xavier_uniform(),
+        bias_init=nn.initializers.normal(stddev=1e-6),
+        dtype=jnp.float32,
+        weight_params=weight_params,
+    )
+    inputs = np.array(
+        [
+            # Batch 1.
+            [[1, 1], [1, 1], [1, 2]],
+            # Batch 2.
+            [[2, 2], [3, 1], [2, 2]],
+        ],
+        dtype=np.float32)
+    result, variables = module.init_with_output(
+        random.PRNGKey(0), inputs, enable_dropout=False)
+    self.assertEqual(
+        jax.tree_map(lambda a: a.tolist(), variables), {
+            'params': {
+                'wi': {
+                    'kernel': [[
+                        -0.8675811290740967, 0.08417510986328125,
+                        0.022586345672607422, -0.9124102592468262
+                    ],
+                               [
+                                   -0.19464373588562012, 0.49809837341308594,
+                                   0.7808468341827393, 0.9267289638519287
+                               ]],
+                },
+                'wo': {
+                    'kernel': [[0.01154780387878418, 0.1397249698638916],
+                               [0.974980354309082, 0.5903260707855225],
+                               [-0.05997943878173828, 0.616570234298706],
+                               [0.2934272289276123, 0.8181164264678955]],
+                },
+            },
+            'params_axes': {
+                'wi': {
+                    'kernel_axes':
+                        partitioning.AxisMetadata(names=('embed', 'mlp')),
+                },
+                'wo': {
+                    'kernel_axes':
+                        partitioning.AxisMetadata(names=('mlp', 'embed')),
+                },
+            },
+        })
+    self.assertDictEqual(
+        testing_utils.param_dtypes_shapes_axes(variables['params'],
+                                               variables['params_axes']),
+        {
+            'wi': {
+                'kernel': ['float32', 'embed=2', 'mlp=4']
+            },
+            'wo': {
+                'kernel': ['float32', 'mlp=4', 'embed=2']
+            }
+        })
+    np.testing.assert_allclose(
+        result.tolist(),
+        [[[0.5207288861274719, 0.8540504574775696],
+          [0.5207288861274719, 0.8540504574775696],
+          [1.2287601232528687, 2.3903121948242188]],
+         [[1.0414577722549438, 1.7081009149551392],
+          [0.6740546226501465, 0.9701539278030396],
+          [1.0414577722549438, 1.7081009149551392]]],
+        rtol=1e-6,
+    )
+
   def test_fuse_kernels(self):
     x = np.random.randn(2, 3)
     fused = dense.MlpBlock(
@@ -269,7 +350,7 @@ class DenseTest(parameterized.TestCase):
             'wi_fused': {
                 'kernel_axes':
                     nn.partitioning.AxisMetadata(
-                        names=('embed', 'activations', 'mlp')),
+                        names=('embed', 'mlp_activations', 'mlp')),
             },
             'wo': {
                 'kernel_axes':
@@ -314,15 +395,23 @@ class DenseTest(parameterized.TestCase):
                                   enable_dropout=False)
     np.testing.assert_allclose(y_fused, y_not_fused, rtol=1e-5)
 
-  def test_mlp_sharding_rules_doesnt_error(self):
+  @parameterized.named_parameters([
+      ('fuse_kernel_set_wi_fused_init', True, True),
+      ('fuse_kernel_no_set_wi_fused_init', True, False),
+      ('no_fuse_kernel_no_set_wi_fused_init', False, False),
+      ('no_fuse_kernel_set_wi_fused_init', False, True)
+  ])
+  def test_fuse_kernels_kernel_init(self, fuse_kernels, set_wi_fused_init):
     module = dense.MlpBlock(
         use_bias=False,
         intermediate_dim=4,
-        activations=('relu',),
-        kernel_init=nn.initializers.xavier_uniform(),
-        bias_init=nn.initializers.normal(stddev=1e-6),
+        fuse_kernels=fuse_kernels,
+        activations=('relu', 'linear'),
+        kernel_init=initializers.ones,
+        wi_fused_kernel_init=(functools.partial(
+            self._mock_initializer, val=2.0) if set_wi_fused_init else None),
+        bias_init=initializers.zeros,
         dtype=jnp.float32,
-        activation_partitioning_dims=2,
     )
     inputs = np.array(
         [
@@ -332,9 +421,40 @@ class DenseTest(parameterized.TestCase):
             [[2, 2], [3, 1], [2, 2]],
         ],
         dtype=np.float32)
-    with mock.patch.object(
-        partitioning, 'get_axis_rules', return_value=['rule']):
-      module.init(random.PRNGKey(0), inputs, enable_dropout=False)
+    params = module.init(random.PRNGKey(0), inputs, enable_dropout=False)
+
+    # Construct expected params
+    wi_0 = [[1., 1., 1., 1.], [1., 1., 1., 1.]]
+    wi_1 = [[1., 1., 1., 1.], [1., 1., 1., 1.]]
+    wo = [[1., 1.], [1., 1.], [1., 1.], [1., 1.]]
+    if fuse_kernels:
+      if set_wi_fused_init:
+        wi_0 = [[2., 2., 2., 2.], [2., 2., 2., 2.]]
+        wi_1 = [[2., 2., 2., 2.], [2., 2., 2., 2.]]
+      expected_params = {
+          'wi_fused': {
+              'kernel': np.stack([wi_0, wi_1], axis=1).tolist()
+          },
+          'wo': {
+              'kernel': wo
+          }
+      }
+    else:
+      expected_params = {
+          'wi_0': {
+              'kernel': wi_0
+          },
+          'wi_1': {
+              'kernel': wi_1
+          },
+          'wo': {
+              'kernel': wo
+          }
+      }
+
+    self.assertDictEqual(
+        jax.tree_map(lambda a: a.tolist(), params['params'].unfreeze()),
+        expected_params)
 
 
 if __name__ == '__main__':

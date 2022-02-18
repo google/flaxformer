@@ -1,4 +1,4 @@
-# Copyright 2021 Google LLC.
+# Copyright 2022 Google LLC.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -412,6 +412,12 @@ class MultiHeadDotProductAttention(nn.Module, DenseAttention):
       precision: numerical precision of the computation see `jax.lax.Precision`
         for details.
       kernel_init: initializer for the kernel of the Dense layers.
+      qkv_kernel_init: optional initializer for the fused qkv kernel. If None,
+        kernel_init will be used instead.
+      kv_kernel_init: optional initializer for the fused kv kernel. If None,
+        kernel_init will be used instead.
+      q_kernel_init: optional initializer for the query (q) kernel. If None,
+        kernel_init will be used instead.
       bias_init: initializer for the bias of the Dense layers.
       attention_fn: dot_product_attention or compatible function. Accepts query,
         key, value, and returns output of shape `[bs, dim1, dim2, ..., dimN,,
@@ -437,6 +443,9 @@ class MultiHeadDotProductAttention(nn.Module, DenseAttention):
   dropout_rate: float = 0.
   precision: Optional[lax.Precision] = None
   kernel_init: Initializer = default_kernel_init
+  qkv_kernel_init: Optional[Initializer] = None
+  kv_kernel_init: Optional[Initializer] = None
+  q_kernel_init: Optional[Initializer] = None
   bias_init: Initializer = initializers.zeros
   rescale_logits: bool = False
   compute_attention_fn: Callable[..., Array] = staticmethod(
@@ -645,6 +654,17 @@ class MultiHeadDotProductAttention(nn.Module, DenseAttention):
     """
     validate_dense_attention_call_parameter_shapes(inputs_q, inputs_kv, mask,
                                                    bias, self.num_heads)
+
+    qkv_kernel_init = (
+        self.qkv_kernel_init
+        if self.qkv_kernel_init is not None else self.kernel_init)
+    kv_kernel_init = (
+        self.kv_kernel_init
+        if self.kv_kernel_init is not None else self.kernel_init)
+    q_kernel_init = (
+        self.q_kernel_init
+        if self.q_kernel_init is not None else self.kernel_init)
+
     if precomputed_qkv is not None:
       raise ValueError('Support for precomputed QKVO not implemented.')
 
@@ -662,13 +682,13 @@ class MultiHeadDotProductAttention(nn.Module, DenseAttention):
 
     # Is attention logit rescaling explicit or folded into initializer?
     if self.rescale_logits:
-      query_init = self.kernel_init
+      query_init = q_kernel_init
     else:
       if self.kernels_to_fuse:
         raise ValueError('Cannot fold in logit normalization to query '
                          'initializer when using fused kernels.')
       depth_scaling = jnp.sqrt(head_dim).astype(self.dtype)
-      query_init = lambda *args: self.kernel_init(*args) / depth_scaling
+      query_init = lambda *args: q_kernel_init(*args) / depth_scaling
 
     make_dense = functools.partial(
         dense.DenseGeneral,
@@ -708,7 +728,7 @@ class MultiHeadDotProductAttention(nn.Module, DenseAttention):
                          '(when inputs_q is inputs_kv).')
       # 'qkv' fusion mode implies self-attention
       qkv = make_dense(
-          kernel_init=self.kernel_init,
+          kernel_init=qkv_kernel_init,
           features=(3, self.num_heads, head_dim),
           kernel_axis_names=['embed', 'stack', 'heads', 'kv'],
           name='qkv_fused')(
@@ -724,7 +744,7 @@ class MultiHeadDotProductAttention(nn.Module, DenseAttention):
           name='query')(
               inputs_q)
       kv = make_dense(
-          kernel_init=self.kernel_init,
+          kernel_init=kv_kernel_init,
           features=(2, self.num_heads, head_dim),
           kernel_axis_names=['embed', 'stack', 'heads', 'kv'],
           name='kv_fused')(

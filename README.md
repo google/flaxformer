@@ -61,8 +61,11 @@ pip3 install '.[testing]'
 If you like, you can run the tests from pytest with the following invocation,
 
 ```
-python3 -m pytest
+export FLAX_LAZY_RNG=no; python3 -m pytest
 ```
+
+(`export FLAX_LAZY_RNG=no` is a workaround for recent Flax RNG changes, and
+future versions of Flaxformer will not require it.)
 
 ## Uninstalling
 

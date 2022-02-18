@@ -1,0 +1,11 @@
+# ByT5 XL model.
+# Provides MODEL
+
+include 'flaxformer/t5x/configs/t5/models/byt5_base.gin'  # imports vocab, optimizer and model.
+
+# Architecture overrides
+NUM_HEADS = 32
+NUM_ENCODER_LAYERS = 36
+NUM_DECODER_LAYERS = 12
+EMBED_DIM = 2560
+MLP_DIM = 6720

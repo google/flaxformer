@@ -1,4 +1,4 @@
-# Copyright 2021 Google LLC.
+# Copyright 2022 Google LLC.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -242,6 +242,47 @@ class EncoderDecoderTest(absltest.TestCase):
     # Check scan_layers=True results
     np.testing.assert_allclose(output4, output5, rtol=1.5e-5)
 
+  def test_scan_axis_annotations(self):
+    encoder_input_tokens = np.array(
+        [
+            # Batch 1.
+            [101, 183, 20, 75],
+            # Batch 2.
+            [101, 392, 19, 7],
+        ],
+        dtype=np.int32)
+    transformer = t5_test_utils.make_config1(
+        scan_layers=True, layer_remat='minimal')
+    variables = transformer.init(
+        random.PRNGKey(0),
+        encoder_input_tokens,
+        enable_dropout=False,
+        method=transformer.encode,
+    )
+
+    # Check that the code can run when `params_axes` is not mutable too.
+    transformer.apply(
+        variables,
+        encoder_input_tokens,
+        enable_dropout=False,
+        method=transformer.encode,
+    )
+
+    sharding.check_params_and_axis_names_match(variables)
+    for axis_names in jax.tree_leaves(sharding.get_axis_names(variables)):
+      for name in axis_names:
+        self.assertIn(
+            name, {
+                'embed', 'joined_kv', 'heads', 'head_dim', 'relpos_buckets',
+                'mlp', 'vocab', 'layers'
+            },
+            msg='unrecognized axis in variable')
+    expected_files.check_params_and_axes(
+        variables['params'],
+        variables['params_axes'],
+        'encoder_scanned_per_layer_relpos_bias.json',
+    )
+
   def test_entire_transformer_shared_embeds(self):
     encoder_input_tokens = np.zeros((16, 8), dtype=np.float32)
     decoder_input_tokens = np.zeros((16, 8), dtype=np.float32)
@@ -275,7 +316,7 @@ class EncoderDecoderTest(absltest.TestCase):
     )
     np.testing.assert_allclose(output, output2, rtol=1e-8)
 
-  def test_sow_axis_names(self):
+  def test_axis_names(self):
     encoder_input_tokens = np.zeros((16, 8), dtype=np.float32)
     decoder_input_tokens = np.zeros((16, 8), dtype=np.float32)
     decoder_target_tokens = np.zeros((16, 8), dtype=np.float32)

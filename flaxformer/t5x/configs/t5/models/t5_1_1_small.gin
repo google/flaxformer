@@ -1,0 +1,12 @@
+# T5.1.1 Small model.
+# Provides MODEL
+
+include 'flaxformer/t5x/configs/t5/models/t5_1_1_base.gin'  # imports vocab, optimizer and model.
+
+# Architecture overrides
+NUM_ENCODER_LAYERS = 8
+NUM_DECODER_LAYERS = 8
+NUM_HEADS = 6
+HEAD_DIM = 64
+EMBED_DIM = 512
+MLP_DIM = 1024
