@@ -365,6 +365,7 @@ def make_config3_shared_token_embedder() -> t5_architecture.EncoderDecoder:
   make_dropout = lambda: nn.Dropout(rate=0.1, broadcast_dims=(-2,))
   make_layer_norm = layer_norm.T5LayerNorm
   sow_intermediates = True
+  capture_gradients = True
 
   def _make_encoder_layer(shared_relative_position_bias):
     assert shared_relative_position_bias is None
@@ -398,6 +399,8 @@ def make_config3_shared_token_embedder() -> t5_architecture.EncoderDecoder:
         output_dropout_factory=make_dropout,
         layer_norm_factory=make_layer_norm,
         dtype=dtype,
+        sow_intermediates=sow_intermediates,
+        capture_gradients=capture_gradients,
     )
 
   def _make_decoder(*, shared_token_embedder=None):
@@ -410,6 +413,7 @@ def make_config3_shared_token_embedder() -> t5_architecture.EncoderDecoder:
         output_logits_factory=None,
         dtype=dtype,
         sow_intermediates=sow_intermediates,
+        capture_gradients=capture_gradients,
     )
 
   return t5_architecture.EncoderDecoder(

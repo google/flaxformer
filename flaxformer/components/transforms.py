@@ -19,7 +19,6 @@ import functools
 import inspect
 import flax
 from flax import linen as nn
-from flax.core.lift import In as ScanIn  # pylint: disable=unused-import
 from flax.core.lift import Out as ScanOut  # pylint: disable=unused-import
 from flax.linen import partitioning
 import jax
@@ -31,6 +30,8 @@ from jax.experimental.pjit import with_sharding_constraint as jax_pjit_wsc
 
 # Workaround a scan(remat(...)) abstraction bug by manually implementing a
 # static_argnums behavior for flax remat via closure before applying jax remat.
+
+ScanIn = partitioning.ScanIn  # used in t5_architecture.py
 
 
 def core_remat_static(fn,
@@ -133,8 +134,12 @@ def canonicalize_arguments(orig_fn):
         new_args.append(args[i])
       elif param.kind is param.KEYWORD_ONLY:
         new_kwargs[p] = args[i]
+      elif param.kind is param.VAR_POSITIONAL:
+        new_args.extend(args[i])
+      elif param.kind is param.VAR_KEYWORD:
+        new_kwargs.update(args[i])
       else:
-        raise ValueError('No support for VAR_POSITIONAL or VAR_KEYWORD.')
+        raise ValueError('Unknown signature parameter type.')
     return orig_fn(*new_args, **new_kwargs)
 
   # We don't use functools.wraps because we are changing the signature, but
@@ -206,11 +211,10 @@ def apply_transform_to_module_factory(trafo, factory, *args, **kwargs):
   return new_factory
 
 
-factory_remat = functools.partial(apply_transform_to_module_factory, remat)
-factory_scan = functools.partial(
-    apply_transform_to_module_factory,
-    partitioning.scan_with_axes,
-)
+factory_remat = functools.partial(apply_transform_to_module_factory,
+                                  partitioning.remat)
+factory_scan = functools.partial(apply_transform_to_module_factory,
+                                 partitioning.scan_with_axes)
 factory_vmap = functools.partial(apply_transform_to_module_factory, nn.vmap)
 
 # Scan inner-function SPMD re-annotation.

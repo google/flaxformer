@@ -153,7 +153,9 @@ def with_sharding_migration(
       if activation_partitioning_dims != 1:
         raise ValueError(
             'Both logical axis rules and activation_partitioning_dims'
-            ' were present!')
+            ' were present! This can typically be fixed by setting '
+            '`ACTIVATION_PARTITIONING_DIMS = None` in your configuration so '
+            'logical axis rules can be used instead.')
       else:
         return flax_partitioning.with_sharding_constraint(x, logical_axis_names)
   else:

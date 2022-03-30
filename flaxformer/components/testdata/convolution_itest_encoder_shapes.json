@@ -1,0 +1,55 @@
+{
+  "encoder": {
+    "encoder_norm": {
+      "conv": {
+        "conv_0": ["float32", "embed=512"],
+        "conv_1": ["float32", "embed=512"],
+        "conv_2": ["float32", "embed=512"]
+      }
+    },
+    "layers_0": {
+      "attention": {
+        "key": {
+          "kernel": ["float32", "embed=512", "joined_kv=384"]
+        },
+        "out": {
+          "kernel": ["float32", "joined_kv=384", "embed=512"]
+        },
+        "query": {
+          "kernel": ["float32", "embed=512", "joined_kv=384"]
+        },
+        "value": {
+          "kernel": ["float32", "embed=512", "joined_kv=384"]
+        }
+      },
+      "mlp": {
+        "intermediate_conv": {
+          "conv_0": ["float32", "mlp=1024"],
+          "conv_1": ["float32", "mlp=1024"],
+          "conv_2": ["float32", "mlp=1024"]
+        },
+        "wi_0": {
+          "kernel": ["float32", "embed=512", "mlp=1024"]
+        },
+        "wi_1": {
+          "kernel": ["float32", "embed=512", "mlp=1024"]
+        },
+        "wo": {
+          "kernel": ["float32", "mlp=1024", "embed=512"]
+        }
+      },
+      "pre_attention_layer_norm": {
+        "scale": ["float32", "embed=512"]
+      },
+      "pre_mlp_layer_norm": {
+        "scale": ["float32", "embed=512"]
+      }
+    },
+    "relpos_bias": {
+      "rel_embedding": ["float32", "heads=6", "relpos_buckets=32"]
+    }
+  },
+  "token_embedder": {
+    "embedding": ["float32", "vocab=32128", "embed=512"]
+  }
+}

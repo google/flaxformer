@@ -306,9 +306,10 @@ def dot_product_attention_multiquery(query: Array,
   Returns:
     Output of shape `[batch..., length, num_heads, v_depth_per_head]`.
   """
-  assert key.ndim == value.ndim, 'k, v must have same rank.'
+  assert key.ndim == value.ndim, (
+      f'k, v must have same rank. key: {key.shape}, value: {value.shape}')
   assert query.shape[:-3] == key.shape[:-2] == value.shape[:-2], (
-      'q, k, v batch dims must match.')
+      f'q, k, v batch dims must match. query: {query.shape}')
 
   assert key.shape[-2] == value.shape[-2], 'k, v lengths must match.'
   assert query.shape[-1] == key.shape[-1], 'q, k depths must match.'
@@ -998,6 +999,8 @@ class MultiQueryDotProductAttention(nn.Module, DenseAttention):
     precision: numerical precision of the computation see `jax.lax.Precision`
       for details.
     kernel_init: initializer for the kernel of the Dense layers.
+    q_kernel_init: optional initializer for the query (q) kernel. If None,
+      kernel_init will be used instead.
     bias_init: initializer for the bias of the Dense layers.
     attention_fn: dot_product_attention or compatible function. Accepts query,
       key, value, and returns output of shape `[bs, dim1, dim2, ..., dimN,,
@@ -1017,6 +1020,7 @@ class MultiQueryDotProductAttention(nn.Module, DenseAttention):
   dropout_rate: float = 0.
   precision: Optional[lax.Precision] = None
   kernel_init: Initializer = default_kernel_init
+  q_kernel_init: Optional[Initializer] = None
   bias_init: Initializer = initializers.zeros
   rescale_logits: bool = False
   attention_fn: Callable[[Array, Array, Array],
@@ -1186,6 +1190,10 @@ class MultiQueryDotProductAttention(nn.Module, DenseAttention):
     """
     validate_dense_attention_call_parameter_shapes(inputs_q, inputs_kv, mask,
                                                    bias, self.num_heads)
+    q_kernel_init = (
+        self.q_kernel_init
+        if self.q_kernel_init is not None else self.kernel_init)
+
     rotary_index = None
     features = self.out_features or inputs_q.shape[-1]
     qkv_features = self.qkv_features or inputs_q.shape[-1]
@@ -1196,10 +1204,10 @@ class MultiQueryDotProductAttention(nn.Module, DenseAttention):
 
     # Is attention logit rescaling explicit or folded into initializer?
     if self.rescale_logits:
-      query_init = self.kernel_init
+      query_init = q_kernel_init
     else:
       depth_scaling = jnp.sqrt(head_dim).astype(self.dtype)
-      query_init = lambda *args: self.kernel_init(*args) / depth_scaling
+      query_init = lambda *args: q_kernel_init(*args) / depth_scaling
 
     dense_query = functools.partial(
         dense.DenseGeneral,

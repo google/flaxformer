@@ -16,10 +16,10 @@
 
 # pylint: disable=attribute-defined-outside-init,g-bare-generic,g-multiple-import
 
-from typing import Any, Optional
+from typing import Any, Optional, Sequence
 
 from flax import linen as nn
-from flax.linen.module import Module
+from flax.linen import partitioning as flax_partitioning
 from flax.training import common_utils
 from jax import lax
 import jax.numpy as jnp
@@ -69,7 +69,7 @@ def roll_with_zeros_along_axis(x, distance, axis):
   return roll_with_zeros(x, shift)
 
 
-class Depthwise1dConv(Module):
+class Depthwise1dConv(nn.Module):
   """One-dimensional depthwise convolution.
 
   If autoregressive=True, then position `i` receives information from positions
@@ -83,6 +83,7 @@ class Depthwise1dConv(Module):
     autoregressive: Whether to only look left.
     dtype: the dtype of the computation (default: float32).
   """
+  axis_names: Sequence[str]
   radius: int = 2
   autoregressive: bool = True
   dtype: Any = jnp.float32
@@ -118,7 +119,13 @@ class Depthwise1dConv(Module):
         name = 'conv_m%d' % -shift_distance
       else:
         name = 'conv_%d' % shift_distance
-      return self.param(name, constant_init(init_value), features, jnp.float32)
+      return flax_partitioning.param_with_axes(
+          name,
+          constant_init(init_value),
+          features,
+          jnp.float32,
+          axes=tuple(self.axis_names),
+      )
 
     if prefill and decode:
       raise ValueError('prefill and decode cannot both be true at the same'

@@ -662,11 +662,15 @@ class AttentionTest(parameterized.TestCase):
       dict(
           testcase_name='multi_query',
           attn_class=dense_attention.MultiQueryDotProductAttention),
+      dict(
+          testcase_name='one_head',
+          attn_class=dense_attention.MultiHeadDotProductAttention,
+          num_heads=1),
   ])
-  def test_rotary_embedding_attention(self, attn_class):
+  def test_rotary_embedding_attention(self, attn_class, num_heads=3):
     """Makes sure enabling rotary embeddings works."""
     # b: batch, k: kv_len, h: num_head, d: head_dim t: sequence length
-    b, h, d, t = 2, 3, 4, 8
+    b, h, d, t = 2, num_heads, 4, 8
     ls = np.array([6, 4]).astype(np.int32)
     f = h * d
 

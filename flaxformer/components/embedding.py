@@ -254,9 +254,7 @@ class Embed(nn.Module, Embedder[Array]):
     else:
       output = jnp.asarray(self.embedding, self.dtype)[inputs]
     if input_axis_names is not None:
-      embedded_axes = tuple([*input_axis_names, self.axes[-1]])
-      output = activation_partitioning.with_sharding_migration(
-          output, 1, logical_axis_names=embedded_axes)
+      output = activation_partitioning.with_sharding(output, 1)
     return output
 
   def attend(self, query: Array) -> Array:
@@ -289,8 +287,15 @@ class MultiEmbed(nn.Module):
       the embedders in this dictionary. If the resulting embeddings are to be
       summed, the `embedding_size` attributes of all embedders need to match,
       but that is not a requirement in case they are to be concatenated.
+    sow_intermediates: whether to track intermediates using Module.sow.
+    capture_gradients: whether to track input gradients using a variable in the
+      `grads` collection. This captures the gradient of the (combined) embedded
+      inputs, i.e. the output of this module which is usually the input to the
+      first encoder layer.
   """
   embedders: Dict[str, Union[Embedder[Array], Callable[[Array], Array]]]
+  sow_intermediates: bool = False
+  capture_gradients: bool = False
 
   def get_individual_embeddings(
       self,
@@ -366,6 +371,7 @@ class MultiEmbed(nn.Module):
           f'Invalid combine_method {combine_method} given to combine_embeddings'
           '. Allowed values: sum, concat.'))
 
+  @nn.compact
   def __call__(self,
                combine_method: EmbedCombineMethod = EmbedCombineMethod.SUM,
                *,
@@ -389,13 +395,33 @@ class MultiEmbed(nn.Module):
       <float32>[..., embedding_size_1 + embedding_size_2 + ..] in case of
       concatenation.
     """
-    return self.combine_embeddings(
+    y = self.combine_embeddings(
         self.get_individual_embeddings(
             segment_ids=segment_ids,
             decode=decode,
             deterministic=deterministic,
             **input_kwargs),
         combine_method=combine_method)
+
+    # We sow the embedded (continuous) inputs and grads for feature attribution.
+    if self.sow_intermediates:
+      self.sow('intermediates', 'output', y)
+
+    if not self.sow_intermediates and self.capture_gradients:
+      raise ValueError('Must sow intermediates when capture_gradients is True.')
+    # Capture the gradients by adding a zeros variable that will catch grads.
+    # We only do this when `grads` is mutable because that prevents the grads
+    # variable from being added for `Model.predict`.
+    if (self.sow_intermediates and self.capture_gradients and
+        self.scope.is_mutable_collection('grads')):
+      eps = partitioning.variable_with_axes(
+          'grads',
+          'output_grad',
+          lambda: jnp.zeros_like(y),
+          axes=('batch', 'length', 'embed'))
+      y = y + eps.value
+
+    return y
 
 
 class FixedEmbed(nn.Module, EmbedderWithDecode[Array]):
@@ -554,7 +580,7 @@ def apply_rotary_embedding(q,
     kcos, ksin = kcos[:, :, :1, :], ksin[:, :, :1, :]
   out_q = (q * qcos) + (rotate_half(q) * qsin)
   out_k = (k * kcos) + (rotate_half(k) * ksin)
-  if out_k.shape[2] == 1:
+  if out_q.shape[2] > 1 and out_k.shape[2] == 1:
     out_k = jnp.squeeze(out_k, 2)
   return out_q, out_k
 

@@ -371,6 +371,14 @@ class EncoderDecoderTest(absltest.TestCase):
     self.assertLen(pre_logits, 1)
     self.assertEqual(pre_logits[0].shape, (16, 8, 13))
 
+    encoder_embedded_inputs = intermediates['encoder']['embedder']['output']
+    self.assertLen(encoder_embedded_inputs, 1)
+    self.assertEqual(encoder_embedded_inputs[0].shape, (16, 8, 13))
+
+    decoder_embedded_inputs = intermediates['decoder']['embedder']['output']
+    self.assertLen(decoder_embedded_inputs, 1)
+    self.assertEqual(decoder_embedded_inputs[0].shape, (16, 8, 13))
+
     encoder_num_layers = 3
     decoder_num_layers = 2
 
@@ -383,6 +391,50 @@ class EncoderDecoderTest(absltest.TestCase):
       activations = intermediates['decoder'][f'layers_{i}']['activations']
       self.assertLen(activations, 1)
       self.assertEqual(activations[0].shape, (16, 8, 13))
+
+  def test_capture_input_gradients(self):
+    """Tests that the input grads are captured."""
+    rs = np.random.RandomState(0)  # Need nonzero inputs to get nonzero grads.
+    encoder_input_tokens = rs.randint(0, 71, size=(16, 8), dtype=np.int32)
+    decoder_input_tokens = rs.randint(0, 71, size=(16, 8), dtype=np.int32)
+    decoder_target_tokens = rs.randint(0, 71, size=(16, 8), dtype=np.int32)
+
+    transformer = t5_test_utils.make_config3_shared_token_embedder()
+    variables = transformer.init(
+        random.PRNGKey(0),
+        encoder_input_tokens=encoder_input_tokens,
+        decoder_input_tokens=decoder_input_tokens,
+        decoder_target_tokens=decoder_target_tokens,
+        enable_dropout=False,
+    )
+
+    # On initialization there should be empty grads.
+    self.assertContainsSubset(('grads',), variables)
+
+    def fake_loss(variables, encoder_input_tokens, decoder_input_tokens,
+                  decoder_target_tokens):
+      """Returns a loss."""
+      output, _ = transformer.apply(
+          variables,
+          encoder_input_tokens=encoder_input_tokens,
+          decoder_input_tokens=decoder_input_tokens,
+          decoder_target_tokens=decoder_target_tokens,
+          enable_dropout=False,
+          mutable=['grads'])  # Needed to enable gradient capture.
+      return output.sum()
+
+    grad_fn = jax.grad(fake_loss)
+    grads_variables = grad_fn(variables, encoder_input_tokens,
+                              decoder_input_tokens, decoder_target_tokens)
+    grads = grads_variables['grads']
+
+    encoder_embedder_grad = grads['encoder']['embedder']['output_grad']
+    self.assertEqual(encoder_embedder_grad.shape, (16, 8, 13))
+    self.assertNotAlmostEqual(encoder_embedder_grad.sum(), 0.0)
+
+    decoder_embedder_grad = grads['decoder']['embedder']['output_grad']
+    self.assertEqual(decoder_embedder_grad.shape, (16, 8, 13))
+    self.assertNotAlmostEqual(decoder_embedder_grad.sum(), 0.0)
 
 
 class DecoderOnlyTest(absltest.TestCase):

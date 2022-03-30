@@ -105,7 +105,8 @@ class ParallelFusedDecoderLayer(nn.Module, param_remapping.ParameterRemappable):
         dtype=self.self_attention.dtype,
         kernel_init=self.self_attention.kernel_init,
         bias_init=self.self_attention.bias_init,
-        reshape_kernel=False)
+        reshape_kernel=False,
+        kernel_axis_names=('embed', 'heads', 'q_wi_fused'))
     self.kv_fused = dense.DenseGeneral(
         axis=-1,
         features=(1, 2 * head_dim),
@@ -113,7 +114,8 @@ class ParallelFusedDecoderLayer(nn.Module, param_remapping.ParameterRemappable):
         dtype=self.self_attention.dtype,
         kernel_init=self.self_attention.kernel_init,
         bias_init=self.self_attention.bias_init,
-        reshape_kernel=False)
+        reshape_kernel=False,
+        kernel_axis_names=('embed', 'multiquery_heads', 'kv_fused'))
     self.o_wo_fused = dense.DenseGeneral(
         axis=(-2, -1),
         features=embed_dim,
@@ -121,7 +123,9 @@ class ParallelFusedDecoderLayer(nn.Module, param_remapping.ParameterRemappable):
         dtype=self.self_attention.dtype,
         kernel_init=self.self_attention.kernel_init,
         bias_init=self.self_attention.bias_init,
-        reshape_kernel=False)
+        reshape_kernel=False,
+        # o_wo_fused = mlp//heads + head_dim
+        kernel_axis_names=('heads', 'o_wo_fused', 'embed'))
 
   @nn.compact
   def __call__(self,
@@ -209,11 +213,14 @@ class ParallelFusedDecoderLayer(nn.Module, param_remapping.ParameterRemappable):
     n_activations = len(self.mlp.activations)
     mlp_intermediate_dim = self.mlp.intermediate_dim
     # Use local fused Q + W_i to calculate fused results.
+    # [batch, length, embed], [heads, mlp//heads * n_act + head_dim] ->
+    # [batch, length, heads, mlp//heads * n_act + head_dim]
     q_wi = self.q_wi_fused(x)
     # Slice out query.
     query = lax.dynamic_slice_in_dim(q_wi, 0, head_dim, -1)
     # Slice out MLP inputs.
     int_size = mlp_intermediate_dim // num_heads
+    # wi[i]: [batch, length, heads, mlp//heads]
     wi = [
         lax.dynamic_slice_in_dim(q_wi, head_dim + i * int_size, int_size, -1)
         for i in range(n_activations)
@@ -228,6 +235,7 @@ class ParallelFusedDecoderLayer(nn.Module, param_remapping.ParameterRemappable):
         lax.dynamic_slice_in_dim(kv, head_dim, head_dim, -1), -2)
     precomputed_qkv = (query, key, value)
 
+    # y_att: [batch, length, heads, head_dim]
     y_att = self.self_attention(
         x,
         x,
@@ -238,12 +246,14 @@ class ParallelFusedDecoderLayer(nn.Module, param_remapping.ParameterRemappable):
         decode=decode,
         prefill=prefill,
         prefill_lengths=prefill_lengths)
+    # y_mlp: [batch, length, heads, mlp//heads]
     y_mlp = self.mlp(
         wi,
         decode=decode,
         prefill=prefill,
         prefill_lengths=prefill_lengths,
         enable_dropout=enable_dropout)
+    # y_fused: [batch, length, heads, mlp//heads + head_dim]
     y_fused = jnp.concatenate([y_att, y_mlp], axis=-1)
     y_out = self.o_wo_fused(y_fused)
     # y *= 2**-0.5

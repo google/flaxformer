@@ -20,6 +20,10 @@ import functools
 import operator
 from typing import Any, Callable, Iterable, Mapping, Optional, Sequence, Tuple, Union
 
+from aqt.jax_legacy.jax import flax_layers as aqt_flax_layers
+from aqt.jax_legacy.jax import quant_config as aqt_config
+from aqt.jax_legacy.jax import quantization as aqt
+
 from flax import linen as nn
 from flax.core import frozen_dict
 from flax.linen import partitioning
@@ -32,10 +36,6 @@ from flaxformer import activation_partitioning
 from flaxformer.types import Array
 from flaxformer.types import DType
 from flaxformer.types import Initializer
-
-from aqt import flax_layers as aqt_flax_layers
-from aqt import quant_config as aqt_config
-from aqt import quantization as aqt
 
 
 #------------------------------------------------------------------------------
@@ -267,8 +267,8 @@ class MlpBlock(nn.Module):
             weight_prec=self.weight_params.prec,
             weight_half_shift=self.weight_params.half_shift,
             quant_act=self.act_params,  # currently supports fixed bounds only.
-            quant_type=aqt.QuantType.aqt,
-            weight_quant_granularity=aqt_config.QuantGranularity.per_channel,
+            quant_type=aqt.QuantType.AQT,
+            weight_quant_granularity=aqt_config.QuantGranularity.PER_CHANNEL,
         )
         batch, seq_len, channels = inputs.shape
         inputs = inputs.reshape((batch * seq_len, channels))
@@ -377,7 +377,8 @@ class MlpBlock(nn.Module):
     # they should result in 2D sharding. We don't need to raise errors if both
     # result in 2D sharding (which with_sharding_migration does).
     if partitioning.get_axis_rules():
-      x = partitioning.with_sharding_constraint(x, ('batch', 'length', 'mlp'))
+      x = partitioning.with_sharding_constraint(
+          x, logical_axis_resources=_get_logical_axes(x))
     else:
       x = activation_partitioning.with_sharding(
           x, self.activation_partitioning_dims)
@@ -397,3 +398,16 @@ class MlpBlock(nn.Module):
             rate=self.final_dropout_rate, broadcast_dims=(-2,))(
                 output, deterministic=not enable_dropout)
     return output
+
+
+def _get_logical_axes(x: Array) -> Tuple[str, ...]:
+  """Returns array-shape-dependent logical axis resources."""
+  if x.ndim == 2:
+    return ('length', 'mlp')
+  elif x.ndim == 3:
+    return ('batch', 'length', 'mlp')
+  elif x.ndim == 4:
+    return ('batch', 'length', 'heads', 'mlp_per_head')
+  else:
+    raise ValueError(
+        f'Unexpected array shape. Cannot partition array of shape {x.shape}')

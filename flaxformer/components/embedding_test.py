@@ -199,6 +199,42 @@ class MultiEmbedTest(parameterized.TestCase):
     self.assertIn('segment_embed', embeddings)
     self.assertIn('position_embed', embeddings)
 
+  def test_multi_embed_returns_nonempty_gradient(self):
+    """Tests that we can capture a non-empty gradient from MultiEmbed."""
+    features = 5
+    embedders = {
+        'token_embed': nn.Embed(num_embeddings=10, features=features),
+        'segment_embed': nn.Embed(num_embeddings=2, features=features),
+        'position_embed': nn.Embed(num_embeddings=12, features=features)
+    }
+    model = embedding.MultiEmbed(
+        embedders, sow_intermediates=True, capture_gradients=True)
+    token_ids = np.array([[0, 1, 2], [3, 4, 5]], dtype=np.int64)
+    segment_ids = np.array([[0, 1, 1], [0, 0, 1]], dtype=np.int64)
+    position_ids = np.arange(3, dtype=np.int64)[None]
+    variables = model.init(
+        jax.random.PRNGKey(0),
+        token_embed=token_ids,
+        segment_embed=segment_ids,
+        position_embed=position_ids)
+    self.assertContainsSubset(('grads',), variables)
+
+    def fake_loss(variables, token_ids, segment_ids, position_ids):
+      """Returns a loss."""
+      output, _ = model.apply(
+          variables,
+          token_embed=token_ids,
+          segment_embed=segment_ids,
+          position_embed=position_ids,
+          mutable=['grads'])
+      return output.sum()
+
+    grad_fn = jax.grad(fake_loss)
+    grads_variables = grad_fn(variables, token_ids, segment_ids, position_ids)
+    grads = grads_variables['grads']
+    self.assertContainsSubset(('output_grad',), grads)
+    self.assertNotAlmostEqual(grads['output_grad'].sum(), 0.0)
+
 
 class EmbeddingTest(parameterized.TestCase):
 

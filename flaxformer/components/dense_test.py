@@ -15,9 +15,12 @@
 """Tests for dense modules."""
 
 import functools
+from unittest import mock
 
 from absl.testing import absltest
 from absl.testing import parameterized
+
+from aqt.jax_legacy.jax import quantization as aqt
 from flax import linen as nn
 from flax.linen import partitioning
 import jax
@@ -30,7 +33,6 @@ import numpy as np
 from flaxformer import sharding
 from flaxformer import testing_utils
 from flaxformer.components import dense
-from aqt import quantization as aqt
 
 # Parse absl flags test_srcdir and test_tmpdir.
 jax.config.parse_flags_with_absl()
@@ -255,6 +257,51 @@ class DenseTest(parameterized.TestCase):
           [0.3944840431213379, 0.11068470776081085, -0.10629311949014664]]],
         rtol=1e-6,
     )
+
+  def test_mlp_input_shapes(self):
+    module = dense.MlpBlock(
+        use_bias=False,
+        intermediate_dim=4,
+        activations=('relu',),
+        kernel_init=nn.initializers.xavier_uniform(),
+        bias_init=nn.initializers.normal(stddev=1e-6),
+        dtype=jnp.float32,
+    )
+    axis_rules = [('batch', 'data'), ('embed', None), ('length', None),
+                  ('mlp', 'model')]
+
+    # 2D inputs.
+    inputs = np.array(
+        [
+            [1, 2, 3],  # Batch 1.
+            [4, 5, 6],  # Batch 2.
+        ],
+        dtype=np.float32)
+    with mock.patch(
+        'flax.linen.partitioning._AxisRules.rules',
+        new_callable=mock.PropertyMock,
+        return_value=axis_rules):
+      result, _ = module.init_with_output(
+          random.PRNGKey(0), inputs, enable_dropout=False)
+    expected_result = [
+        [-1.1747245788574219, 0.052123069763183594, 0.38737666606903076],  #
+        [-2.513984203338623, 0.18524789810180664, 0.8085305690765381]
+    ]
+    np.testing.assert_allclose(
+        result.tolist(),
+        expected_result,
+        rtol=1e-6,
+    )
+
+    # 3D inputs
+    inputs_with_batch_dim = inputs[np.newaxis, ...]
+    with mock.patch(
+        'flax.linen.partitioning._AxisRules.rules',
+        new_callable=mock.PropertyMock,
+        return_value=axis_rules):
+      batch_result, _ = module.init_with_output(
+          random.PRNGKey(0), inputs_with_batch_dim, enable_dropout=False)
+    np.testing.assert_allclose(batch_result, result[np.newaxis, ...])
 
   def test_mlp_quantized_weights(self):
     weight_params = aqt.QuantOps.WeightParams(

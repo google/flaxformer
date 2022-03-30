@@ -654,6 +654,11 @@ class Encoder(nn.Module, param_remapping.ParameterRemappable):
       between both encoder and decoder.
     position_embedder_factory: A callable that returns an absolute position
       embedder. Only provide this if you want absolute position embeddings.
+    scan_axis: axis over which to do scan over layers.
+    sow_intermediates: whether to track intermediates using Module.sow.
+    capture_gradients: whether to track input gradients using a variable in the
+      `grads` collection. This captures the gradient of the (combined) embedded
+      inputs, i.e. the input to the first encoder layer.
   """
   layer_factory: MakeEncoderLayerFn
   input_dropout_factory: Callable[[], nn.Module]
@@ -666,6 +671,7 @@ class Encoder(nn.Module, param_remapping.ParameterRemappable):
   spmd_annotations: Any = None
   shared_relative_position_bias_factory: Optional[Callable[[],
                                                            nn.Module]] = None
+  scan_axis: int = 1
 
   # Embedders: Either a token_embedder_factory factory or shared token embedder
   # must be provided. The position embedder is optional and provided when
@@ -675,6 +681,8 @@ class Encoder(nn.Module, param_remapping.ParameterRemappable):
   shared_token_embedder: Optional[embedding.Embed] = None
   position_embedder_factory: Optional[Callable[
       [], embedding.Embedder[Array]]] = None
+  sow_intermediates: bool = False
+  capture_gradients: bool = False
 
   def setup(self):
     # Set up the embedders.
@@ -695,7 +703,10 @@ class Encoder(nn.Module, param_remapping.ParameterRemappable):
       self.position_embedder_factory: Callable[[], embedding.Embed]
       self.position_embedder = self.position_embedder_factory()
       embedders['position_ids'] = self.position_embedder
-    self.embedder = embedding.MultiEmbed(embedders)
+    self.embedder = embedding.MultiEmbed(
+        embedders,
+        sow_intermediates=self.sow_intermediates,
+        capture_gradients=self.capture_gradients)
 
     self.input_dropout = self.input_dropout_factory()
 
@@ -715,9 +726,10 @@ class Encoder(nn.Module, param_remapping.ParameterRemappable):
       self.encoder = common.TransparentLayerSequence(self.layers)
     else:
       initializing = self.is_mutable_collection('params')
-      # We scan the parameters along axis 1 as an XLA layout optimization.
-      SCAN_AXIS = 1  # pylint: disable=invalid-name
-      params_spec = SCAN_AXIS if initializing else transforms.ScanIn(SCAN_AXIS)
+      # We scan the parameters along axis scan_axis (default=1)
+      # as an XLA layout optimization.
+      params_spec = self.scan_axis if initializing else transforms.ScanIn(
+          self.scan_axis)
       cache_spec = 0
       scan_annotation = (
           self.spmd_annotations['encoder']
@@ -734,7 +746,8 @@ class Encoder(nn.Module, param_remapping.ParameterRemappable):
               'dropout': True
           },
           length=self.num_layers,
-          data_transform=transforms.inner_scan_spmd(scan_annotation, SCAN_AXIS),
+          data_transform=transforms.inner_scan_spmd(scan_annotation,
+                                                    self.scan_axis),
       )
       self.encoder = lyrf()
     self.encoder_norm = self.layer_norm_factory()
@@ -860,6 +873,10 @@ class Decoder(nn.Module, param_remapping.ParameterRemappable):
     position_embedder_factory: A callable that returns an absolute position
       embedder. Only provide this if you want absolute position embeddings.
     sow_intermediates: whether to track intermediates using Module.sow.
+    scan_axis: axis over which to do scan over layers.
+    capture_gradients: whether to track input gradients using a variable in the
+      `grads` collection. This captures the gradient of the (combined) embedded
+      inputs, i.e. the input to the first encoder layer.
   """
   layer_factory: MakeDecoderLayerFn
   dropout_factory: Callable[[], nn.Module]
@@ -883,6 +900,8 @@ class Decoder(nn.Module, param_remapping.ParameterRemappable):
       [], embedding.Embedder[Array]]] = None
 
   sow_intermediates: bool = False
+  scan_axis: int = 1
+  capture_gradients: bool = False
 
   def setup(self):
     # Set up the embedders.
@@ -903,7 +922,10 @@ class Decoder(nn.Module, param_remapping.ParameterRemappable):
       self.position_embedder_factory: Callable[[], embedding.Embed]
       self.position_embedder = self.position_embedder_factory()
       embedders['position_ids'] = self.position_embedder
-    self.embedder = embedding.MultiEmbed(embedders)
+    self.embedder = embedding.MultiEmbed(
+        embedders,
+        sow_intermediates=self.sow_intermediates,
+        capture_gradients=self.capture_gradients)
 
     self.input_dropout = self.dropout_factory()
 
@@ -926,9 +948,10 @@ class Decoder(nn.Module, param_remapping.ParameterRemappable):
       self.decoder = common.TransparentLayerSequence(self.layers)
     else:
       initializing = self.is_mutable_collection('params')
-      # We scan the parameters along axis 1 as an XLA layout optimization.
-      SCAN_AXIS = 1  # pylint: disable=invalid-name
-      params_spec = SCAN_AXIS if initializing else transforms.ScanIn(SCAN_AXIS)
+      # We scan the parameters along scan_axis (default =1) as
+      # an XLA layout optimization.
+      params_spec = self.scan_axis if initializing else transforms.ScanIn(
+          self.scan_axis)
       cache_spec = 0
       scan_annotation = (
           self.spmd_annotations['decoder']
@@ -947,7 +970,9 @@ class Decoder(nn.Module, param_remapping.ParameterRemappable):
               'dropout': True
           },
           length=self.num_layers,
-          data_transform=transforms.inner_scan_spmd(scan_annotation, SCAN_AXIS),
+          data_transform=transforms.inner_scan_spmd(scan_annotation,
+                                                    self.scan_axis),
+          axis_name='layers',
       )
       self.decoder = lyrf()
 
