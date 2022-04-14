@@ -62,10 +62,11 @@ class RelativePositionBiasesGeneralTest(absltest.TestCase):
         random.PRNGKey(0), rp_bucket)
     self.assertEqual(outputs.shape,
                      (1, self.num_heads, self.query_len, self.key_len))
-    self.assertAlmostEqual(outputs[0, 0, 0, 0], 0.55764728, places=5)
-    self.assertAlmostEqual(outputs[0, 1, 2, 1], -0.10935841, places=5)
-    self.assertAlmostEqual(outputs[0, 1, 4, 6], 0.14510104, places=5)
-    self.assertAlmostEqual(outputs[0, 2, 4, 6], -0.36783996, places=5)
+
+    self.assertAlmostEqual(outputs[0, 0, 0, 0], -0.1094, places=5)
+    self.assertAlmostEqual(outputs[0, 1, 2, 1], -0.22087, places=5)
+    self.assertAlmostEqual(outputs[0, 1, 4, 6], 0.27360, places=5)
+    self.assertAlmostEqual(outputs[0, 2, 4, 6], -0.31798, places=5)
 
   def test_relative_attention_unidirectional_params(self):
     """Tests that unidirectional relative position biases have expected params."""
@@ -90,10 +91,11 @@ class RelativePositionBiasesGeneralTest(absltest.TestCase):
         random.PRNGKey(0), rp_bucket)
     self.assertEqual(outputs.shape,
                      (1, self.num_heads, self.query_len, self.key_len))
-    self.assertAlmostEqual(outputs[0, 0, 0, 0], 0.55764728, places=5)
-    self.assertAlmostEqual(outputs[0, 1, 2, 1], -0.10935841, places=5)
-    self.assertAlmostEqual(outputs[0, 1, 4, 6], -0.13101986, places=5)
-    self.assertAlmostEqual(outputs[0, 2, 4, 6], 0.39296466, places=5)
+
+    self.assertAlmostEqual(outputs[0, 0, 0, 0], -0.109404, places=5)
+    self.assertAlmostEqual(outputs[0, 1, 2, 1], -0.220874, places=5)
+    self.assertAlmostEqual(outputs[0, 1, 4, 6], -0.189960, places=5)
+    self.assertAlmostEqual(outputs[0, 2, 4, 6], 0.366049, places=5)
 
 
 if __name__ == '__main__':

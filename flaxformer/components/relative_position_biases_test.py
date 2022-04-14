@@ -60,10 +60,10 @@ class RelativePositionBiasesTest(absltest.TestCase):
         random.PRNGKey(0), self.query_len, self.key_len, bidirectional=True)
     self.assertEqual(outputs.shape,
                      (1, self.num_heads, self.query_len, self.key_len))
-    self.assertAlmostEqual(outputs[0, 0, 0, 0], 0.55764728, places=5)
-    self.assertAlmostEqual(outputs[0, 1, 2, 1], -0.10935841, places=5)
-    self.assertAlmostEqual(outputs[0, 1, 4, 6], 0.14510104, places=5)
-    self.assertAlmostEqual(outputs[0, 2, 4, 6], -0.36783996, places=5)
+    self.assertAlmostEqual(outputs[0, 0, 0, 0], -0.10940, places=5)
+    self.assertAlmostEqual(outputs[0, 1, 2, 1], -0.22087, places=5)
+    self.assertAlmostEqual(outputs[0, 1, 4, 6], 0.27360, places=5)
+    self.assertAlmostEqual(outputs[0, 2, 4, 6], -0.31798, places=5)
 
   def test_relative_attention_unidirectional_params(self):
     """Tests that unidirectional relative position biases have expected params."""
@@ -88,10 +88,11 @@ class RelativePositionBiasesTest(absltest.TestCase):
         random.PRNGKey(0), self.query_len, self.key_len, bidirectional=False)
     self.assertEqual(outputs.shape,
                      (1, self.num_heads, self.query_len, self.key_len))
-    self.assertAlmostEqual(outputs[0, 0, 0, 0], 0.55764728, places=5)
-    self.assertAlmostEqual(outputs[0, 1, 2, 1], -0.10935841, places=5)
-    self.assertAlmostEqual(outputs[0, 1, 4, 6], -0.13101986, places=5)
-    self.assertAlmostEqual(outputs[0, 2, 4, 6], 0.39296466, places=5)
+
+    self.assertAlmostEqual(outputs[0, 0, 0, 0], -0.10940, places=5)
+    self.assertAlmostEqual(outputs[0, 1, 2, 1], -0.22087, places=5)
+    self.assertAlmostEqual(outputs[0, 1, 4, 6], -0.18996, places=5)
+    self.assertAlmostEqual(outputs[0, 2, 4, 6], 0.3660492, places=5)
 
   def test_relative_attention_decode_cache_error_with_init(self):
     """Tests that relative embedding init fails with decode == True."""
@@ -155,10 +156,10 @@ class RelativePositionBiasesTest(absltest.TestCase):
 
     cached_bias = state['cache']['cached_bias']
 
-    self.assertAlmostEqual(cached_bias[0, 0, 0, 0], 0.55764728, places=5)
-    self.assertAlmostEqual(cached_bias[0, 1, 2, 1], -0.10935841, places=5)
-    self.assertAlmostEqual(cached_bias[0, 1, 4, 6], -0.13101986, places=5)
-    self.assertAlmostEqual(cached_bias[0, 2, 4, 6], 0.39296466, places=5)
+    self.assertAlmostEqual(outputs[0, 0, 0, 0], -0.10940, places=5)
+    self.assertAlmostEqual(outputs[0, 1, 2, 1], -0.22087, places=5)
+    self.assertAlmostEqual(outputs[0, 1, 4, 6], -0.18996, places=5)
+    self.assertAlmostEqual(outputs[0, 2, 4, 6], 0.3660492, places=5)
 
     np.testing.assert_array_equal(outputs, state['cache']['cached_bias'])
 

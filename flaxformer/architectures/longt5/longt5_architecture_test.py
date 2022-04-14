@@ -596,13 +596,13 @@ class LongEncoderDecoderTest(absltest.TestCase):
     # Check that the first element matches, which is entire first batch of the
     # padded setup, and the first 3 "tokens" of the packed example.
     np.testing.assert_allclose(
-        output[0, :, :], output_packed[0, 0:4, :], rtol=1e-4)
+        output[0, :, :], output_packed[0, 0:4, :], rtol=1e-4, atol=1e-4)
 
     # Check that the second element matches, which is the first 3 "tokens" of
     # the padded example's second batch, and the last 3 of tokens the packed
     # example's first batch.
     np.testing.assert_allclose(
-        output[1, 0:3, :], output_packed[0, 4:7, :], rtol=1e-4)
+        output[1, 0:3, :], output_packed[0, 4:7, :], rtol=1e-4, atol=1e-4)
 
   def test_scan_and_remat(self):
     """Tests if encoder returns the same output for different scan/remat."""

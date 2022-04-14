@@ -178,7 +178,7 @@ class EncoderDecoderTest(absltest.TestCase):
     # the padded example's second batch, and the last 3 of tokens the packed
     # example's first batch.
     np.testing.assert_allclose(
-        output[1, 0:3, :], output_packed[0, 4:7, :], rtol=1e-4)
+        output[1, 0:3, :], output_packed[0, 4:7, :], rtol=1e-4, atol=1e-4)
 
   def test_scan_and_remat(self):
     """Tests if encoder returns the same output for different scan/remat."""

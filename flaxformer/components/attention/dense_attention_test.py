@@ -24,7 +24,6 @@ from absl.testing import absltest
 from absl.testing import parameterized
 from aqt.jax_legacy.jax import quantization as aqt
 from flax import linen as nn
-import flax.config
 from flax.core import freeze
 from flax.linen import partitioning as flax_partitioning
 import jax
@@ -102,11 +101,6 @@ class SelfAttentionArgs:
 
 
 class AttentionTest(parameterized.TestCase):
-
-  def setUp(self):
-    super().setUp()
-    # TODO: Remove this workaround.
-    flax.config.flax_lazy_rng = True
 
   def _mock_initializer(self, key, shape, dtype=jnp.float_, val=1.0):  # pylint: disable=unused-argument
     return jnp.ones(shape, dtypes.canonicalize_dtype(dtype)) * val
@@ -1462,11 +1456,6 @@ class AttentionTest(parameterized.TestCase):
 
 class LocalAttentionLayerTest(parameterized.TestCase):
 
-  def setUp(self):
-    super().setUp()
-    # TODO: Remove this workaround.
-    flax.config.flax_lazy_rng = True
-
   @parameterized.parameters(
       itertools.product(
           [True, False],
@@ -1516,11 +1505,6 @@ class LocalAttentionLayerTest(parameterized.TestCase):
 
 
 class QuantizedAttentionTest(parameterized.TestCase):
-
-  def setUp(self):
-    super().setUp()
-    # TODO: Remove this workaround.
-    flax.config.flax_lazy_rng = True
 
   def test_quantization_no_params_specified(self):
     module = dense_attention.MultiQueryDotProductAttention(
