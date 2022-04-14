@@ -1,0 +1,80 @@
+# Top-2 "tokens choose experts routing" MoE Base model.
+# Provides MODEL
+
+from __gin__ import dynamic_registration
+
+from flaxformer.architectures.moe import moe_enums
+from flaxformer.architectures.moe import moe_layers
+from flaxformer.architectures.moe import routing
+import seqio
+from t5x import adafactor
+from t5x.contrib.moe import adafactor_utils
+from t5x.contrib.moe import models
+
+ARCHITECTURE = %gin.REQUIRED
+NUM_EXPERTS = %gin.REQUIRED
+
+include 'flaxformer/t5x/configs/moe/architectures/moe.gin'
+
+# Architecture overrides
+NUM_ENCODER_LAYERS = 12
+NUM_DECODER_LAYERS = 12
+NUM_HEADS = 12
+HEAD_DIM = 64
+EMBED_DIM = 768
+MLP_DIM = 2048
+
+# MoE overrides
+# Replace every fourth dense MLP sublayer with MoE sublayer.
+NUM_ENCODER_SPARSE_LAYERS = 3
+NUM_DECODER_SPARSE_LAYERS = 3
+TRAIN_EXPERT_CAPACITY_FACTOR = 1.25
+EVAL_EXPERT_CAPACITY_FACTOR = 2.
+EXPERT_MLP_DIM = %MLP_DIM
+NUM_SELECTED_EXPERTS = 2  # Top-2 routing
+# Router computations are performed on a per-group basis. Smaller group sizes
+# are faster, but may be slightly less stable.
+GROUP_SIZE = 4096
+EXPERT_DROPOUT_RATE = 0.0
+AUX_LOSS_FACTOR = 0.01
+ROUTER_Z_LOSS_FACTOR = 0.0
+
+SCALE = 0.1  # Small weight initialization for stability
+
+# Tokens choose routing typically sees a boost from BPR.
+sparse_encoder/routing.TokensChooseMaskedRouter.batch_prioritized_routing = True
+# BPR breaks autoregressive behavior so we don't use it in the decoder.
+
+# Vocabulary (shared by encoder and decoder)
+VOCABULARY = @seqio.SentencePieceVocabulary()
+seqio.SentencePieceVocabulary.sentencepiece_model_file = "gs://t5-data/vocabs/cc_all.32000.100extra/sentencepiece.model"
+NUM_EMBEDDINGS = 32128  # vocab size rounded to a multiple of 128 for TPU efficiency
+
+# Optimizer
+# `learning_rate` is set by `Trainer.learning_rate_fn`.
+OPTIMIZER = @adafactor.Adafactor()
+adafactor.Adafactor:
+  decay_rate = 0.8
+  step_offset = 0
+  logical_factor_rules = @adafactor_utils.logical_factor_rules()
+
+# Loss HParam defaults
+Z_LOSS = 0.0001
+LABEL_SMOOTHING = 0.0
+# Normalize loss to match MeshTF MoE setups -- to balance MoE auxiliary load
+# balancing loss and router z-loss. The loss normalizing factor should be set
+# to: pretraining batch_size * target_token_length (default: 2048 * 114).
+LOSS_NORMALIZING_FACTOR = 233472
+
+# Model
+MODEL = @models.MoeEncoderDecoderModel()
+models.MoeEncoderDecoderModel:
+  module = %ARCHITECTURE  # provided by moe.gin
+  input_vocabulary = %VOCABULARY
+  output_vocabulary = %VOCABULARY
+  optimizer_def = %OPTIMIZER
+  z_loss = %Z_LOSS
+  label_smoothing = %LABEL_SMOOTHING
+  loss_normalizing_factor = %LOSS_NORMALIZING_FACTOR
+  aux_loss_factor = %AUX_LOSS_FACTOR
+  router_z_loss_factor = %ROUTER_Z_LOSS_FACTOR

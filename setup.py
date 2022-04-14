@@ -27,7 +27,7 @@ except IOError:
 install_requires = [
     "numpy>=1.12",
     "jax>=0.2.21",
-    "flax>=0.3.6",
+    "flax>=0.4.1",
     "aqtp[jax_legacy]>=0.0.6",
 ]
 
@@ -38,7 +38,7 @@ tests_require = [
 
 setup(
     name="flaxformer",
-    version="0.2.2",
+    version="0.3.0",
     description="Flaxformer: Transformer implementations in Flax",
     long_description="\n\n".join([README]),
     long_description_content_type="text/markdown",

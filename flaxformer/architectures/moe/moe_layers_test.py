@@ -1,0 +1,266 @@
+# Copyright 2022 Google LLC.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""Tests for moe_layers."""
+
+import functools
+from typing import Any, Dict, Mapping
+from unittest import mock
+
+from absl.testing import absltest
+from absl.testing import parameterized
+import flax
+import jax
+from jax import numpy as jnp
+import numpy as np
+
+from flaxformer.architectures.moe import moe_layers
+from flaxformer.architectures.moe import routing
+from flaxformer.components import dense
+
+# Type Stubs
+FrozenDict = flax.core.frozen_dict.FrozenDict
+MoeLayer = moe_layers.MoeLayer
+PRNGKey = Any
+
+NUM_CLASSES = 2
+
+
+def init_layer_variables(
+    key: PRNGKey, module: MoeLayer,
+    init_batch: Mapping[str, jnp.ndarray]) -> Dict[str, Any]:
+  """Initialize layer parameters."""
+  params_key, dropout_key, jitter_key = jax.random.split(key, num=3)
+
+  return module.init(
+      {
+          'params': params_key,
+          'dropout': dropout_key,
+          'jitter': jitter_key
+      }, **init_batch)
+
+
+class MoeLayerTest(parameterized.TestCase):
+
+  @parameterized.parameters(dict(dispatch='scatter'), dict(dispatch='mask'))
+  def test_moe_layer_runs(self, dispatch: str):
+    batch_size = 3
+    max_seq_length = 4
+    num_tokens = batch_size * max_seq_length
+    hidden_dim = 2
+    num_experts = 4
+    rng = jax.random.PRNGKey(0)
+
+    if dispatch == 'mask':
+      router = routing.TokensChooseMaskedRouter(
+          router_weights=routing.RouterWeights(name='router_weights'),
+          jitter_noise=0.,
+          num_selected_experts=2,
+          batch_prioritized_routing=True,
+          dtype=jnp.float32)
+    else:
+      router = routing.TokensChooseScatterRouter(
+          router_weights=routing.RouterWeights(name='router_weights'),
+          jitter_noise=0.,
+          num_selected_experts=2,
+          batch_prioritized_routing=True,
+          dtype=jnp.float32)
+
+    expert = dense.MlpBlock(
+        use_bias=False,
+        intermediate_dim=2,
+        activations=('gelu',),
+        intermediate_dropout_rate=0.1)
+    moe_layer = moe_layers.MoeLayer(
+        num_experts=num_experts,
+        max_group_size=num_tokens,
+        router=router,
+        train_capacity_factor=1.5,
+        eval_capacity_factor=1.5,
+        expert=expert,
+        split_params=False)  # Ensures all experts start with same params
+    init_batch = {
+        'inputs':
+            jnp.ones((batch_size, max_seq_length, hidden_dim), jnp.float32)
+    }
+    params = init_layer_variables(rng, moe_layer, init_batch)['params']
+
+    expected_keys = {'router', 'expert'}
+    self.assertEqual(params.keys(), expected_keys)
+
+    dropout_rng, jitter_rng, init_rng = jax.random.split(rng, num=3)
+    inputs = jax.random.uniform(
+        init_rng, (batch_size, max_seq_length, hidden_dim),
+        minval=-10,
+        maxval=10)
+    actual_outputs, state = moe_layer.apply({'params': params},
+                                            rngs={
+                                                'dropout': dropout_rng,
+                                                'jitter': jitter_rng
+                                            },
+                                            mutable=['intermediates'],
+                                            inputs=inputs)
+    self.assertEqual(actual_outputs.shape,
+                     (batch_size, max_seq_length, hidden_dim))
+
+    self.assertIn('diversity_metrics', state['intermediates'])
+
+  def test_scatter_mask_dispatch_equal(self):
+    batch_size = 4
+    max_seq_length = 4
+    hidden_dim = 2
+    num_experts = 2
+    tokens_per_group = 8
+    num_groups = batch_size * max_seq_length // tokens_per_group
+
+    rng = jax.random.PRNGKey(0)
+
+    expert = dense.MlpBlock(
+        use_bias=True,
+        intermediate_dropout_rate=0.,
+        final_dropout_rate=0.,
+        intermediate_dim=2,
+        name='feed_forward_expert')
+    moe_layer_factory = functools.partial(
+        moe_layers.MoeLayer,
+        num_experts=num_experts,
+        dropout_rate=0.,
+        max_group_size=tokens_per_group,
+        train_capacity_factor=1.,
+        eval_capacity_factor=1.,
+        expert=expert,
+        split_params=False)  # Ensures all experts start with same params
+
+    router_weights = routing.RouterWeights(name='router_weights')
+    masked_router = routing.TokensChooseMaskedRouter(
+        router_weights=router_weights,
+        jitter_noise=0.,
+        num_selected_experts=2,
+        batch_prioritized_routing=True,
+        dtype=jnp.float32)
+    masked_moe_layer = moe_layer_factory(router=masked_router)
+    scatter_router = routing.TokensChooseScatterRouter(
+        router_weights=router_weights,
+        jitter_noise=0.,
+        num_selected_experts=2,
+        batch_prioritized_routing=True,
+        dtype=jnp.float32)
+    scatter_moe_layer = moe_layer_factory(router=scatter_router)
+
+    inputs = jax.random.uniform(
+        rng, (batch_size, max_seq_length, hidden_dim), minval=-10, maxval=10)
+
+    # Mock the router weights to ensure both layers compute with the same
+    # logits.
+    mock_router_logits = jax.random.uniform(
+        rng, (num_groups, tokens_per_group, num_experts), minval=-1, maxval=1)
+    with mock.patch.object(
+        masked_router, 'router_weights', return_value=mock_router_logits):
+      masked_outputs, _ = masked_moe_layer.init_with_output(
+          rng, inputs, enable_dropout=False)
+    with mock.patch.object(
+        scatter_router, 'router_weights', return_value=mock_router_logits):
+      scatter_outputs, _ = scatter_moe_layer.init_with_output(
+          rng, inputs, enable_dropout=False)
+
+    expected_outputs = jnp.array([
+        [
+            [-4.2795105e+00, -1.3733565e+00],
+            [1.8671827e+00, -2.5795060e-01],
+            [1.1982476e+00, -1.6553746e-01],
+            [0.0000000e+00, 0.0000000e+00],
+        ],
+        [
+            [2.6274008e-01, -6.3929057e-01],
+            [-4.9219651e+00, -1.5795293e+00],
+            [-8.7453318e+00, -2.8065026e+00],
+            [-2.7741851e-07, 2.4501681e-08],
+        ],
+        [
+            [-2.8947284e-07, 2.5566322e-08],
+            [2.7471035e+00, -3.7951133e-01],
+            [-2.8828831e-07, 2.5461706e-08],
+            [-2.1936607e+00, -7.0397723e-01],
+        ],
+        [
+            [0.0000000e+00, 0.0000000e+00],
+            [-2.5519688e+00, -8.1896347e-01],
+            [-3.1390604e-07, 2.7724271e-08],
+            [-4.7466421e+00, -1.5232658e+00],
+        ],
+    ],
+                                 dtype=jnp.float32)
+
+    np.testing.assert_allclose(
+        masked_outputs, expected_outputs, rtol=1e-6, atol=1e-6)
+    np.testing.assert_allclose(
+        scatter_outputs, expected_outputs, rtol=1e-6, atol=1e-6)
+
+  @parameterized.parameters(
+      dict(
+          max_group_size=8, num_tokens=32, num_experts=2,
+          expected_num_groups=4),
+      dict(
+          max_group_size=9, num_tokens=32, num_experts=2,
+          expected_num_groups=4),
+      dict(
+          max_group_size=16,
+          num_tokens=32,
+          num_experts=4,
+          expected_num_groups=4),
+      dict(
+          max_group_size=32,
+          num_tokens=32,
+          num_experts=2,
+          expected_num_groups=2),
+      dict(
+          max_group_size=64,
+          num_tokens=32,
+          num_experts=2,
+          expected_num_groups=2))
+  def test_num_groups(self, max_group_size: int, num_tokens: int,
+                      num_experts: int, expected_num_groups: int):
+    self.assertEqual(
+        moe_layers._num_groups(num_tokens, max_group_size, num_experts),
+        expected_num_groups)
+
+  @parameterized.parameters(
+      dict(num_model_partitions=-1), dict(num_model_partitions=0),
+      dict(num_model_partitions=1))
+  def test_num_partitions_incorrect(self, num_model_partitions: int):
+    expert = dense.MlpBlock(
+        use_bias=False, intermediate_dim=2, name='feed_forward_expert')
+    router = routing.ExpertsChooseMaskedRouter(
+        router_weights=routing.RouterWeights(name='router_weights'),
+        jitter_noise=0.,
+        dtype=jnp.float32)
+    moe_layer = moe_layers.MoeLayer(
+        num_experts=2,
+        router=router,
+        max_group_size=16,
+        train_capacity_factor=1.,
+        eval_capacity_factor=1.,
+        expert=expert,
+        num_model_partitions=num_model_partitions)
+    init_batch = {'inputs': jnp.ones((4, 4, 3), jnp.float32)}
+
+    with self.assertRaisesRegex(
+        ValueError,
+        f'num_model_partitions={num_model_partitions} has no effect; '
+        'please set it to None instead.'):
+      init_layer_variables(jax.random.PRNGKey(0), moe_layer, init_batch)
+
+
+if __name__ == '__main__':
+  absltest.main()

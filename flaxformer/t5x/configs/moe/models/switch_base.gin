@@ -1,0 +1,25 @@
+# Switch ("top-1 tokens choose experts routing") MoE Base model.
+# Provides MODEL
+
+from __gin__ import dynamic_registration
+
+from flaxformer.architectures.moe import moe_layers
+from flaxformer.architectures.moe import routing
+import seqio
+from t5x import adafactor
+
+ARCHITECTURE = %gin.REQUIRED
+NUM_EXPERTS = %gin.REQUIRED
+
+include 'flaxformer/t5x/configs/moe/models/tokens_choose_base.gin'
+
+# MoE overrides
+TRAIN_EXPERT_CAPACITY_FACTOR = 1.25
+EVAL_EXPERT_CAPACITY_FACTOR = 2.
+NUM_SELECTED_EXPERTS = 1   # Switch routing
+AUX_LOSS_FACTOR = 0.01
+ROUTER_Z_LOSS_FACTOR = 0.0
+
+# Switch Transformer doesn't use BPR in encoder (although most sparse encoders
+# generally see a boost from it).
+sparse_encoder/routing.TokensChooseMaskedRouter.batch_prioritized_routing = False

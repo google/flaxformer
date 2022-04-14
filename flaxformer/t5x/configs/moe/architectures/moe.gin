@@ -1,0 +1,266 @@
+# MoE fork of Flaxformer T5.1.1 architecture.
+#
+# This file defines an encoder-decoder architecture, wherein sparse sublayers
+# can be substituted in pre-defined patterns in a traditional T5 architecture.
+#
+# Required to be overridden:
+#
+# - NUM_ENCODER_LAYERS
+# - NUM_DECODER_LAYERS
+# - NUM_HEADS
+# - HEAD_DIM
+# - EMBED_DIM
+# - MLP_DIM
+# - NUM_EMBEDDINGS
+# - NUM_EXPERTS
+#
+# Sparse parameters can also be optionally overridden to construct fully sparse
+# MLP models; see below.
+
+from __gin__ import dynamic_registration
+
+from flax import linen
+from flaxformer.architectures.moe import moe_architecture
+from flaxformer.architectures.moe import moe_enums
+from flaxformer.architectures.moe import moe_layers
+from flaxformer.architectures.moe import routing
+from flaxformer.architectures.t5 import t5_architecture
+from flaxformer.components.attention import dense_attention
+from flaxformer.components import dense
+from flaxformer.components import embedding
+from flaxformer.components import layer_norm
+from flaxformer.components import relative_position_biases
+
+# Must be overridden.
+NUM_ENCODER_LAYERS = %gin.REQUIRED
+NUM_DECODER_LAYERS = %gin.REQUIRED
+NUM_HEADS = %gin.REQUIRED
+HEAD_DIM = %gin.REQUIRED
+EMBED_DIM = %gin.REQUIRED
+MLP_DIM = %gin.REQUIRED
+NUM_EMBEDDINGS = %gin.REQUIRED
+NUM_EXPERTS = %gin.REQUIRED
+
+# Sparsity constants (may be overridden; defaults to fully sparse model with all
+# dense MLPs replaced by sparse MLPs).
+NUM_ENCODER_SPARSE_LAYERS = %NUM_ENCODER_LAYERS
+NUM_DECODER_SPARSE_LAYERS = %NUM_DECODER_LAYERS
+# Sparse layers are interleaved throughout the model; i.e. sparse layers placed
+# every (NUM_*_LAYERS // NUM_*_SPARSE_LAYERS) layer.
+ENCODER_SPARSE_LAYOUT = %moe_enums.LayerLayout.MIXED
+DECODER_SPARSE_LAYOUT = %moe_enums.LayerLayout.MIXED
+GROUP_SIZE = 4096  # Router computations are performed on a per-group basis
+TRAIN_EXPERT_CAPACITY_FACTOR = 1.
+EVAL_EXPERT_CAPACITY_FACTOR = 1.
+EXPERT_MLP_DIM = %MLP_DIM
+NUM_SELECTED_EXPERTS = 1
+JITTER_NOISE = 0.0   # Jitter noise not yet supported in T5X training
+
+# Other model constants (may be overridden)
+ACTIVATION_DTYPE = 'bfloat16'
+MOE_TRUNCATED_DTYPE = 'bfloat16'  # Truncated type to reduce communication costs
+ACTIVATION_PARTITIONING_DIMS = 1
+SCALE = 1.0
+DROPOUT_RATE = 0.0
+EXPERT_DROPOUT_RATE = %DROPOUT_RATE
+
+# Macros
+BIAS_INIT = @bias_init/linen.initializers.normal()
+bias_init/linen.initializers.normal.stddev = 1e-6
+DROPOUT_FACTORY = @dropout_factory/linen.Dropout
+dropout_factory/linen.Dropout:
+  rate = %DROPOUT_RATE
+  broadcast_dims = (-2,)
+
+# Architecture (Flax Module)
+ARCHITECTURE = @t5_architecture.EncoderDecoder()
+t5_architecture.EncoderDecoder:
+  encoder_factory = @moe_architecture.SparseEncoder
+  decoder_factory = @moe_architecture.SparseDecoder
+  shared_token_embedder_factory = @embedding.Embed
+  dtype = %ACTIVATION_DTYPE
+
+# Encoder Config
+moe_architecture.SparseEncoder:
+  num_layers = %NUM_ENCODER_LAYERS
+  num_sparse_layers = %NUM_ENCODER_SPARSE_LAYERS
+  sparse_layout = %ENCODER_SPARSE_LAYOUT
+  sparse_layer_factory = @sparse_block/t5_architecture.EncoderLayer
+  dense_layer_factory = @dense_block/t5_architecture.EncoderLayer
+  dropout_factory = %DROPOUT_FACTORY
+  layer_norm_factory = @layer_norm.T5LayerNorm
+  position_embedder_factory = None
+  activation_partitioning_dims = %ACTIVATION_PARTITIONING_DIMS
+  dtype = %ACTIVATION_DTYPE
+
+# Base EncoderLayer
+t5_architecture.EncoderLayer:
+  dropout_factory = %DROPOUT_FACTORY
+  layer_norm_factory = @layer_norm.T5LayerNorm
+  relative_position_bias_factory = @relative_position_biases.RelativePositionBiases
+  activation_partitioning_dims = %ACTIVATION_PARTITIONING_DIMS
+
+# Block specific EncoderLayer(s)
+sparse_block/t5_architecture.EncoderLayer:
+  attention = @dense_attention.MultiHeadDotProductAttention()
+  mlp = @sparse_encoder/moe_layers.MoeLayer()
+
+dense_block/t5_architecture.EncoderLayer:
+  attention = @dense_attention.MultiHeadDotProductAttention()
+  mlp = @dense.MlpBlock()
+
+# Decoder Config
+moe_architecture.SparseDecoder:
+  num_layers = %NUM_DECODER_LAYERS
+  num_sparse_layers = %NUM_DECODER_SPARSE_LAYERS
+  sparse_layout = %DECODER_SPARSE_LAYOUT
+  sparse_layer_factory = @sparse_block/t5_architecture.DecoderLayer
+  dense_layer_factory = @dense_block/t5_architecture.DecoderLayer
+  dropout_factory = %DROPOUT_FACTORY
+  layer_norm_factory = @layer_norm.T5LayerNorm
+  position_embedder_factory = None
+  activation_partitioning_dims = %ACTIVATION_PARTITIONING_DIMS
+  dtype = %ACTIVATION_DTYPE
+  output_logits_factory = @output_logits/dense.DenseGeneral
+
+# Base DecoderLayer
+t5_architecture.DecoderLayer:
+  encoder_decoder_attention = @dense_attention.MultiHeadDotProductAttention()
+  dropout_factory = %DROPOUT_FACTORY
+  layer_norm_factory = @layer_norm.T5LayerNorm
+  relative_position_bias_factory = @relative_position_biases.RelativePositionBiases
+  activation_partitioning_dims = %ACTIVATION_PARTITIONING_DIMS
+
+# Block specific DecoderLayer(s)
+sparse_block/t5_architecture.DecoderLayer:
+  self_attention = @dense_attention.MultiHeadDotProductAttention()
+  mlp = @sparse_decoder/moe_layers.MoeLayer()
+
+dense_block/t5_architecture.DecoderLayer:
+  self_attention = @dense_attention.MultiHeadDotProductAttention()
+  mlp = @dense.MlpBlock()
+
+# Decoupled embedding
+output_logits/dense.DenseGeneral:
+  features = %NUM_EMBEDDINGS
+  use_bias = False
+  dtype = 'float32'
+  kernel_init = @output_logits_kernel_init/linen.initializers.variance_scaling()
+  bias_init = %BIAS_INIT
+  kernel_axis_names = ["embed", "vocab"]
+output_logits_kernel_init/linen.initializers.variance_scaling:
+  scale = %SCALE
+  mode = 'fan_in'
+  distribution = 'truncated_normal'
+
+# Token Embedder (shared)
+embedding.Embed:
+  num_embeddings= %NUM_EMBEDDINGS
+  features = %EMBED_DIM
+  cast_input_dtype = 'int32'
+  dtype = %ACTIVATION_DTYPE
+  attend_dtype = 'float32'  # for logit training stability
+  embedding_init = @token_embedder_init/linen.initializers.normal()
+  one_hot = True
+  name = 'token_embedder'
+token_embedder_init/linen.initializers.normal.stddev = 1.0
+
+# Attention (encoder, decoder, self-attention)
+dense_attention.MultiHeadDotProductAttention:
+  num_heads = %NUM_HEADS
+  dtype = %ACTIVATION_DTYPE
+  head_dim = %HEAD_DIM
+  kernel_init =  @attention_kernel_init/linen.initializers.variance_scaling()
+  bias_init = %BIAS_INIT
+  use_bias = False
+  broadcast_dropout = True
+  dropout_rate = %DROPOUT_RATE
+attention_kernel_init/linen.initializers.variance_scaling:
+  scale = %SCALE
+  mode = 'fan_in'
+  distribution = 'normal'
+
+# Relative position biases (encoder, decoder)
+relative_position_biases.RelativePositionBiases:
+  num_heads = %NUM_HEADS
+  dtype = %ACTIVATION_DTYPE
+  num_buckets = 32
+  max_distance = 128
+  embedding_init = @relative_position_bias_init/linen.initializers.variance_scaling()
+relative_position_bias_init/linen.initializers.variance_scaling:
+  scale = %SCALE
+  mode = 'fan_avg'
+  distribution = 'uniform'
+
+# MLP (encoder, decoder)
+dense.MlpBlock:
+  use_bias = False
+  intermediate_dim = %MLP_DIM
+  activations = ('gelu', 'linear')
+  kernel_init = @mlp_kernel_init/linen.initializers.variance_scaling()
+  bias_init = %BIAS_INIT
+  intermediate_dropout_rate = %DROPOUT_RATE
+  final_dropout_rate = 0
+  dtype = %ACTIVATION_DTYPE
+mlp_kernel_init/linen.initializers.variance_scaling:
+  scale = %SCALE
+  mode = 'fan_in'
+  distribution = 'truncated_normal'
+
+# MoeLayer config
+moe_layers.MoeLayer:
+  num_experts = %NUM_EXPERTS
+  max_group_size = %GROUP_SIZE
+  train_capacity_factor = %TRAIN_EXPERT_CAPACITY_FACTOR
+  eval_capacity_factor = %EVAL_EXPERT_CAPACITY_FACTOR
+  expert = @expert/dense.MlpBlock()
+  dtype = %MOE_TRUNCATED_DTYPE
+  # *May* be worth overriding for large model parallel models.
+  num_model_partitions = None
+sparse_encoder/moe_layers.MoeLayer:
+  router = @sparse_encoder/routing.TokensChooseMaskedRouter()
+sparse_decoder/moe_layers.MoeLayer:
+  router = @sparse_decoder/routing.TokensChooseMaskedRouter()
+
+# Router config
+routing.TokensChooseMaskedRouter:
+  router_weights = @routing.RouterWeights()
+  num_selected_experts = %NUM_SELECTED_EXPERTS
+  jitter_noise = %JITTER_NOISE
+  dtype = %MOE_TRUNCATED_DTYPE
+sparse_encoder/routing.TokensChooseMaskedRouter:
+  batch_prioritized_routing = True
+sparse_decoder/routing.TokensChooseMaskedRouter:
+  batch_prioritized_routing = False  # BPR breaks autoregressive behavior
+
+routing.RouterWeights:
+  use_bias = True
+  dtype = %MOE_TRUNCATED_DTYPE
+  kernel_init = @router_init/linen.initializers.normal()
+  bias_init = %BIAS_INIT
+# We obtain slightly better results adopting typical normally-distributed
+# scaling for the router, rather than the 0.1-scaled variance_scaling. May be
+# worth revisiting if stability becomes an issue during training.
+router_init/linen.initializers.normal:
+  stddev = 2e-2
+
+# Expert config
+expert/dense.MlpBlock:
+  use_bias = True
+  intermediate_dim = %EXPERT_MLP_DIM
+  activations = ('gelu', 'linear')
+  kernel_init = @expert_kernel_init/linen.initializers.variance_scaling()
+  bias_init =  %BIAS_INIT
+  intermediate_dropout_rate = %EXPERT_DROPOUT_RATE
+  final_dropout_rate = 0.
+  dtype = %MOE_TRUNCATED_DTYPE
+  input_axis_name = 'embed'
+  intermediate_axis_name = 'expert_mlp'
+  output_axis_name = 'embed'
+  activation_partitioning_dims = 1
+expert_kernel_init/linen.initializers.variance_scaling:
+  scale = %SCALE
+  mode = 'fan_in'
+  distribution = 'normal'
+
+layer_norm.T5LayerNorm.dtype = %ACTIVATION_DTYPE
