@@ -19,8 +19,8 @@ from typing import Optional, Tuple, TypeVar
 from absl import logging
 from flax.linen import partitioning as flax_partitioning
 import jax
+from jax import experimental
 from jax.experimental.pjit import with_sharding_constraint as jax_pjit_wsc
-from jax.interpreters import sharded_jit
 
 
 def global_mesh_defined():
@@ -93,14 +93,15 @@ def with_sharding(x, partitioning_dims: int):
     return x
   else:
     if partitioning_dims == 1:
-      return jax_pjit_wsc(x, sharded_jit.PartitionSpec('data'))
+      return jax_pjit_wsc(x, experimental.PartitionSpec('data'))
     elif partitioning_dims == 2:
       if x.ndim == 3:
-        return jax_pjit_wsc(x, sharded_jit.PartitionSpec('data', None, 'model'))  # pytype: disable=wrong-arg-count,wrong-arg-types
+        return jax_pjit_wsc(x,
+                            experimental.PartitionSpec('data', None, 'model'))  # pytype: disable=wrong-arg-count,wrong-arg-types
       elif x.ndim == 4:
         return jax_pjit_wsc(x,
-                            sharded_jit.PartitionSpec('data', None, 'model',
-                                                      None))  # pytype: disable=wrong-arg-count,wrong-arg-types
+                            experimental.PartitionSpec('data', None, 'model',
+                                                       None))  # pytype: disable=wrong-arg-count,wrong-arg-types
       else:
         raise ValueError(
             f'do not know how to partition array of shape {x.shape}')

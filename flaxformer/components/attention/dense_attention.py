@@ -20,6 +20,9 @@ import abc
 import functools
 from typing import Callable, Optional, Tuple, Union
 
+from aqt.jax_legacy.jax import flax_layers as aqt_flax_layers
+from aqt.jax_legacy.jax import quant_config as aqt_config
+from aqt.jax_legacy.jax import quantization as aqt
 import chex
 from flax import linen as nn
 import flax.core.variables as variables
@@ -1009,6 +1012,9 @@ class MultiQueryDotProductAttention(nn.Module, DenseAttention):
     float32_logits: bool, if True then compute logits in float32 to avoid
       numerical issues with bfloat16.
     use_rotary_embedding: whether to use RoPE embeddings.
+    use_aqt: whether to use aqt quantization.
+    weight_params: Parameters for weight quantization.
+    act_params: Parameters for acitvation quantization.
   """
   num_heads: int
   use_bias: bool
@@ -1033,6 +1039,9 @@ class MultiQueryDotProductAttention(nn.Module, DenseAttention):
   q_conv: Optional[nn.Module] = None
   k_conv: Optional[nn.Module] = None
   v_conv: Optional[nn.Module] = None
+  use_aqt: Optional[bool] = False
+  weight_params: Optional[aqt.QuantOps.WeightParams] = None
+  act_params: Optional[aqt.QuantOps.ActHParams] = None
 
   def update_cache_prefill(
       self, key: Array, value: Array, cached_key: variables.Variable,
@@ -1209,37 +1218,95 @@ class MultiQueryDotProductAttention(nn.Module, DenseAttention):
       depth_scaling = jnp.sqrt(head_dim).astype(self.dtype)
       query_init = lambda *args: q_kernel_init(*args) / depth_scaling
 
-    dense_query = functools.partial(
-        dense.DenseGeneral,
-        axis=-1,
-        features=(self.num_heads, head_dim),
-        bias_init=self.bias_init,
-        use_bias=self.use_bias,
-        dtype=self.dtype,
-        kernel_init=query_init,
-        precision=self.precision,
-        kernel_axis_names=['embed', 'heads', 'kv'],
-        reshape_kernel=not self.split_head_kernel)
-
-    dense_kv = functools.partial(
-        dense.DenseGeneral,
-        axis=-1,
-        features=head_dim,
-        bias_init=self.bias_init,
-        use_bias=self.use_bias,
-        dtype=self.dtype,
-        kernel_init=self.kernel_init,
-        precision=self.precision,
-        kernel_axis_names=['embed', 'kv'],
-    )
+    def dense_output(
+        features,
+        axis,
+        kernel_init,
+        kernel_axis_names,
+        name,
+        inputs,
+        reshape_kernel=True,
+    ):
+      if self.use_aqt:
+        if self.weight_params is None and self.act_params is None:
+          raise ValueError(
+              'If use_aqt is True, either of weights or acts quantization need '
+              'to be specified using arguments `weight_params` or `act_params`.'
+          )
+        # TODO: Push the "quantized vs not" decision down into
+        # the AQT library. Currently we make that decision here, because the AQT
+        # library doesn't support DenseGeneral.
+        aqt_context = aqt_config.QuantContext(
+            update_bounds=False, collect_acts_stats=False)
+        weight_prec = self.weight_params.prec if self.weight_params else None
+        half_shift = self.weight_params.half_shift if self.weight_params else False
+        aqt_hparams = aqt_flax_layers.DenseAqt.HParams(
+            weight_prec=weight_prec,
+            weight_half_shift=half_shift,
+            quant_act=self.act_params,  # currently supports fixed bounds only.
+            quant_type=aqt.QuantType.AQT,
+            weight_quant_granularity=aqt_config.QuantGranularity.PER_CHANNEL,
+        )
+        return aqt_flax_layers.DenseAqt(
+            features=features,
+            hparams=aqt_hparams,
+            train=enable_dropout,
+            quant_context=aqt_context,
+            paxis_name=None,
+            # No "cross-replica" reduction expressed in the XLA graph at this
+            # stage. Will be imposed later, automatically, by XLA SPMD.
+            use_bias=self.use_bias,
+            kernel_init=self.kernel_init,
+            bias_init=self.bias_init,
+            dtype=self.dtype,
+            kernel_axis_names=kernel_axis_names,
+            # we do not have reshape kernel option here but we explicitly
+            # reshape kernel.
+            precision=self.precision,
+            name=name,
+        )(inputs, padding_mask=None)
+      else:
+        return dense.DenseGeneral(
+            axis=axis,
+            features=features,
+            bias_init=self.bias_init,
+            use_bias=self.use_bias,
+            dtype=self.dtype,
+            kernel_init=kernel_init,
+            precision=self.precision,
+            kernel_axis_names=kernel_axis_names,
+            reshape_kernel=reshape_kernel,
+            name=name)(
+                inputs)
 
     # Project inputs_q to multi-headed q and single-headed k and v
     # query dimension is then [batch..., length, num_heads, features_per_head]
     # key and value dimensions are [batch..., length, features_per_head].
     if precomputed_qkv is None:
-      query = dense_query(name='query')(inputs_q)
-      key = dense_kv(name='key')(inputs_kv)
-      value = dense_kv(name='value')(inputs_kv)
+      query = dense_output(
+          features=(self.num_heads, head_dim),
+          axis=-1,
+          kernel_init=query_init,
+          kernel_axis_names=['embed', 'heads', 'kv'],
+          name='query',
+          inputs=inputs_q,
+          reshape_kernel=not self.split_head_kernel,
+      )
+
+      key = dense_output(
+          features=head_dim,
+          axis=-1,
+          kernel_init=self.kernel_init,
+          kernel_axis_names=['embed', 'kv'],
+          name='key',
+          inputs=inputs_kv)
+      value = dense_output(
+          features=head_dim,
+          axis=-1,
+          kernel_init=self.kernel_init,
+          kernel_axis_names=['embed', 'kv'],
+          name='value',
+          inputs=inputs_kv)
     else:
       query, key, value = precomputed_qkv
 
@@ -1446,6 +1513,8 @@ class MultiQueryDotProductAttention(nn.Module, DenseAttention):
         float32_logits=self.float32_logits)  # pytype: disable=wrong-keyword-args
 
     if precomputed_qkv is None:
+      # TODO: Add support for output quantization, once we can
+      # do so without any reshape.
       # Back to the original inputs dimensions.
       out = dense.DenseGeneral(
           features=features,

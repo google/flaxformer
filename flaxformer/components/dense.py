@@ -213,6 +213,7 @@ class MlpBlock(nn.Module):
       output activations.
     activation_partitioning_dims: Activation partition for the intermediate
       activations.
+    use_aqt: Whether to use aqt quantization.
     weight_params: Parameters for weight quantization.
     act_params: Parameters for activation quantization.
   """
@@ -236,6 +237,7 @@ class MlpBlock(nn.Module):
   intermediate_axis_name: str = 'mlp'
   output_axis_name: str = 'embed'
   activation_partitioning_dims: Optional[int] = 2
+  use_aqt: Optional[bool] = False
   weight_params: Optional[aqt.QuantOps.WeightParams] = None
   act_params: Optional[aqt.QuantOps.ActHParams] = None
 
@@ -256,16 +258,23 @@ class MlpBlock(nn.Module):
         inputs.shape[-1] if self.out_dim is None else self.out_dim)
 
     def dense(features, name, inputs, kernel_axis_names):
-      if self.weight_params is not None or self.act_params is not None:
+      if self.use_aqt:
+        if self.weight_params is None and self.act_params is None:
+          raise ValueError(
+              'If use_aqt is True, either of weights or acts quantization need '
+              'to be specified using arguments `weight_params` or `act_params`.'
+          )
         # TODO: Push the "quantized vs not" decision down into the
         # AQT library. Currently we make that decision here, because the AQT
         # library doesn't support DenseGeneral, so there's extra reshapes here
         # whose performance impact I don't know.
         aqt_context = aqt_config.QuantContext(
             update_bounds=False, collect_acts_stats=False)
+        weight_prec = self.weight_params.prec if self.weight_params else None
+        half_shift = self.weight_params.half_shift if self.weight_params else False
         aqt_hparams = aqt_flax_layers.DenseAqt.HParams(
-            weight_prec=self.weight_params.prec,
-            weight_half_shift=self.weight_params.half_shift,
+            weight_prec=weight_prec,
+            weight_half_shift=half_shift,
             quant_act=self.act_params,  # currently supports fixed bounds only.
             quant_type=aqt.QuantType.AQT,
             weight_quant_granularity=aqt_config.QuantGranularity.PER_CHANNEL,

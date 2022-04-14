@@ -530,6 +530,7 @@ class LongEncoderDecoder(nn.Module, param_remapping.ParameterRemappable):
 
   shared_token_embedder_factory: Optional[Callable[[], embedding.Embed]] = None
 
+
   def setup(self):
     self.token_embedder = (
         self.shared_token_embedder_factory()
@@ -620,6 +621,7 @@ class LongEncoderDecoder(nn.Module, param_remapping.ParameterRemappable):
     Returns:
       logits array from transformer decoder.
     """
+
     # Make padding attention masks.
     if decode:
       # Fast autoregressive decoding uses only a special encoder-decoder mask.

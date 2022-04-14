@@ -303,6 +303,29 @@ class DenseTest(parameterized.TestCase):
           random.PRNGKey(0), inputs_with_batch_dim, enable_dropout=False)
     np.testing.assert_allclose(batch_result, result[np.newaxis, ...])
 
+  def test_quantization_no_params_specified(self):
+    module = dense.MlpBlock(
+        use_bias=False,
+        intermediate_dim=4,
+        activations=('relu',),
+        kernel_init=nn.initializers.xavier_uniform(),
+        bias_init=nn.initializers.normal(stddev=1e-6),
+        dtype=jnp.float32,
+        use_aqt=True,
+    )
+    inputs = np.array(
+        [
+            # Batch 1.
+            [[1, 1], [1, 1], [1, 2]],
+            # Batch 2.
+            [[2, 2], [3, 1], [2, 2]],
+        ],
+        dtype=np.float32)
+    with self.assertRaisesRegex(
+        ValueError,
+        'If use_aqt is True, either of weights or acts quantization'):
+      module.init(random.PRNGKey(0), inputs, enable_dropout=False)
+
   def test_mlp_quantized_weights(self):
     weight_params = aqt.QuantOps.WeightParams(
         prec=8, half_shift=False, axis=None)
@@ -313,6 +336,7 @@ class DenseTest(parameterized.TestCase):
         kernel_init=nn.initializers.xavier_uniform(),
         bias_init=nn.initializers.normal(stddev=1e-6),
         dtype=jnp.float32,
+        use_aqt=True,
         weight_params=weight_params,
     )
     inputs = np.array(

@@ -22,8 +22,11 @@ from unittest import mock
 
 from absl.testing import absltest
 from absl.testing import parameterized
+from aqt.jax_legacy.jax import quantization as aqt
 from flax import linen as nn
+import flax.config
 from flax.core import freeze
+from flax.linen import partitioning as flax_partitioning
 import jax
 from jax import dtypes
 from jax import random
@@ -36,6 +39,7 @@ from flaxformer.types import Array
 
 # Parse absl flags test_srcdir and test_tmpdir.
 jax.config.parse_flags_with_absl()
+AxisMetadata = flax_partitioning.AxisMetadata
 
 
 class SelfAttention(dense_attention.MultiHeadDotProductAttention):
@@ -98,6 +102,11 @@ class SelfAttentionArgs:
 
 
 class AttentionTest(parameterized.TestCase):
+
+  def setUp(self):
+    super().setUp()
+    # TODO: Remove this workaround.
+    flax.config.flax_lazy_rng = True
 
   def _mock_initializer(self, key, shape, dtype=jnp.float_, val=1.0):  # pylint: disable=unused-argument
     return jnp.ones(shape, dtypes.canonicalize_dtype(dtype)) * val
@@ -1453,6 +1462,11 @@ class AttentionTest(parameterized.TestCase):
 
 class LocalAttentionLayerTest(parameterized.TestCase):
 
+  def setUp(self):
+    super().setUp()
+    # TODO: Remove this workaround.
+    flax.config.flax_lazy_rng = True
+
   @parameterized.parameters(
       itertools.product(
           [True, False],
@@ -1499,6 +1513,137 @@ class LocalAttentionLayerTest(parameterized.TestCase):
     else:
       self.assertSequenceEqual(outputs.shape,
                                (batch_size, q_len, num_heads, head_dim))
+
+
+class QuantizedAttentionTest(parameterized.TestCase):
+
+  def setUp(self):
+    super().setUp()
+    # TODO: Remove this workaround.
+    flax.config.flax_lazy_rng = True
+
+  def test_quantization_no_params_specified(self):
+    module = dense_attention.MultiQueryDotProductAttention(
+        num_heads=2,
+        kernel_init=nn.initializers.xavier_uniform(),
+        bias_init=nn.initializers.normal(stddev=1e-6),
+        dtype=jnp.float32,
+        use_bias=True,
+        use_aqt=True)
+    inputs_q = np.array(
+        [
+            # Batch 1.
+            [[1, 1], [1, 1], [1, 2]],
+            # Batch 2.
+            [[2, 2], [3, 1], [2, 2]],
+        ],
+        dtype=np.float32)
+    inputs_kv = np.array(
+        [
+            # Batch 1.
+            [[1, 1], [1, 1], [1, 2]],
+            # Batch 2.
+            [[2, 2], [3, 1], [2, 2]],
+        ],
+        dtype=np.float32)
+    with self.assertRaisesRegex(
+        ValueError,
+        'If use_aqt is True, either of weights or acts quantization'):
+      module.init(random.PRNGKey(0), inputs_q, inputs_kv, enable_dropout=False)
+
+  def test_multiquery_dot_product_attention_quantized_weights(self):
+    module = dense_attention.MultiQueryDotProductAttention(
+        num_heads=2,
+        kernel_init=nn.initializers.xavier_uniform(),
+        bias_init=nn.initializers.normal(stddev=1e-6),
+        dtype=jnp.float32,
+        use_bias=True,
+        use_aqt=True,
+        weight_params=aqt.QuantOps.WeightParams(
+            prec=8, half_shift=False, axis=None))
+
+    inputs_q = np.array(
+        [
+            # Batch 1.
+            [[1, 1], [1, 1], [1, 2]],
+            # Batch 2.
+            [[2, 2], [3, 1], [2, 2]],
+        ],
+        dtype=np.float32)
+    inputs_kv = np.array(
+        [
+            # Batch 1.
+            [[1, 1], [1, 1], [1, 2]],
+            # Batch 2.
+            [[2, 2], [3, 1], [2, 2]],
+        ],
+        dtype=np.float32)
+
+    expected_params = freeze({
+        'params': {
+            'query': {
+                'kernel':
+                    jnp.array([[[0.89760804], [-0.7743368]],
+                               [[-0.27043915], [-0.09338999]]],
+                              dtype=jnp.float32),
+                'bias':
+                    jnp.array([3.8685133e-07, -5.7897455e-07],
+                              dtype=jnp.float32),
+            },
+            'key': {
+                'kernel':
+                    jnp.array([[-1.2404252], [0.6276205]], dtype=jnp.float32),
+                'bias':
+                    jnp.array([9.180263e-07], dtype=jnp.float32),
+            },
+            'value': {
+                'kernel':
+                    jnp.array([[-0.8634736], [-0.9621272]], dtype=jnp.float32),
+                'bias':
+                    jnp.array([8.859404e-07], dtype=jnp.float32),
+            },
+            'out': {
+                'kernel':
+                    jnp.array([[0.8359484, 0.9604499], [-1.0830641, 1.0543139]],
+                              dtype=jnp.float32),
+                'bias':
+                    jnp.array([-9.7886084e-07, 1.3396599e-06],
+                              dtype=jnp.float32),
+            },
+        },
+        'params_axes': {
+            'query': {
+                'kernel_axes': AxisMetadata(names=('embed', 'heads', 'kv')),
+                'bias_axes': AxisMetadata(names=('kv',)),
+            },
+            'key': {
+                'kernel_axes': AxisMetadata(names=('embed', 'kv')),
+                'bias_axes': AxisMetadata(names=('kv',)),
+            },
+            'value': {
+                'kernel_axes': AxisMetadata(names=('embed', 'kv')),
+                'bias_axes': AxisMetadata(names=('kv',)),
+            },
+            'out': {
+                'kernel_axes': AxisMetadata(names=('joined_kv', 'embed')),
+                'bias_axes': AxisMetadata(names=('embed',)),
+            },
+        },
+    })
+    result, params = module.init_with_output(
+        random.PRNGKey(0), inputs_q, inputs_kv, enable_dropout=False)
+    jax.tree_multimap(
+        functools.partial(np.testing.assert_allclose, rtol=1e-6), params,
+        expected_params)
+
+    np.testing.assert_allclose(
+        result.tolist(),
+        [[[0.34379065, -4.300414], [0.34379065, -4.300414],
+          [0.36607888, -4.2530766]],
+         [[0.8072612, -7.256442], [0.7984385, -7.2548857],
+          [0.8072612, -7.256442]]],
+        rtol=1e-6,
+    )
 
 
 if __name__ == '__main__':
