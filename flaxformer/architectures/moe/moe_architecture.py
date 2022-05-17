@@ -14,344 +14,177 @@
 
 """Provides encoders/decoders with Mixture of Experts support."""
 
-import dataclasses
-import itertools
-from typing import Any, Callable, List, Optional
+from typing import Callable, Optional, Union
 
-from flax import linen as nn
-from jax import numpy as jnp
-
+from flaxformer import transformer_common as common
 from flaxformer.architectures.moe import moe_enums
 from flaxformer.architectures.moe import moe_layers
 from flaxformer.architectures.t5 import t5_architecture
 from flaxformer.components import embedding
-from flaxformer.components.attention import dense_attention
-from flaxformer.types import Array
-from flaxformer.types import DType
 
 LayerLayout = moe_enums.LayerLayout
+MakeDecoderLayerFn = t5_architecture.MakeDecoderLayerFn
+MakeEncoderLayerFn = t5_architecture.MakeEncoderLayerFn
 MoeLayer = moe_layers.MoeLayer
 
 
-class SparseEncoder(nn.Module):
-  """Encoder with configurable dense and sparse MLP modules.
+class SparseEncoder(t5_architecture.Encoder):
+  """A stack of encoder layers with configurable dense and sparse MLP modules.
 
-  SparseEncoder does not currently support shared_relative_position_bias or
-  scanned layers.
+  This module does NOT support scanned layers.
+
+  Although some attributes below default to None, they MUST be specified by the
+  user. We are forced to use defaults here as the parent Encoder class contains
+  attributes with default values.
 
   Attributes:
-    num_layers: Total number of encoder blocks in encoder.
+    sparse_layer_factory: A callable that returns a EncoderLayer containing a
+      sparse MLP sublayer and an attention sublayer. The "dense" variant of this
+      factory is named `layer_factory` and is inherited from the super class.
     num_sparse_layers: Total number of sparse sublayers in encoder.
     sparse_layout: Placement of sparse modules within encoder. All other MLP
       sublayers are filled with dense MLP sublayers.
-    sparse_layer_factory: A callable that returns a EncoderLayer containing a
-      sparse MLP sublayer and an attention sublayer.
-    dense_layer_factory: A callable that returns a EncoderLayer containing a
-      dense MLP sublayer and attention sublayer.
-    dropout_factory: A callable that returns a new dropout instance. We use the
-      same dropout factor for both input and output.
-    layer_norm_factory: A callable that returns a new layer norm. This is
-      applied before the attention module and before the MLP module.
-    position_embedder_factory: A callable that returns an absolute position
-      embedder. Only provide this if you want absolute position embeddings.
-    activation_partitioning_dims: When set to 2, partitions intermediate
-      variables containing the input and output of the encoder layer.
-    dtype: Numerical type of the computation (default: float32).
-    shared_token_embedder: Shared token embedder instance.
-    spmd_annotations: Optional SPMD annotations for scanned layers.
-    use_logit_mask: Whether or not to mask out padding tokens at each encoder
-      layer. Empirically, for T5, masking out the padding tokens was found to
-      help stabilize the training of large models, although we have noted minor
-      accuracy degradations for some sparse encoder configurations.
   """
-  num_layers: int
-  num_sparse_layers: int
-  sparse_layout: LayerLayout
-  sparse_layer_factory: t5_architecture.MakeEncoderLayerFn
-  dense_layer_factory: t5_architecture.MakeEncoderLayerFn
-
-  dropout_factory: Callable[[], nn.Module]
-  layer_norm_factory: Callable[[], nn.Module]
-  position_embedder_factory: Optional[Callable[
-      [], embedding.Embedder[Array]]] = None
-  activation_partitioning_dims: int = 1
-  dtype: DType = jnp.float32
-  shared_token_embedder: Optional[embedding.Embed] = None
-  spmd_annotations: Any = None
-
-  use_logit_mask: bool = True
+  sparse_layer_factory: Optional[MakeEncoderLayerFn] = None
+  num_sparse_layers: Optional[int] = None
+  sparse_layout: LayerLayout = LayerLayout.MIXED
 
   def setup(self):
-    # is_sparse --> factory.
-    layer_factories = {
-        True: self.sparse_layer_factory,
-        False: self.dense_layer_factory,
-    }
-    # Group layers by layer factory type (sparse or dense).
-    layer_groups = _layer_groups(self.num_layers, self.num_sparse_layers,
-                                 self.sparse_layout)
+    _validate_module_construction(self.sparse_layer_factory,
+                                  self.num_sparse_layers, self.scan_layers)
 
-    encoders = []
-    for layer_group in layer_groups:
-      # Because we want Encoder layer output dropout and layer norms to only be
-      # computed once after all EncoderLayer(s) have run, we use fake factories
-      # for intermediate layers.
-      layer_norm_factory = (
-          self.layer_norm_factory
-          if layer_group.is_final else _identity_factory)
-      output_dropout_factory = (
-          self.dropout_factory
-          if layer_group.is_final else _fake_dropout_factory)
-      encoders.append(
-          t5_architecture.Encoder(
-              num_layers=layer_group.num_layers,
-              layer_factory=layer_factories[layer_group.is_sparse],
-              input_dropout_factory=self.dropout_factory,
-              output_dropout_factory=output_dropout_factory,
-              layer_norm_factory=layer_norm_factory,
-              position_embedder_factory=self.position_embedder_factory,
-              dtype=self.dtype,
-              shared_token_embedder=self.shared_token_embedder,
-              spmd_annotations=self.spmd_annotations))
-
-    self.encoders = encoders
-
-  def __call__(self,
-               inputs: Array,
-               inputs_positions: Optional[Array] = None,
-               encoder_mask: Optional[Array] = None,
-               *,
-               segment_ids: Optional[Array] = None,
-               enable_dropout: bool = True):
-    """Applies sequence of encoders to the inputs.
-
-    Args:
-      inputs: Input data.
-      inputs_positions: Input subsequence positions for packed examples.
-      encoder_mask: Encoder self-attention mask.
-      segment_ids: Input segmentation info for packed examples.
-      enable_dropout: Enables dropout if set to True.
-
-    Returns:
-      Output of the encoders.
-    """
-    continuous_outputs = self.encoders[0].embed_and_combine_inputs(
-        inputs,
-        inputs_positions=inputs_positions,
-        segment_ids=segment_ids,
-        enable_dropout=enable_dropout)
-
-    # Because we have multiple Encoder(s) in a single SparseEncoder, the
-    # logit_mask may be applied more often than in Flaxformer's default T5
-    # Encoder architecture.
-    if self.use_logit_mask:
-      logit_mask = jnp.expand_dims(
-          jnp.array((inputs > 0), dtype=continuous_outputs.dtype), axis=-1)
+    if (self.token_embedder_factory,
+        self.shared_token_embedder).count(None) != 1:
+      raise ValueError(
+          'Please set exactly one of token_embedder_factory or '
+          'shared_token_embedder. token_embedder_factory was %s, and '
+          'shared_token_embedder was %s.' %
+          (self.token_embedder_factory, self.shared_token_embedder))
+    if self.shared_token_embedder is not None:
+      embedders = {'token_ids': self.shared_token_embedder}
     else:
-      logit_mask = None
+      self.token_embedder_factory: Callable[[], embedding.Embed]
+      self.token_embedder = self.token_embedder_factory()
+      embedders = {'token_ids': self.token_embedder}
+    if self.position_embedder_factory is not None:
+      self.position_embedder_factory: Callable[[], embedding.Embed]
+      self.position_embedder = self.position_embedder_factory()
+      embedders['position_ids'] = self.position_embedder
+    self.embedder = embedding.MultiEmbed(
+        embedders,
+        sow_intermediates=self.sow_intermediates,
+        capture_gradients=self.capture_gradients)
 
-    for encoder in self.encoders:
-      continuous_outputs = encoder.encode_from_continuous_inputs(
-          continuous_outputs,
-          encoder_mask=encoder_mask,
-          logit_mask=logit_mask,
-          enable_dropout=enable_dropout)
-    return continuous_outputs
+    self.input_dropout = self.input_dropout_factory()
+
+    self.relpos_bias = (
+        self.shared_relative_position_bias_factory()
+        if self.shared_relative_position_bias_factory is not None else None)
+
+    def lyrf(layer: int) -> t5_architecture.EncoderLayer:
+      """Encoder layer factory return sparse or dense layer."""
+      if _is_sparse_layer(layer, self.num_layers, self.num_sparse_layers,
+                          self.sparse_layout):
+        return self.sparse_layer_factory(  # pylint: disable=not-callable
+            shared_relative_position_bias=self.relpos_bias)
+      else:
+        # layer_factory is the "dense_layer_factory".
+        return self.layer_factory(
+            shared_relative_position_bias=self.relpos_bias)
+
+    self.layers = [lyrf(layer) for layer in range(self.num_layers)]
+    self.encoder = common.TransparentLayerSequence(self.layers)
+
+    self.encoder_norm = self.layer_norm_factory()
+    self.output_dropout = self.output_dropout_factory()
 
 
-class SparseDecoder(nn.Module):
-  """Decoder with configurable dense and sparse MLP modules.
+class SparseDecoder(t5_architecture.Decoder):
+  """A stack of decoder layers with configurable dense and sparse MLP modules.
 
-  SparseDecoder does not currently support shared_relative_position_bias or
-  scanned layers.
+  This module does NOT support scanned layers.
+
+  Although some attributes below default to None, they MUST be specified by the
+  user. We are forced to use defaults here as the parent Decoder class contains
+  attributes with default values.
 
   Attributes:
-    num_layers: Total number of decoder blocks in decoder.
-    sparse_layout: Placement of sparse MLP modules within decoder. All other MLP
-      sublayers are filled with dense MLP sublayers.
     sparse_layer_factory: A callable that returns a DecoderLayer containing a
-      sparse MLP sublayer and an self-attention sublayer.
-    dense_layer_factory: A callable that returns a DecoderLayer containing a
-      dense MLP sublayer and attention sublayers.
-    dropout_factory: A callable that returns a new dropout instance. This is
-      applied after the attention module.
-    layer_norm_factory: A callable that returns a new layer norm. This is
-      applied before the attention module and before the MLP module.
-    position_embedder_factory: A callable that returns an absolute position
-      embedder. Only provide this if you want absolute position embeddings.
-    activation_partitioning_dims: When set to 2, partitions intermediate
-      variables containing the input and output of the decoder layer.
-    dtype: Numerical type of the computation (default: float32).
-    output_logits_factory: Output projection factory for logits. Only used by
-      the final decoder layer. All other decoder layers use the identity
-      function to map their outputs to the next layer's inputs.
-    shared_token_embedder: Shared token embedder instance.
-    spmd_annotations: Optional SPMD annotations for scanned layers.
-    use_logit_masK: Whether or not to mask out padding tokens at each decoder
-      layer. Empirically, for T5, masking out the padding tokens was found to
-      help stabilize the training of large models.
+      sparse MLP sublayer and attention sublayers. The "dense" variant of this
+      factory is named `layer_factory` and is inherited from the super class.
+    num_sparse_layers: Total number of sparse sublayers in decoder.
+    sparse_layout: Placement of sparse modules within decoder. All other MLP
+      sublayers are filled with dense MLP sublayers.
   """
-  num_layers: int
-  num_sparse_layers: int
-  sparse_layout: LayerLayout
-  sparse_layer_factory: t5_architecture.MakeDecoderLayerFn
-  dense_layer_factory: t5_architecture.MakeDecoderLayerFn
-
-  dropout_factory: Callable[[], nn.Module]
-  layer_norm_factory: Callable[[], nn.Module]
-  position_embedder_factory: Optional[Callable[
-      [], embedding.Embedder[Array]]] = None
-  activation_partitioning_dims: int = 1
-  dtype: DType = jnp.float32
-  output_logits_factory: Optional[Callable[[], nn.Module]] = None
-  shared_token_embedder: Optional[embedding.Embed] = None
-  spmd_annotations: Any = None
-
-  use_logit_mask: bool = True
+  sparse_layer_factory: Optional[MakeDecoderLayerFn] = None
+  num_sparse_layers: Optional[int] = None
+  sparse_layout: LayerLayout = LayerLayout.MIXED
 
   def setup(self):
-    # is_sparse --> factory.
-    layer_factories = {
-        True: self.sparse_layer_factory,
-        False: self.dense_layer_factory,
-    }
-    # Group layers by layer factory type (sparse or dense).
-    layer_groups = _layer_groups(self.num_layers, self.num_sparse_layers,
-                                 self.sparse_layout)
+    _validate_module_construction(self.sparse_layer_factory,
+                                  self.num_sparse_layers, self.scan_layers)
 
-    decoders = []
-    for layer_group in layer_groups:
-      # Because we want Decoder layer output logits and layer norms to only be
-      # computed once after all DecoderLayer(s) have run, we use fake factories
-      # for intermediate layers.
-      layer_norm_factory = (
-          self.layer_norm_factory
-          if layer_group.is_final else _identity_factory)
-      output_logits_factory = (
-          self.output_logits_factory
-          if layer_group.is_final else _identity_factory)
-
-      # Dropout is handled similarly, except that we also need it for the first
-      # decoder, which computes input embeddings. (This is not required above
-      # for the Encoder because the Encoder separates input and output dropout
-      # factories.)
-      dropout_factory = (
-          self.dropout_factory if (layer_group.is_first or layer_group.is_final)
-          else _fake_dropout_factory)
-
-      decoders.append(
-          t5_architecture.Decoder(
-              num_layers=layer_group.num_layers,
-              layer_factory=layer_factories[layer_group.is_sparse],
-              dropout_factory=dropout_factory,
-              layer_norm_factory=layer_norm_factory,
-              position_embedder_factory=self.position_embedder_factory,
-              output_logits_factory=output_logits_factory,
-              dtype=self.dtype,
-              shared_token_embedder=self.shared_token_embedder,
-              spmd_annotations=self.spmd_annotations))
-
-    self.decoders = decoders
-
-  def __call__(self,
-               encoder_outputs,
-               decoder_input_tokens,
-               decoder_positions=None,
-               decoder_mask=None,
-               encoder_decoder_mask=None,
-               *,
-               segment_ids: Optional[Array] = None,
-               enable_dropout: bool = True,
-               decode: bool = False,
-               max_decode_length: Optional[int] = None,
-               prefill: bool = False,
-               prefill_lengths: Optional[Array] = None):
-    """Applies sequence of decoders to the inputs.
-
-    Args:
-      encoder_outputs: The outputs from the encoder. If None, do not attend to
-        encoder outputs, resulting in a decoder only model (i.e. language
-        model).
-      decoder_input_tokens: The decoder input token IDs.
-      decoder_positions: Decoder subsequence positions for packed examples.
-      decoder_mask: Decoder self-attention mask.
-      encoder_decoder_mask: The attention mask for the encoder outputs.
-      segment_ids: Input segmentation info for packed examples.
-      enable_dropout: Enables dropout if set to True.
-      decode: Whether to prepare and use an autoregressive cache.
-      max_decode_length: An optional integer specifying the maximum decoding
-        length. Note that this is only used for defining the relative position
-        embedding parameters.
-      prefill: Whether to run a partial sequence to prefill the cache.
-      prefill_lengths: The length of each partial sequence we are filling in the
-        cache. Lengths are inferred from the mask if not provided.
-
-    Returns:
-      The decoder output logits for next token prediction.
-    """
-    continuous_outputs = self.decoders[0].embed_and_combine_inputs(
-        decoder_input_tokens,
-        decoder_positions=decoder_positions,
-        segment_ids=segment_ids,
-        enable_dropout=enable_dropout,
-        decode=decode,
-    )
-
-    # Because we have multiple Decoder(s) in a single SparseDecoder, the
-    # logit_mask may be applied more often than in Flaxformer's default T5
-    # Decoder architecture.
-    if self.use_logit_mask:
-      logit_mask = dense_attention.get_decoder_logit_mask(
-          decoder_input_tokens, continuous_outputs.dtype)
+    if (self.token_embedder_factory,
+        self.shared_token_embedder).count(None) != 1:
+      raise ValueError(
+          'Please set exactly one of token_embedder_factory or '
+          'shared_token_embedder. token_embedder_factory was %s, and '
+          'shared_token_embedder was %s.' %
+          (self.token_embedder_factory, self.shared_token_embedder))
+    if self.shared_token_embedder is not None:
+      embedders = {'token_ids': self.shared_token_embedder}
     else:
-      logit_mask = None
+      self.token_embedder_factory: Callable[[], embedding.Embed]
+      self.token_embedder = self.token_embedder_factory()
+      embedders = {'token_ids': self.token_embedder}
+    if self.position_embedder_factory is not None:
+      self.position_embedder_factory: Callable[[], embedding.Embed]
+      self.position_embedder = self.position_embedder_factory()
+      embedders['position_ids'] = self.position_embedder
+    self.embedder = embedding.MultiEmbed(
+        embedders,
+        sow_intermediates=self.sow_intermediates,
+        capture_gradients=self.capture_gradients)
 
-    for decoder in self.decoders:
-      continuous_outputs = decoder.decode_from_continuous_inputs(
-          continuous_outputs,
-          encoder_outputs,
-          decoder_positions=decoder_positions,
-          decoder_mask=decoder_mask,
-          encoder_decoder_mask=encoder_decoder_mask,
-          logit_mask=logit_mask,
-          enable_dropout=enable_dropout,
-          decode=decode,
-          max_decode_length=max_decode_length,
-          prefill=prefill,
-          prefill_lengths=prefill_lengths)
-    return continuous_outputs
+    self.input_dropout = self.dropout_factory()
+
+    self.relpos_bias = (
+        self.shared_relative_position_bias_factory()
+        if self.shared_relative_position_bias_factory is not None else None)
+
+    def lyrf(layer: int) -> t5_architecture.DecoderLayer:
+      """Decoder layer factory return sparse or dense layer."""
+      if _is_sparse_layer(layer, self.num_layers, self.num_sparse_layers,
+                          self.sparse_layout):
+        return self.sparse_layer_factory(  # pylint: disable=not-callable
+            shared_relative_position_bias=self.relpos_bias)
+      else:
+        # layer_factory is the "dense_layer_factory".
+        return self.layer_factory(
+            shared_relative_position_bias=self.relpos_bias)
+
+    self.layers = [lyrf(layer) for layer in range(self.num_layers)]
+    self.decoder = common.TransparentLayerSequence(self.layers)
+
+    self.decoder_norm = self.layer_norm_factory()
+    self.output_dropout = self.dropout_factory()
+    self.setup_output_logits()
 
 
-@dataclasses.dataclass
-class _LayerGroup:
-  """Group of layers which share the same is_sparse setting.
-
-  Attributes:
-    is_sparse: Whether or not the group of layers is sparse.
-    num_layers: The number of layers in the group.
-    is_first: Whether or not this is the first layer group.
-    is_final: Whether or not this is the final layer group.
-  """
-  is_sparse: bool
-  num_layers: int
-  is_first: bool
-  is_final: bool
-
-
-def _layer_groups(num_layers: int, num_sparse_layers: int,
-                  sparse_layout: LayerLayout) -> List[_LayerGroup]:
-  """Group layers by whether they are dense or sparse."""
-  is_sparse = [
-      _is_sparse_layer(i, num_layers, num_sparse_layers, sparse_layout)
-      for i in range(num_layers)
-  ]
-  groups = [
-      _LayerGroup(is_sparse, len(list(group)), False, False)
-      for is_sparse, group in itertools.groupby(is_sparse)
-  ]
-  groups[0].is_first = True
-  groups[-1].is_final = True
-  return groups
+def _validate_module_construction(
+    sparse_layer_factory: Union[Optional[MakeEncoderLayerFn],
+                                Optional[MakeDecoderLayerFn]],
+    num_sparse_layers: Optional[int], scan_layers: bool):
+  """Validates that sparse layer attributes are correctly specified."""
+  if sparse_layer_factory is None:
+    raise ValueError(
+        'sparse_layer_factory must be specified but was left as None.')
+  if num_sparse_layers is None:
+    raise ValueError(
+        'num_sparse_layers must be specified but was left as None.')
+  if scan_layers:
+    raise ValueError(
+        'Scanned layers are not yet supported in Mixture-of-Experts models.')
 
 
 def _is_sparse_layer(layer: int, num_layers: int, num_sparse_layers: int,
@@ -376,13 +209,3 @@ def _is_sparse_layer(layer: int, num_layers: int, num_sparse_layers: int,
     return layer >= num_layers - num_sparse_layers
   else:
     return False
-
-
-def _identity_factory():
-  """Returns an identity function."""
-  return lambda x: x
-
-
-def _fake_dropout_factory():
-  """Returns an dropout-like mapping that leaves the input unchanged."""
-  return lambda x, deterministic: x

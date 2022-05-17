@@ -1,4 +1,13 @@
 # Switch ("top-1 tokens choose experts routing") MoE Base model.
+#
+# This modified version of the Switch Transformer is more closely aligned with
+# T5 v1.1 and more recent MoE models. It uses GEGLU activations with a smaller
+# MLP activation dimension, fewer sparse layers in the encoder and decoder,
+# a smaller default group size of 4096, and a separate (unshared) output logits
+# layer.
+#
+# For the original Switch Transformer, see models/switch_classic_base.gin.
+#
 # Provides MODEL
 
 from __gin__ import dynamic_registration

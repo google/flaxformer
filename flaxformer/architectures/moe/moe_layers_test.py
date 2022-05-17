@@ -89,6 +89,7 @@ class MoeLayerTest(parameterized.TestCase):
         train_capacity_factor=1.5,
         eval_capacity_factor=1.5,
         expert=expert,
+        num_model_partitions=1,
         split_params=False)  # Ensures all experts start with same params
     init_batch = {
         'inputs':
@@ -140,6 +141,7 @@ class MoeLayerTest(parameterized.TestCase):
         train_capacity_factor=1.,
         eval_capacity_factor=1.,
         expert=expert,
+        num_model_partitions=1,
         split_params=False)  # Ensures all experts start with same params
 
     router_weights = routing.RouterWeights(name='router_weights')
@@ -209,31 +211,57 @@ class MoeLayerTest(parameterized.TestCase):
 
   @parameterized.parameters(
       dict(
-          max_group_size=8, num_tokens=32, num_experts=2,
+          max_group_size=8,
+          num_tokens=32,
+          num_experts=2,
+          num_expert_replicas=1,
           expected_num_groups=4),
       dict(
-          max_group_size=9, num_tokens=32, num_experts=2,
+          max_group_size=9,
+          num_tokens=32,
+          num_experts=2,
+          num_expert_replicas=1,
           expected_num_groups=4),
       dict(
           max_group_size=16,
           num_tokens=32,
           num_experts=4,
-          expected_num_groups=4),
+          num_expert_replicas=2,
+          expected_num_groups=8),
       dict(
           max_group_size=32,
           num_tokens=32,
           num_experts=2,
+          num_expert_replicas=1,
           expected_num_groups=2),
       dict(
           max_group_size=64,
           num_tokens=32,
           num_experts=2,
+          num_expert_replicas=1,
           expected_num_groups=2))
   def test_num_groups(self, max_group_size: int, num_tokens: int,
-                      num_experts: int, expected_num_groups: int):
+                      num_experts: int, num_expert_replicas: int,
+                      expected_num_groups: int):
+
     self.assertEqual(
-        moe_layers._num_groups(num_tokens, max_group_size, num_experts),
-        expected_num_groups)
+        moe_layers._num_groups(
+            num_tokens,
+            max_group_size,
+            num_experts,
+            num_expert_replicas,
+            strict_group_size=False), expected_num_groups)
+
+  def test_strict_group_size(self):
+    with self.assertRaisesRegex(
+        ValueError,
+        'Selected group_size=8 is less than the max_group_size=16.'):
+      moe_layers._num_groups(
+          num_tokens=16,
+          max_group_size=16,
+          num_experts=2,
+          num_expert_replicas=1,
+          strict_group_size=True)
 
   @parameterized.parameters(
       dict(num_model_partitions=-1), dict(num_model_partitions=0),
@@ -252,13 +280,14 @@ class MoeLayerTest(parameterized.TestCase):
         train_capacity_factor=1.,
         eval_capacity_factor=1.,
         expert=expert,
-        num_model_partitions=num_model_partitions)
+        num_model_partitions=num_model_partitions,
+        optimize_model_parallel_communications=True)
     init_batch = {'inputs': jnp.ones((4, 4, 3), jnp.float32)}
 
     with self.assertRaisesRegex(
-        ValueError,
+        ValueError, f'optimize_model_parallel_communications=True with '
         f'num_model_partitions={num_model_partitions} has no effect; '
-        'please set it to None instead.'):
+        f'please set optimize_model_parallel_communications=False'):
       init_layer_variables(jax.random.PRNGKey(0), moe_layer, init_batch)
 
 

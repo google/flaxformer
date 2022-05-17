@@ -5,6 +5,7 @@
 #
 # Required to be overridden:
 #
+# - NUM_MODEL_PARTITIONS
 # - NUM_ENCODER_LAYERS
 # - NUM_DECODER_LAYERS
 # - NUM_HEADS
@@ -32,6 +33,7 @@ from flaxformer.components import layer_norm
 from flaxformer.components import relative_position_biases
 
 # Must be overridden.
+NUM_MODEL_PARTITIONS = %gin.REQUIRED
 NUM_ENCODER_LAYERS = %gin.REQUIRED
 NUM_DECODER_LAYERS = %gin.REQUIRED
 NUM_HEADS = %gin.REQUIRED
@@ -86,18 +88,17 @@ moe_architecture.SparseEncoder:
   num_sparse_layers = %NUM_ENCODER_SPARSE_LAYERS
   sparse_layout = %ENCODER_SPARSE_LAYOUT
   sparse_layer_factory = @sparse_block/t5_architecture.EncoderLayer
-  dense_layer_factory = @dense_block/t5_architecture.EncoderLayer
-  dropout_factory = %DROPOUT_FACTORY
+  layer_factory = @dense_block/t5_architecture.EncoderLayer   # Dense factory
+  input_dropout_factory = %DROPOUT_FACTORY
+  output_dropout_factory = %DROPOUT_FACTORY
   layer_norm_factory = @layer_norm.T5LayerNorm
-  position_embedder_factory = None
-  activation_partitioning_dims = %ACTIVATION_PARTITIONING_DIMS
+  shared_relative_position_bias_factory = @relative_position_biases.RelativePositionBiases
   dtype = %ACTIVATION_DTYPE
 
 # Base EncoderLayer
 t5_architecture.EncoderLayer:
   dropout_factory = %DROPOUT_FACTORY
   layer_norm_factory = @layer_norm.T5LayerNorm
-  relative_position_bias_factory = @relative_position_biases.RelativePositionBiases
   activation_partitioning_dims = %ACTIVATION_PARTITIONING_DIMS
 
 # Block specific EncoderLayer(s)
@@ -115,11 +116,10 @@ moe_architecture.SparseDecoder:
   num_sparse_layers = %NUM_DECODER_SPARSE_LAYERS
   sparse_layout = %DECODER_SPARSE_LAYOUT
   sparse_layer_factory = @sparse_block/t5_architecture.DecoderLayer
-  dense_layer_factory = @dense_block/t5_architecture.DecoderLayer
+  layer_factory = @dense_block/t5_architecture.DecoderLayer   # Dense factory
   dropout_factory = %DROPOUT_FACTORY
   layer_norm_factory = @layer_norm.T5LayerNorm
-  position_embedder_factory = None
-  activation_partitioning_dims = %ACTIVATION_PARTITIONING_DIMS
+  shared_relative_position_bias_factory = @relative_position_biases.RelativePositionBiases
   dtype = %ACTIVATION_DTYPE
   output_logits_factory = @output_logits/dense.DenseGeneral
 
@@ -128,7 +128,6 @@ t5_architecture.DecoderLayer:
   encoder_decoder_attention = @dense_attention.MultiHeadDotProductAttention()
   dropout_factory = %DROPOUT_FACTORY
   layer_norm_factory = @layer_norm.T5LayerNorm
-  relative_position_bias_factory = @relative_position_biases.RelativePositionBiases
   activation_partitioning_dims = %ACTIVATION_PARTITIONING_DIMS
 
 # Block specific DecoderLayer(s)
@@ -214,9 +213,10 @@ moe_layers.MoeLayer:
   train_capacity_factor = %TRAIN_EXPERT_CAPACITY_FACTOR
   eval_capacity_factor = %EVAL_EXPERT_CAPACITY_FACTOR
   expert = @expert/dense.MlpBlock()
+  num_model_partitions = %NUM_MODEL_PARTITIONS
   dtype = %MOE_TRUNCATED_DTYPE
-  # *May* be worth overriding for large model parallel models.
-  num_model_partitions = None
+  # *May* be helpful for large model parallel models. See MoeLayer docstring.
+  optimize_model_parallel_communications = False
 sparse_encoder/moe_layers.MoeLayer:
   router = @sparse_encoder/routing.TokensChooseMaskedRouter()
 sparse_decoder/moe_layers.MoeLayer:
@@ -234,7 +234,7 @@ sparse_decoder/routing.TokensChooseMaskedRouter:
   batch_prioritized_routing = False  # BPR breaks autoregressive behavior
 
 routing.RouterWeights:
-  use_bias = True
+  use_bias = False
   dtype = %MOE_TRUNCATED_DTYPE
   kernel_init = @router_init/linen.initializers.normal()
   bias_init = %BIAS_INIT
@@ -246,7 +246,7 @@ router_init/linen.initializers.normal:
 
 # Expert config
 expert/dense.MlpBlock:
-  use_bias = True
+  use_bias = False
   intermediate_dim = %EXPERT_MLP_DIM
   activations = ('gelu', 'linear')
   kernel_init = @expert_kernel_init/linen.initializers.variance_scaling()
@@ -257,6 +257,7 @@ expert/dense.MlpBlock:
   input_axis_name = 'embed'
   intermediate_axis_name = 'expert_mlp'
   output_axis_name = 'embed'
+  data_sharding_constraints = ('expert_replicas', 'mlp')
   activation_partitioning_dims = 1
 expert_kernel_init/linen.initializers.variance_scaling:
   scale = %SCALE

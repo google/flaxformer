@@ -32,7 +32,6 @@ from jax import lax
 from jax import numpy as jnp
 import numpy as np
 
-from flaxformer import activation_partitioning
 from flaxformer.components import initializers
 from flaxformer.types import Array
 from flaxformer.types import DType
@@ -250,11 +249,17 @@ class Embed(nn.Module, Embedder[Array]):
     if self.one_hot:
       iota = lax.iota(jnp.int32, self.num_embeddings)
       one_hot = jnp.array(inputs[..., jnp.newaxis] == iota, dtype=self.dtype)
+      if input_axis_names is not None and self.axes:
+        one_hot = partitioning.with_sharding_constraint(
+            one_hot,
+            tuple(input_axis_names) + (self.axes[0],))
       output = jnp.dot(one_hot, jnp.asarray(self.embedding, self.dtype))
     else:
       output = jnp.asarray(self.embedding, self.dtype)[inputs]
-    if input_axis_names is not None:
-      output = activation_partitioning.with_sharding(output, 1)
+    if input_axis_names is not None and self.axes:
+      output = partitioning.with_sharding_constraint(
+          output,
+          tuple(input_axis_names) + (self.axes[1],))
     return output
 
   def attend(self, query: Array) -> Array:
@@ -492,7 +497,7 @@ class PositionEmbed(nn.Module, EmbedderWithDecode[Array]):
 
   def setup(self):
     shape = (self.num_embeddings, self.features)
-    self.embedding = partitioning.param_with_axes(
+    self.pos_embedding = partitioning.param_with_axes(
         'pos_embedding',
         self.embedding_init,
         shape,
@@ -527,10 +532,10 @@ class PositionEmbed(nn.Module, EmbedderWithDecode[Array]):
           lambda: jnp.array(-1, dtype=jnp.uint32))
       i = position_embedder_index.value
       position_embedder_index.value = i + 1
-      return jax.lax.dynamic_slice(self.embedding, jnp.array((i, 0)),
+      return jax.lax.dynamic_slice(self.pos_embedding, jnp.array((i, 0)),
                                    np.array((1, self.features)))
 
-    return jnp.take(self.embedding, inputs, axis=0)
+    return jnp.take(self.pos_embedding, inputs, axis=0)
 
 
 def rotate_half(x):

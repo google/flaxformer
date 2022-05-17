@@ -16,6 +16,7 @@
 
 """
 
+import functools
 from typing import Optional
 
 from absl import logging
@@ -77,9 +78,10 @@ class MoeLayer(nn.Module):
       smaller group size will result in faster but more approximate (and
       potentially less stable) routing choices. Note that actual group size may
       be smaller than max_group_size for consistency with the number of experts
-      and tokens. In practice, we find that imperfect routing choices are
-      tolerable and recommend choosing a group size on the order of 4096 tokens,
-      although this number will vary based on model configuration and size.
+      and tokens; see also `strict_group_size` attribute. In practice, we find
+      that imperfect routing choices are tolerable and recommend choosing a
+      group size on the order of 4096 tokens, although this number will vary
+      based on model configuration and size.
     train_capacity_factor: Scaling factor to increase the expert token capacity
       during training. This factor plays an analogous, but slightly different,
       role depending on the routing assignment algorithm:
@@ -95,6 +97,8 @@ class MoeLayer(nn.Module):
     expert: The actual expert, currently constrained to be an MlpBlock.
     router: Token dispatch router. The router determines which tokens are
       dispatched to which expert, and how the expert outputs are combined.
+    num_model_partitions: Size of the model parallel submesh. Model parallelism
+      is used if num_model_partitions > 1.
     min_expert_capacity: Minimum token processing capacity for each expert.
     dropout_rate: Dropout rate for each expert.
     dtype: The numeric type (default: bfloat16). We recommend a truncated float
@@ -104,18 +108,22 @@ class MoeLayer(nn.Module):
     split_params: Whether or not to initialize each expert's parameters
       independently.
     precision: XLA precision for array computations.
-    num_model_partitions: EXPERIMENTAL flag. Size of the model parallel submesh.
-      If using model-parallelism for experts (experts spanning multiple
-      devices), this flag is used to ensure that we do not perform duplicate
-      all-to-all communication for experts spread across multiple devices, by
-      partitioning the model/hidden dimension along the model-parallel axis for
-      the experts. This same partition is used in Mesh Tensorflow:
+    optimize_model_parallel_communications: EXPERIMENTAL flag. If using
+      model-parallelism for experts (experts spanning multiple devices), this
+      flag is used to ensure that we do not perform duplicate all-to-all
+      communication for experts spread across multiple devices, by partitioning
+      the model/hidden dimension along the model-parallel axis for the experts.
+      This same partition is used in Mesh Tensorflow:
       https://github.com/tensorflow/mesh/blob/6b31c0fc/mesh_tensorflow/transformer/moe.py#L487-L496
       This flag is experimental because, depending on model size and hardware
       topology, the reduction in all-to-all communication costs may be
       outweighed by the increased costs from the new reshape and all-gather.
-      Current recommendation, roughly following Mesh Tensorflow, is to only to
-      use this flag for large models.
+      Current recommendation, roughly following Mesh Tensorflow, is only to use
+      this flag for large models.
+    strict_group_size: If True, fail if unable to set the token group size equal
+      to max_group_size. If False (default), the actual group size may be
+      smaller than max_group_size for consistency with the number of experts
+      and tokens.
   """
   num_experts: int
   max_group_size: int
@@ -125,18 +133,29 @@ class MoeLayer(nn.Module):
   eval_capacity_factor: float
   expert: dense.MlpBlock
   router: routing.Router
+  num_model_partitions: int
   min_expert_capacity: int = 4
   dropout_rate: float = 0.1
   dtype: DType = jnp.bfloat16
   split_params: bool = True
   precision: jax.lax.Precision = jax.lax.Precision.DEFAULT
-  num_model_partitions: Optional[int] = None
+  optimize_model_parallel_communications: bool = False
+  strict_group_size: bool = False
 
   def setup(self):
     """Verifies that the MoeLayer is correctly configured."""
-    if self.num_model_partitions is not None and self.num_model_partitions <= 1:
-      raise ValueError(f'num_model_partitions={self.num_model_partitions} has '
-                       'no effect; please set it to None instead.')
+    if self.optimize_model_parallel_communications and self.num_model_partitions <= 1:
+      raise ValueError(
+          'optimize_model_parallel_communications=True with '
+          f'num_model_partitions={self.num_model_partitions} has no effect; '
+          f'please set optimize_model_parallel_communications=False.')
+
+    if self.num_model_partitions == 1:
+      # No model parallelism. All devices are used to shard data.
+      self.num_expert_replicas = max(1, jax.device_count() // self.num_experts)
+    else:
+      # We do not support multiple copies of model parallel experts.
+      self.num_expert_replicas = 1
 
   @nn.compact
   def __call__(self,
@@ -170,7 +189,8 @@ class MoeLayer(nn.Module):
     batch_size, seq_length, hidden_dim = inputs.shape
     num_tokens = batch_size * seq_length
 
-    num_groups = _num_groups(num_tokens, self.max_group_size, self.num_experts)
+    num_groups = _num_groups(num_tokens, self.max_group_size, self.num_experts,
+                             self.num_expert_replicas, self.strict_group_size)
     tokens_per_group = num_tokens // num_groups
 
     if enable_dropout:  # Training
@@ -389,7 +409,7 @@ class MoeLayer(nn.Module):
     """Sends and receives inputs to experts using pjit induced all_to_all calls.
 
     Assumes training is distributed using jax.experimental.pjit and induces
-    all_to_all calls using sharding constraints and jnp.swapaxes. We use Flax's
+    all_to_all calls using reshapes and sharding constraints. We use Flax's
     lifted vmap to apply the expert transformation.
 
     The entire computations is performed using self.dtype. We recommend a
@@ -413,12 +433,13 @@ class MoeLayer(nn.Module):
 
     # Send examples to their target devices.
     inputs = flax_partitioning.with_sharding_constraint(
-        inputs, ('expert', 'unmodeled', 'length', 'embed'))
+        inputs, ('batch', 'unmodeled', 'length', 'embed'))
     inputs = inputs.reshape(num_experts, num_groups // num_experts, num_experts,
                             capacity, hidden_dim)
+    inputs = flax_partitioning.with_sharding_constraint(
+        inputs, ('expert', 'expert_replicas', 'unmodeled', 'length', 'embed'))
 
-    # Induce all-to-all communication by interchanging expert axes.
-    if self.num_model_partitions is not None and self.num_model_partitions > 1:
+    if self.optimize_model_parallel_communications:
       # Partition inputs along model parallel submesh axis to reduce duplicate
       # all-to-all communications in model parallelism cases.
       # Shape: [num_experts, num_groups // num_experts, num_experts, capacity,
@@ -430,37 +451,38 @@ class MoeLayer(nn.Module):
       # hidden_dim]
       inputs = jnp.swapaxes(inputs, 0, 2)
 
-    inputs = inputs.reshape(-1, hidden_dim)
-    inputs = flax_partitioning.with_sharding_constraint(inputs,
-                                                        ('expert', 'embed'))
     inputs = inputs.reshape(num_experts, num_groups * capacity, hidden_dim)
+    inputs = flax_partitioning.with_sharding_constraint(
+        inputs, ('expert', 'expert_replicas', 'embed'))
 
     # Apply expert transformation.
-    def layer_fn(mapped_expert, expert_inputs):
-      return mapped_expert(
-          expert_inputs, enable_dropout=enable_dropout, **kwargs)
 
-    outputs = flax_partitioning.vmap_with_axes(
-        layer_fn,
-        in_axes=(0,),  # 0 is the expert dimension of `inputs`
-        out_axes=0,
+    # Vectorize over the 'expert' axis of `inputs`. We use Flax's Lifted vmap
+    # to introduce parameters along the mapped `expert` axis.
+    @functools.partial(
+        flax_partitioning.vmap_with_axes,
+        in_axes=(0,),
         variable_axes={'params': 0},  # Each expert has its own parameters
         split_rngs={
             # Whether or not to initialize each expert's params independently.
             'params': self.split_params,
             'dropout': True  # Always use different dropout key for each expert
         },
-        partitioning_axis_names={'params': 'expert'})(self.expert, inputs)
+        partitioning_axis_names={'params': 'expert'})
+    def layer_fn(mapped_expert, expert_inputs):
+      return mapped_expert(
+          expert_inputs, enable_dropout=enable_dropout, **kwargs)
+
+    outputs = layer_fn(self.expert, inputs)
 
     # Send examples back to their original devices.
-    outputs = outputs.reshape(num_experts * num_groups, capacity, hidden_dim)
+    outputs = outputs.reshape(num_experts, num_groups, capacity, hidden_dim)
     outputs = flax_partitioning.with_sharding_constraint(
-        outputs, ('expert', 'length', 'embed'))
+        outputs, ('expert', 'expert_replicas', 'length', 'embed'))
     outputs = outputs.reshape(num_experts, num_groups // num_experts,
                               num_experts, capacity, hidden_dim)
 
-    # Induce all-to-all communication by interchanging expert axes.
-    if self.num_model_partitions is not None and self.num_model_partitions > 1:
+    if self.optimize_model_parallel_communications:
       # Shape: [num_experts, num_groups // num_experts, num_experts, capacity,
       # hidden_dim, self.num_model_partitions]
       outputs = self._swapaxes_with_sharding_constraint(outputs, 0, 2, capacity,
@@ -472,7 +494,7 @@ class MoeLayer(nn.Module):
 
     outputs = outputs.reshape(num_groups, num_experts, capacity, hidden_dim)
     outputs = flax_partitioning.with_sharding_constraint(
-        outputs, ('expert', 'unmodeled', 'length', 'embed'))
+        outputs, ('batch', 'unmodeled', 'length', 'embed'))
 
     return jax.lax.convert_element_type(outputs, inputs_dtype)
 
@@ -495,7 +517,7 @@ class MoeLayer(nn.Module):
                                          hidden_dim: int) -> Array:
     """Interchanges two array axes under model-parallel sharding constraints.
 
-    For model-parallel experts (self.num_model_partitions>1), to ensure that
+    For model-parallel experts (self.num_model_partitions > 1), to ensure that
     multiple devices are not performing all-to-all duplicate communications, we
     partition the model/hidden dimension along the expert model-parallel axis
     ('expert_mlp') before performing the all-to-all transfer. See also:
@@ -513,9 +535,9 @@ class MoeLayer(nn.Module):
       View or copy of input array with axes swapped.
 
     Raises:
-      ValueError if num_model_partitions is None or 1.
+      ValueError if num_model_partitions is less than or equal to 1.
     """
-    if self.num_model_partitions is None or self.num_model_partitions <= 1:
+    if self.num_model_partitions <= 1:
       raise ValueError('Expected num_model_partitions to be > 1 but got: '
                        f'{self.num_model_partitions}')
     array = array.reshape(self.num_experts, -1, self.num_experts,
@@ -531,22 +553,31 @@ class MoeLayer(nn.Module):
                 'expert_mlp'))
 
 
-def _num_groups(num_tokens: int, max_group_size: int, num_experts: int) -> int:
+def _num_groups(num_tokens: int,
+                max_group_size: int,
+                num_experts: int,
+                num_expert_replicas: int,
+                strict_group_size: bool = False) -> int:
   """Returns the number of token routing groups.
 
   Note: For pjit-based training, all quantities are global.
 
   We select the smallest num_groups such that:
-  - num_groups >= num_tokens / max_group_size,
+  - num_groups >= num_tokens / max_group_size (ensuring the group size is no
+    larger than max_group_size),
   - num_tokens % num_groups = 0 (ensuring that the group size evenly divides
     into the num_tokens),
-  - num_groups % num_experts = 0.
+  - num_groups % (num_expert_replicas * num_experts) = 0 (ensuring that number
+    of groups can be split across the total number of experts).
 
   Args:
     num_tokens: Number of tokens from input batch.
     max_group_size: Maximum size of each token routing group. Actual group size
       may end up being smaller.
-    num_experts: Number of experts.
+    num_experts: Total number of unique experts.
+    num_expert_replicas: Number of copies of each expert.
+    strict_group_size: If True, fail if unable to set the token group size equal
+      to max_group_size.
 
   Returns:
     Number of token routing groups.
@@ -557,11 +588,11 @@ def _num_groups(num_tokens: int, max_group_size: int, num_experts: int) -> int:
   # For pjit-based partitioning, we manipulated arrays globally. The number of
   # experts must evenly divide the number of (global) groups.
   min_num_groups = num_tokens // max_group_size
-  min_num_groups = max(min_num_groups, num_experts)
+  min_num_groups = max(min_num_groups, num_expert_replicas * num_experts)
 
   def viable(n):
     """Returns true iff n is a viable number of groups."""
-    return num_tokens % n == 0 and n % num_experts == 0
+    return num_tokens % n == 0 and n % (num_expert_replicas * num_experts) == 0
 
   # Increase the number of groups (and decrease the group size) until we have
   # a viable number of groups.
@@ -574,12 +605,20 @@ def _num_groups(num_tokens: int, max_group_size: int, num_experts: int) -> int:
         'Group size and the number of experts must divide evenly into the '
         f'global number of tokens, but num_tokens={num_tokens}, while '
         f'num_groups={num_groups} for max_group_size={max_group_size} '
-        f'and num_experts={num_experts}')
+        f'and num_experts={num_experts}, each with {num_expert_replicas} '
+        'replicas')
 
   group_size = num_tokens // num_groups
   logging.info(
       'Selected group_size=%d and num_groups=%d for input num_tokens=%d, '
-      'max_group_size=%d and num_experts=%d', group_size, num_groups,
-      num_tokens, max_group_size, num_experts)
+      'max_group_size=%d, num_experts=%d and num_expert_replicas=%d',
+      group_size, num_groups, num_tokens, max_group_size, num_experts,
+      num_expert_replicas)
+
+  if strict_group_size and group_size != max_group_size:
+    raise ValueError(
+        f'Selected group_size={group_size} is less than the '
+        f'max_group_size={max_group_size}. Exiting because strict mode is '
+        'active (strict_group_size=True)')
 
   return num_groups

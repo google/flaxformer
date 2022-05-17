@@ -18,6 +18,7 @@ from typing import Any, Tuple
 
 import flax
 from flax import linen as nn
+from flax.linen import partitioning as flax_partitioning
 import jax
 import jax.numpy as jnp
 
@@ -207,7 +208,8 @@ class RouterWeights(nn.Module):
         kernel_init=self.kernel_init,
         bias_init=self.bias_init,
         precision=self.precision,
-        kernel_axis_names=('embed', 'unmodeled'))(  # Router weights replicated
+        kernel_axis_names=('embed', 'unmodeled'),  # Router weights replicated
+        name='w')(
             token_inputs)
 
 
@@ -242,8 +244,14 @@ class Router(nn.Module):
     Returns:
       Router indices or mask arrays (depending on router type).
     """
+    token_inputs = flax_partitioning.with_sharding_constraint(
+        token_inputs, ('batch', 'length', 'embed'))
     router_probs, router_logits = self._compute_router_probabilities(
         token_inputs, num_experts, apply_jitter)
+    router_probs = flax_partitioning.with_sharding_constraint(
+        router_probs, ('batch', 'length', 'unmodeled'))
+    router_logits = flax_partitioning.with_sharding_constraint(
+        router_logits, ('batch', 'length', 'unmodeled'))
     instructions = self._compute_routing_instructions(router_probs,
                                                       expert_capacity)
     return instructions.replace(router_z_loss=_router_z_loss(router_logits))

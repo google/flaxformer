@@ -62,9 +62,8 @@ adafactor.Adafactor:
 Z_LOSS = 0.0001
 LABEL_SMOOTHING = 0.0
 # Normalize loss to match MeshTF MoE setups -- to balance MoE auxiliary load
-# balancing loss and router z-loss. The loss normalizing factor should be set
-# to: pretraining batch_size * target_token_length (default: 2048 * 114).
-LOSS_NORMALIZING_FACTOR = 233472
+# balancing loss and router z-loss.
+LOSS_NORMALIZING_FACTOR = 'NUM_REAL_TARGET_TOKENS'
 
 # Model
 MODEL = @models.MoeEncoderDecoderModel()

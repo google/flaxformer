@@ -4,14 +4,14 @@
 include 'flaxformer/t5x/configs/moe/models/experts_choose_base.gin'
 
 # Architecture overrides
-NUM_ENCODER_LAYERS = 6
-NUM_DECODER_LAYERS = 6
-NUM_HEADS = 8
+NUM_ENCODER_LAYERS = 8
+NUM_DECODER_LAYERS = 8
+NUM_HEADS = 6
 HEAD_DIM = 64
 EMBED_DIM = 512
-MLP_DIM = 2048
+MLP_DIM = 1024
 
 # MoE overrides
 # Replace every other dense MLP sublayer with MoE sublayer.
-NUM_ENCODER_SPARSE_LAYERS = 3
-NUM_DECODER_SPARSE_LAYERS = 3
+NUM_ENCODER_SPARSE_LAYERS = 4
+NUM_DECODER_SPARSE_LAYERS = 4

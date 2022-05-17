@@ -57,7 +57,10 @@ class GinConfigsTest(parameterized.TestCase):
   def test_model_gin_config(self, filename):
     path = os.path.join(self.root, 'models', filename)
     gin.parse_config_file(path)
-    gin.parse_config('NUM_EXPERTS = 2')
+    gin.parse_config("""
+      NUM_EXPERTS = 2
+      NUM_MODEL_PARTITIONS = 1
+      """)
     gin.finalize()  # Check for required values, etc.
 
     model_config_ref: gin.ConfigurableReference = gin.query_parameter('%MODEL')
@@ -108,6 +111,7 @@ class GinConfigsTest(parameterized.TestCase):
         MLP_DIM = 8
         NUM_EMBEDDINGS = 128
         NUM_EXPERTS = 2
+        NUM_MODEL_PARTITIONS = 1
         """)
     gin.finalize()  # Check for required values, etc.
 

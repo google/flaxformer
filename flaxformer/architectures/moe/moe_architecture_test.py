@@ -115,6 +115,7 @@ def _make_sparse_mlp() -> MoeLayer:
       train_capacity_factor=1.,
       eval_capacity_factor=1.,
       expert=expert,
+      num_model_partitions=1,
       dtype=jnp.float32)
 
 
@@ -192,8 +193,9 @@ class MoeArchitectureTest(parameterized.TestCase):
         num_sparse_layers=1,
         sparse_layout=LayerLayout.MIXED,
         sparse_layer_factory=_make_sparse_encoder_layer,
-        dense_layer_factory=_make_dense_encoder_layer,
-        dropout_factory=_make_dropout,
+        layer_factory=_make_dense_encoder_layer,
+        input_dropout_factory=_make_dropout,
+        output_dropout_factory=_make_dropout,
         layer_norm_factory=_make_layer_norm,
     )
     decoder_factory = functools.partial(
@@ -202,7 +204,7 @@ class MoeArchitectureTest(parameterized.TestCase):
         num_sparse_layers=1,
         sparse_layout=LayerLayout.MIDDLE,
         sparse_layer_factory=_make_sparse_decoder_layer,
-        dense_layer_factory=_make_dense_decoder_layer,
+        layer_factory=_make_dense_decoder_layer,
         dropout_factory=_make_dropout,
         layer_norm_factory=_make_layer_norm,
     )
@@ -233,7 +235,7 @@ class MoeArchitectureTest(parameterized.TestCase):
     # For readability, we only verify the weight names to check that the layouts
     # are correct.
 
-    encoder_0_layer = variables['params']['encoder']['encoders_0']['layers_0']
+    encoder_0_layer = variables['params']['encoder']['layers_0']
     # First encoder layer should have regular self-attention.
     self.assertIn('attention', encoder_0_layer)
     # And it should contain a dense MLP (because there is only one sparse MLP
@@ -242,13 +244,13 @@ class MoeArchitectureTest(parameterized.TestCase):
     self.assertIn('wo', encoder_0_layer['mlp'])  # Dense
     self.assertNotIn('expert', encoder_0_layer['mlp'])  # Sparse
 
-    encoder_1_layer = variables['params']['encoder']['encoders_1']['layers_0']
+    encoder_1_layer = variables['params']['encoder']['layers_1']
     # Second encoder layer should have regular self-attention.
     self.assertIn('attention', encoder_1_layer)
     # And it should contain a sparse MoeLayer (from sparse MIXED layout).
     self.assertIn('expert', encoder_1_layer['mlp'])  # Sparse
 
-    decoder_0_layer = variables['params']['decoder']['decoders_0']['layers_0']
+    decoder_0_layer = variables['params']['decoder']['layers_0']
     # First decoder layer should have regular encoder-decoder attention.
     self.assertIn('query', decoder_0_layer['encoder_decoder_attention'])
     # It should contain regular self-attention.
@@ -259,7 +261,7 @@ class MoeArchitectureTest(parameterized.TestCase):
     self.assertIn('wo', decoder_0_layer['mlp'])  # Dense
     self.assertNotIn('expert', decoder_0_layer['mlp'])  # Sparse
 
-    decoder_1_layer = variables['params']['decoder']['decoders_1']['layers_0']
+    decoder_1_layer = variables['params']['decoder']['layers_1']
     # Second decoder layer should have regular encoder-decoder attention.
     self.assertIn('query', decoder_1_layer['encoder_decoder_attention'])
     # It should contain regular self-attention.
@@ -279,17 +281,19 @@ class MoeArchitectureTest(parameterized.TestCase):
         num_sparse_layers=0,
         sparse_layout=LayerLayout.MIXED,
         sparse_layer_factory=_make_sparse_encoder_layer,
-        dense_layer_factory=_make_dense_encoder_layer,
-        dropout_factory=_make_dropout,
+        layer_factory=_make_dense_encoder_layer,
+        input_dropout_factory=_make_dropout,
+        output_dropout_factory=_make_dropout,
         layer_norm_factory=_make_layer_norm,
     )
+
     decoder_factory = functools.partial(
         moe_architecture.SparseDecoder,
         num_layers=2,
         num_sparse_layers=2,
         sparse_layout=LayerLayout.MIDDLE,
         sparse_layer_factory=_make_sparse_decoder_layer,
-        dense_layer_factory=_make_dense_decoder_layer,
+        layer_factory=_make_dense_decoder_layer,
         dropout_factory=_make_dropout,
         layer_norm_factory=_make_layer_norm,
     )
@@ -318,7 +322,7 @@ class MoeArchitectureTest(parameterized.TestCase):
     self.assertEqual(output.shape, (batch_size, seq_length, num_embeddings))
 
     # For degenerate cases, we only have one underlying Encoder.
-    encoder = variables['params']['encoder']['encoders_0']
+    encoder = variables['params']['encoder']
     for layer in ['layers_0', 'layers_1']:
       encoder_layer = encoder[layer]
       # All encoder layers should have regular attention.
@@ -329,7 +333,7 @@ class MoeArchitectureTest(parameterized.TestCase):
       self.assertNotIn('expert', encoder_layer['mlp'])  # Sparse
 
     # For degenerate cases, we only have one underlying Decoder.
-    decoder = variables['params']['decoder']['decoders_0']
+    decoder = variables['params']['decoder']
     for layer in ['layers_0', 'layers_1']:
       decoder_layer = decoder[layer]
       # All decoder layers should have self-attention.

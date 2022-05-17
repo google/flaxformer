@@ -95,6 +95,7 @@ output_logits/dense.DenseGeneral:
   dtype = 'float32'
   kernel_init = @output_logits_kernel_init/linen.initializers.variance_scaling()
   bias_init = %BIAS_INIT
+  kernel_axis_names = ["embed", "vocab"]
 output_logits_kernel_init/linen.initializers.variance_scaling:
   scale = %SCALE
   mode = 'fan_in'

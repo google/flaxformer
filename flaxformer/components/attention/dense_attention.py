@@ -1236,7 +1236,7 @@ class MultiQueryDotProductAttention(nn.Module, DenseAttention):
         # TODO: Push the "quantized vs not" decision down into
         # the AQT library. Currently we make that decision here, because the AQT
         # library doesn't support DenseGeneral.
-        aqt_context = aqt_config.QuantContext(
+        aqt_context = aqt_config.DynamicContext(
             update_bounds=False, collect_acts_stats=False)
         weight_prec = self.weight_params.prec if self.weight_params else None
         half_shift = self.weight_params.half_shift if self.weight_params else False
@@ -1251,7 +1251,7 @@ class MultiQueryDotProductAttention(nn.Module, DenseAttention):
             features=features,
             hparams=aqt_hparams,
             train=enable_dropout,
-            quant_context=aqt_context,
+            dynamic_context=aqt_context,
             paxis_name=None,
             # No "cross-replica" reduction expressed in the XLA graph at this
             # stage. Will be imposed later, automatically, by XLA SPMD.
@@ -1923,10 +1923,10 @@ def validate_dense_attention_call_parameter_shapes(inputs_q: Array,
                          f'num_heads ({num_heads}), or 1')
     else:
       num_heads = mask.shape[-3]
-    if mask.shape[-2] != inputs_q.shape[-2]:
+    if mask.shape[-2] not in (1, inputs_q.shape[-2]):
       raise ValueError(f'Mismatched q_length: expected '
                        f'mask.shape[-2] ({mask.shape[-2]}) == '
-                       f'inputs_q.shape[-2] ({inputs_q.shape[-2]})')
+                       f'inputs_q.shape[-2] ({inputs_q.shape[-2]}), or 1')
     if mask.shape[-1] != inputs_kv.shape[-2]:
       raise ValueError(f'Mismatched kv_length: expected '
                        f'mask.shape[-1] ({mask.shape[-1]}) == '

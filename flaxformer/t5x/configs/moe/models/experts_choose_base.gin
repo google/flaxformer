@@ -39,6 +39,7 @@ EXPERT_MLP_DIM = %MLP_DIM
 # are faster, but may be slightly less stable.
 GROUP_SIZE = 4096
 EXPERT_DROPOUT_RATE = 0.0
+AUX_LOSS_FACTOR = 0.01
 ROUTER_Z_LOSS_FACTOR = 0.0
 
 # Experts choose routing can break autoregressive behavior, so we only use it in
@@ -69,10 +70,8 @@ adafactor.Adafactor:
 # Loss HParam defaults
 Z_LOSS = 0.0001
 LABEL_SMOOTHING = 0.0
-# Normalize loss to match other MoE models and balance router z-loss. The loss
-# normalizing factor should be set to: pretraining batch_size *
-# target_token_length (default: 2048 * 114).
-LOSS_NORMALIZING_FACTOR = 233472
+# Normalize loss to match other MoE models and balance router z-loss.
+LOSS_NORMALIZING_FACTOR = 'NUM_REAL_TARGET_TOKENS'
 
 # Model
 MODEL = @models.MoeEncoderDecoderModel()
@@ -84,4 +83,5 @@ models.MoeEncoderDecoderModel:
   z_loss = %Z_LOSS
   label_smoothing = %LABEL_SMOOTHING
   loss_normalizing_factor = %LOSS_NORMALIZING_FACTOR
+  aux_loss_factor = %AUX_LOSS_FACTOR
   router_z_loss_factor = %ROUTER_Z_LOSS_FACTOR

@@ -301,6 +301,40 @@ class DenseTest(parameterized.TestCase):
           random.PRNGKey(0), inputs_with_batch_dim, enable_dropout=False)
     np.testing.assert_allclose(batch_result, result[np.newaxis, ...])
 
+  def test_user_defined_data_sharding_constraints(self):
+    customized_module = dense.MlpBlock(
+        use_bias=False,
+        intermediate_dim=4,
+        activations=('relu',),
+        kernel_init=nn.initializers.xavier_uniform(),
+        bias_init=nn.initializers.normal(stddev=1e-6),
+        dtype=jnp.float32,
+        data_sharding_constraints=('my_constraint', 'embed'))
+
+    axis_rules = [('embed', None), ('my_constraint', 'model')]
+    inputs = np.array(
+        [
+            [1, 2, 3],  # Batch 1.
+            [4, 5, 6],  # Batch 2.
+        ],
+        dtype=np.float32)
+
+    with mock.patch(
+        'flax.linen.partitioning._AxisRules.rules',
+        new_callable=mock.PropertyMock,
+        return_value=axis_rules):
+      result, _ = customized_module.init_with_output(
+          random.PRNGKey(0), inputs, enable_dropout=False)
+
+    expected_result = [[
+        1.1578339338302612, -2.476144552230835, 1.1046674251556396
+    ], [2.4860682487487793, -5.988793849945068, 2.46048641204834]]
+    np.testing.assert_allclose(
+        result.tolist(),
+        expected_result,
+        rtol=1e-6,
+    )
+
   def test_quantization_no_params_specified(self):
     module = dense.MlpBlock(
         use_bias=False,
