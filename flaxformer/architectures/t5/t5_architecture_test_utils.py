@@ -14,8 +14,9 @@
 
 """Utilties for t5_architecture_test, and related tests."""
 
-from typing import Any
+from typing import Any, Optional
 
+from aqt.jax_legacy.jax import quantization as aqt
 from flax import linen as nn
 from jax import numpy as jnp
 from flaxformer.architectures.t5 import parallel_fused_decoder
@@ -90,7 +91,8 @@ def _make_relative_position_bias(
 
 
 def make_config1(scan_layers=False,
-                 layer_remat='legacy') -> t5_architecture.EncoderDecoder:
+                 layer_remat='legacy',
+                 sow_intermediates=False) -> t5_architecture.EncoderDecoder:
   """Returns an EncoderDecoder."""
   dtype = jnp.float32
   num_attn_heads = 8
@@ -106,7 +108,8 @@ def make_config1(scan_layers=False,
         layer_norm_factory=make_layer_norm,
         relative_position_bias_factory=(
             lambda: _make_relative_position_bias(num_attn_heads, dtype)),
-        scanned=scan_layers)
+        scanned=scan_layers,
+        sow_intermediates=sow_intermediates)
 
   def _make_decoder_layer(shared_relative_position_bias):
     assert shared_relative_position_bias is None
@@ -118,7 +121,8 @@ def make_config1(scan_layers=False,
         layer_norm_factory=make_layer_norm,
         relative_position_bias_factory=(
             lambda: _make_relative_position_bias(num_attn_heads, dtype)),
-        scanned=scan_layers)
+        scanned=scan_layers,
+        sow_intermediates=sow_intermediates)
 
   def _make_encoder(shared_token_embedder):
     assert shared_token_embedder is None
@@ -132,6 +136,7 @@ def make_config1(scan_layers=False,
         dtype=dtype,
         scan_layers=scan_layers,
         layer_remat=layer_remat,
+        sow_intermediates=sow_intermediates,
     )
 
   def _make_decoder(shared_token_embedder):
@@ -146,6 +151,7 @@ def make_config1(scan_layers=False,
         dtype=dtype,
         scan_layers=scan_layers,
         layer_remat=layer_remat,
+        sow_intermediates=sow_intermediates,
     )
 
   return t5_architecture.EncoderDecoder(
@@ -219,7 +225,11 @@ def make_parallel_transformer_config() -> t5_architecture.EncoderDecoder:
   )
 
 
-def make_parallel_fused_transformer_config() -> t5_architecture.DecoderOnly:
+def make_parallel_fused_transformer_config(
+    use_aqt: bool = False,
+    weight_params: Optional[aqt.QuantOps.WeightParams] = None,
+    possibly_use_quantized_vars: bool = False,
+) -> t5_architecture.DecoderOnly:
   """Returns an EncoderDecoder with parallel=True."""
   dtype = jnp.bfloat16
   num_attn_heads = 8
@@ -266,7 +276,9 @@ def make_parallel_fused_transformer_config() -> t5_architecture.DecoderOnly:
         layer_norm_factory=make_layer_norm,
         relative_position_bias_factory=(
             lambda: _make_relative_position_bias(num_attn_heads, dtype)),
-    )
+        use_aqt=use_aqt,
+        weight_params=weight_params,
+        possibly_use_quantized_vars=possibly_use_quantized_vars)
 
   def _make_output_logits():
     return dense.DenseGeneral(

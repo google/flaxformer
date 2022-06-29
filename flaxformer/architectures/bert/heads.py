@@ -203,10 +203,10 @@ def gather_indices(inputs: Array, indices: Array) -> Array:
   # This way, we are indexing a 2D input array with a 1D indices array, and then
   # we reshape it back.
   batch_size, seq_length, features = inputs.shape
-  flat_offsets = (jnp.arange(0, batch_size) * seq_length).reshape([-1, 1])
+  flat_offsets = (jnp.arange(batch_size) * seq_length).reshape([-1, 1])
   flat_indices = (indices + flat_offsets).reshape([-1])
   flat_inputs = inputs.reshape([batch_size * seq_length, features])
-  gathered_inputs = jnp.take(flat_inputs, flat_indices, axis=0)
+  gathered_inputs = jnp.take(flat_inputs, flat_indices, axis=0, mode='clip')
   # Reshape back into [batch_size, indices_seq_length, features].
   return gathered_inputs.reshape([batch_size, -1, features])
 

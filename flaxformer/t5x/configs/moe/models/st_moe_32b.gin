@@ -1,0 +1,38 @@
+# ST-MoE-32B model.
+#
+# Based on the MeshTF ST-MoE-32B model (https://arxiv.org/abs/2202.08906).
+#
+# Model was pre-trained with 64-way data parallelism cores and 16-way model
+# parallelism cores.
+#
+# Provides MODEL and NUM_EXPERTS.
+
+from flaxformer.architectures.moe import moe_layers
+
+include 'flaxformer/t5x/configs/moe/models/st_moe_base.gin'
+
+# Architecture overrides.
+NUM_ENCODER_LAYERS = 24
+NUM_DECODER_LAYERS = 24
+NUM_HEADS = 64
+HEAD_DIM = 128
+EMBED_DIM = 5120
+MLP_DIM = 20480
+GROUP_SIZE = 4096  # Pre-training group size. We can reduce during fine-tuning.
+
+# MoE overrides.
+NUM_EXPERTS = 64
+# Every fourth layer is an MoE sublayer.
+NUM_ENCODER_SPARSE_LAYERS = 6
+NUM_DECODER_SPARSE_LAYERS = 6
+# Capacity factors.
+TRAIN_EXPERT_CAPACITY_FACTOR = 1.25
+EVAL_EXPERT_CAPACITY_FACTOR = 2.0
+
+# Helps w/ pre-training stability.
+ROUTER_Z_LOSS_FACTOR = 0.001
+
+# Experimental.
+# For model parallelism for large models, we can reduce all-to-all
+# communication by partitioning inputs before transferring data.
+# moe_layers.MoeLayer.optimize_model_parallel_communications = True

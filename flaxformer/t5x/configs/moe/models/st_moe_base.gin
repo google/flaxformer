@@ -1,0 +1,24 @@
+# ST-MoE Base model.
+#
+# Base variant of the MeshTF ST-MoE model (https://arxiv.org/abs/2202.08906).
+#
+# Provides MODEL and NUM_EXPERTS.
+
+from flaxformer.architectures.moe import moe_architecture
+from flaxformer.components import dense
+
+include 'flaxformer/t5x/configs/moe/models/tokens_choose_base.gin'
+
+# MoE overrides
+NUM_EXPERTS = 16
+# Every fourth layer is an MoE sublayer.
+NUM_ENCODER_SPARSE_LAYERS = 3
+NUM_DECODER_SPARSE_LAYERS = 3
+ROUTER_Z_LOSS_FACTOR = 0.0001  # ST-MoE uses router z-loss.
+
+# ST-MoE doesn't use BPR in encoder.
+sparse_encoder/routing.TokensChooseMaskedRouter.batch_prioritized_routing = False
+
+# Add an extra MLP sublayer to each sparse encoder/decoder block.
+moe_architecture.SparseEncoderLayer.extra_mlp = @dense.MlpBlock()
+moe_architecture.SparseDecoderLayer.extra_mlp = @dense.MlpBlock()

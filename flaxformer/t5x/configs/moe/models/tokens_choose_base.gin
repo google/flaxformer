@@ -1,5 +1,6 @@
 # Top-2 "tokens choose experts routing" MoE Base model.
-# Provides MODEL
+#
+# Provides MODEL and NUM_EXPERTS.
 
 from __gin__ import dynamic_registration
 
@@ -12,7 +13,6 @@ from t5x.contrib.moe import adafactor_utils
 from t5x.contrib.moe import models
 
 ARCHITECTURE = %gin.REQUIRED
-NUM_EXPERTS = %gin.REQUIRED
 
 include 'flaxformer/t5x/configs/moe/architectures/moe.gin'
 
@@ -25,6 +25,7 @@ EMBED_DIM = 768
 MLP_DIM = 2048
 
 # MoE overrides
+NUM_EXPERTS = 64
 # Replace every fourth dense MLP sublayer with MoE sublayer.
 NUM_ENCODER_SPARSE_LAYERS = 3
 NUM_DECODER_SPARSE_LAYERS = 3

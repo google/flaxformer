@@ -49,8 +49,6 @@ class GinConfigsTest(parameterized.TestCase):
   @parameterized.parameters(
       'experts_choose_small.gin',
       'experts_choose_tiny.gin',
-      'switch_small.gin',
-      'switch_tiny.gin',
       'tokens_choose_small.gin',
       'tokens_choose_tiny.gin',
   )

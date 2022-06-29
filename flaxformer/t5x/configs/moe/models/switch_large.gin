@@ -1,13 +1,11 @@
-# Switch MoE Large model.
+# Switch Transformer Large model.
 #
-# This modified version of the Switch Transformer is more closely aligned with
-# T5 v1.1 and more recent MoE models. It uses GEGLU activations with a smaller
-# MLP activation dimension, fewer sparse layers in the encoder and decoder,
-# and a separate (unshared) output logits layer.
+# Based on the original Switch Transformer (https://arxiv.org/abs/2101.03961).
 #
-# For the original Switch Transformer, see models/switch_classic_large.gin.
+# Note that unlike the original Mesh Tensorflow Switch Transformer, this T5X
+# version does not use any jitter noise in the router.
 #
-# Provides MODEL
+# Provides MODEL and NUM_EXPERTS.
 
 from flaxformer.architectures.moe import moe_layers
 
@@ -19,14 +17,20 @@ NUM_DECODER_LAYERS = 24
 NUM_HEADS = 16
 HEAD_DIM = 64
 EMBED_DIM = 1024
-MLP_DIM = 2816
+MLP_DIM = 4096
+GROUP_SIZE = 4096  # Smaller than Base
 
 # MoE overrides
-# Replace every fourth dense MLP sublayer with MoE sublayer.
-NUM_ENCODER_SPARSE_LAYERS = 6
-NUM_DECODER_SPARSE_LAYERS = 6
+NUM_EXPERTS = 128
+# Replace every other MLP sublayer is an MoE sublayer.
+NUM_ENCODER_SPARSE_LAYERS = 12
+NUM_DECODER_SPARSE_LAYERS = 12
+
+# Switch Transformer Large uses the same activations and output logits
+# projection as the Base config.
 
 # Experimental.
 # For model parallelism for large models, we can reduce all-to-all
 # communication by partitioning inputs before transferring data.
 # moe_layers.MoeLayer.optimize_model_parallel_communications = True
+

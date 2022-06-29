@@ -358,6 +358,64 @@ class DenseTest(parameterized.TestCase):
         'If use_aqt is True, either of weights or acts quantization'):
       module.init(random.PRNGKey(0), inputs, enable_dropout=False)
 
+  def test_mlp_materialized_weights(self):
+    weight_params = aqt.QuantOps.WeightParams(
+        prec=8, half_shift=False, axis=None)
+    module = dense.MlpBlock(
+        use_bias=False,
+        intermediate_dim=4,
+        activations=('relu',),
+        kernel_init=nn.initializers.xavier_uniform(),
+        bias_init=nn.initializers.normal(stddev=1e-6),
+        dtype=jnp.float32,
+        use_aqt=True,
+        weight_params=weight_params,
+        possibly_use_quantized_vars=True,
+    )
+    # enable_dropout
+    inputs = np.array(
+        [
+            # Batch 1.
+            [[1, 1], [1, 1], [1, 2]],
+            # Batch 2.
+            [[2, 2], [3, 1], [2, 2]],
+        ],
+        dtype=np.float32)
+    result, variables = module.init_with_output(
+        random.PRNGKey(0), inputs, enable_dropout=False)
+    assert_same_tree(
+        variables['params'].unfreeze(), {
+            'wi': {
+                'qkernel': [[0, 0, 0, 0], [0, 0, 0, 0]],
+                'qscale':
+                    [[2.818772e-07, -9.838715e-07, 1.211104e-06, 2.669436e-07]],
+            },
+            'wo': {
+                'qkernel': [[0, 0], [0, 0], [0, 0], [0, 0]],
+                'qscale': [[-1.854524e-06, 1.883966e-06]],
+            }
+        })
+    self.assertDictEqual(
+        testing_utils.param_dtypes_shapes_axes(variables['params'],
+                                               variables['params_axes']),
+        {
+            'wi': {
+                'qkernel': ['int8', 'embed=2', 'mlp=4'],
+                'qscale': ['float32', 'embed_qscale=1', 'mlp=4']
+            },
+            'wo': {
+                'qkernel': ['int8', 'mlp=4', 'embed=2'],
+                'qscale': ['float32', 'mlp_qscale=1', 'embed=2']
+            }
+        })
+
+    np.testing.assert_allclose(
+        result.tolist(),
+        [[[-0.0, -0.0], [-0.0, -0.0], [-0.0, -0.0]],
+         [[-0.0, -0.0], [-0.0, -0.0], [-0.0, -0.0]]],
+        rtol=1e-6,
+    )
+
   def test_mlp_quantized_weights(self):
     weight_params = aqt.QuantOps.WeightParams(
         prec=8, half_shift=False, axis=None)

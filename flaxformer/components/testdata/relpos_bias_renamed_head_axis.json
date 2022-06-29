@@ -1,0 +1,3 @@
+{
+  "rel_embedding": ["float32", "relpos_heads=3", "relpos_buckets=12"]
+}

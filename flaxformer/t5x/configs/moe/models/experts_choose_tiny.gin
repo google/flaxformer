@@ -1,5 +1,6 @@
 # "Experts choose tokens" MoE Tiny model.
-# Provides MODEL
+#
+# Provides MODEL and NUM_EXPERTS.
 
 include 'flaxformer/t5x/configs/moe/models/experts_choose_base.gin'
 
@@ -12,6 +13,7 @@ EMBED_DIM = 32
 MLP_DIM = 64
 
 # MoE overrides
+NUM_EXPERTS = 8
 # Only one sparse layer.
 NUM_ENCODER_SPARSE_LAYERS = 1
 NUM_DECODER_SPARSE_LAYERS = 1

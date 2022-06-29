@@ -1,0 +1,107 @@
+# Flaxformer implementation of h_transformer_1d architecture.
+#
+# Required to be overridden:
+#
+# - NUM_DECODER_LAYERS
+# - NUM_HEADS
+# - EMBED_DIM
+# - MLP_DIM
+# - NUM_EMBEDDINGS
+from __gin__ import dynamic_registration
+
+from flax import linen
+from flaxformer.architectures.h_transformer import h_attention
+from flaxformer.architectures.h_transformer import h_transformer_1d_architecture
+from flaxformer.components import dense
+from flaxformer.components import embedding
+from flaxformer.components import layer_norm
+
+# Must be overridden.
+NUM_DECODER_LAYERS = %gin.REQUIRED
+NUM_HEADS = %gin.REQUIRED
+EMBED_DIM = %gin.REQUIRED
+MLP_DIM = %gin.REQUIRED
+NUM_EMBEDDINGS = %gin.REQUIRED
+
+# Constants (may be overridden)
+ACTIVATION_DTYPE = 'bfloat16'
+SCALE = 1.0
+DROPOUT_RATE = 0.0
+NUM_CLUSTERS = 2
+
+# Macros
+BIAS_INIT = @bias_init/linen.initializers.normal()
+bias_init/linen.initializers.normal.stddev = 1e-6
+KERNEL_INIT = @kernel_init/linen.initializers.variance_scaling()
+kernel_init/linen.initializers.variance_scaling:
+  scale = %SCALE
+  mode = 'fan_in'
+  distribution = 'truncated_normal'
+
+DROPOUT_FACTORY = @dropout_factory/linen.Dropout
+dropout_factory/linen.Dropout:
+  rate = %DROPOUT_RATE
+  broadcast_dims = (-2,)
+
+# h-transformer DecoderOnly
+ARCHITECTURE = @h_transformer_1d_architecture.DecoderOnly()
+h_transformer_1d_architecture.DecoderOnly:
+  num_layers = %NUM_DECODER_LAYERS
+  layer_factory = @h_transformer_1d_architecture.DecoderOnlyLayer
+  input_dropout_factory = %DROPOUT_FACTORY
+  output_dropout_factory = %DROPOUT_FACTORY
+  layer_norm_factory = @layer_norm.T5LayerNorm
+  output_logits_factory = @output_logits/dense.DenseGeneral
+  shared_token_embedder = @embedding.Embed()
+
+# h-transformer DecoderOnly Layer
+h_transformer_1d_architecture.DecoderOnlyLayer:
+  attention = @h_attention.OneDimDecoderSelfAttention()
+  mlp = @dense.MlpBlock()
+  dropout_factory = %DROPOUT_FACTORY
+  layer_norm_factory = @layer_norm.T5LayerNorm
+
+# Decoupled embedding
+output_logits/dense.DenseGeneral:
+  features = %NUM_EMBEDDINGS
+  use_bias = False
+  dtype = 'float32'
+  kernel_init = %KERNEL_INIT
+  bias_init = %BIAS_INIT
+  kernel_axis_names = ["embed", "vocab"]
+
+# Token Embedder (shared)
+embedding.Embed:
+  num_embeddings= %NUM_EMBEDDINGS
+  features = %EMBED_DIM
+  cast_input_dtype = 'int32'
+  dtype = %ACTIVATION_DTYPE
+  attend_dtype = 'float32'  # for logit training stability
+  embedding_init = @token_embedder_init/linen.initializers.normal()
+  one_hot = True
+  name = 'token_embedder'
+token_embedder_init/linen.initializers.normal.stddev = 1.0
+
+# h-attention DecoderSelfAttention
+h_attention.OneDimDecoderSelfAttention:
+  num_heads = %NUM_HEADS
+  num_clusters = %NUM_CLUSTERS
+  dtype = %ACTIVATION_DTYPE
+  kernel_init = %KERNEL_INIT
+  bias_init = %BIAS_INIT
+  use_bias = False
+  broadcast_dropout = True
+  dropout_rate = %DROPOUT_RATE
+
+# MLP (encoder, decoder)
+dense.MlpBlock:
+  use_bias = False
+  intermediate_dim = %MLP_DIM
+  activations = ('gelu', 'linear')
+  kernel_init = %KERNEL_INIT
+  bias_init = %BIAS_INIT
+  intermediate_dropout_rate = %DROPOUT_RATE
+  final_dropout_rate = %DROPOUT_RATE
+  dtype = %ACTIVATION_DTYPE
+
+layer_norm.T5LayerNorm.dtype = %ACTIVATION_DTYPE

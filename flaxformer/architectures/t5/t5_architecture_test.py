@@ -371,6 +371,10 @@ class EncoderDecoderTest(absltest.TestCase):
     self.assertLen(pre_logits, 1)
     self.assertEqual(pre_logits[0].shape, (16, 8, 13))
 
+    logits = intermediates['decoder']['logits']
+    self.assertLen(logits, 1)
+    self.assertEqual(logits[0].shape, (16, 8, 71))
+
     encoder_embedded_inputs = intermediates['encoder']['embedder']['output']
     self.assertLen(encoder_embedded_inputs, 1)
     self.assertEqual(encoder_embedded_inputs[0].shape, (16, 8, 13))
@@ -391,6 +395,36 @@ class EncoderDecoderTest(absltest.TestCase):
       activations = intermediates['decoder'][f'layers_{i}']['activations']
       self.assertLen(activations, 1)
       self.assertEqual(activations[0].shape, (16, 8, 13))
+
+  def test_sow_intermediates_with_scan_model(self):
+    """Tests if we obtain intermediates when using scan."""
+    rs = np.random.RandomState(0)
+    encoder_input_tokens = rs.randint(0, 71, size=(16, 8), dtype=np.int32)
+    decoder_input_tokens = rs.randint(0, 71, size=(16, 7), dtype=np.int32)
+    decoder_target_tokens = rs.randint(0, 71, size=(16, 7), dtype=np.int32)
+    model = t5_test_utils.make_config1(
+        scan_layers=True, layer_remat='full', sow_intermediates=True)
+    variables = model.init(
+        random.PRNGKey(0),
+        encoder_input_tokens=encoder_input_tokens,
+        decoder_input_tokens=decoder_input_tokens,
+        decoder_target_tokens=decoder_target_tokens,
+        enable_dropout=False,
+    )
+    _, modified_variables = model.apply(
+        {'params': variables['params']},
+        encoder_input_tokens=encoder_input_tokens,
+        decoder_input_tokens=decoder_input_tokens,
+        decoder_target_tokens=decoder_target_tokens,
+        enable_dropout=False,
+        mutable=['intermediates'])
+    intermediates = modified_variables['intermediates']
+    encoder_layer_outputs = intermediates['encoder']['encoder']['activations']
+    # Shape: [num_layers, batch_size, seq_len, hidden_size]
+    self.assertEqual(encoder_layer_outputs[0].shape, (3, 16, 8, 13))
+    decoder_layer_outputs = intermediates['decoder']['decoder']['activations']
+    # Shape: [num_layers, batch_size, seq_len, hidden_size]
+    self.assertEqual(decoder_layer_outputs[0].shape, (2, 16, 7, 13))
 
   def test_capture_input_gradients(self):
     """Tests that the input grads are captured."""

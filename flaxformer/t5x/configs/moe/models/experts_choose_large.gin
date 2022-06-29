@@ -1,5 +1,6 @@
 # "Experts choose tokens" MoE Large model.
-# Provides MODEL
+#
+# Provides MODEL and NUM_EXPERTS.
 
 from flaxformer.architectures.moe import moe_layers
 
@@ -14,6 +15,7 @@ EMBED_DIM = 1024
 MLP_DIM = 2816
 
 # MoE overrides
+NUM_EXPERTS = 64
 # Replace every other dense MLP sublayer with MoE sublayer.
 NUM_ENCODER_SPARSE_LAYERS = 12
 NUM_DECODER_SPARSE_LAYERS = 12

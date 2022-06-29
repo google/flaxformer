@@ -1,5 +1,6 @@
 # "Experts choose tokens" MoE Base model.
-# Provides MODEL
+#
+# Provides MODEL and NUM_EXPERTS.
 #
 # We use experts choose routing in the encoder and top-2 tokens choose routing
 # in the decoder (recall that experts choose routing can break autoregressive
@@ -16,7 +17,6 @@ from t5x.contrib.moe import adafactor_utils
 from t5x.contrib.moe import models
 
 ARCHITECTURE = %gin.REQUIRED
-NUM_EXPERTS = %gin.REQUIRED
 
 include 'flaxformer/t5x/configs/moe/architectures/moe.gin'
 
@@ -29,6 +29,7 @@ EMBED_DIM = 768
 MLP_DIM = 2048
 
 # MoE overrides
+NUM_EXPERTS = 64
 # Replace every other dense MLP sublayer with MoE sublayer.
 NUM_ENCODER_SPARSE_LAYERS = 6
 NUM_DECODER_SPARSE_LAYERS = 6

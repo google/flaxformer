@@ -16,6 +16,7 @@
 
 from typing import Optional
 
+import jax
 import jax.numpy as jnp
 import numpy as np
 
@@ -336,3 +337,33 @@ def constant_init(value, dtype=jnp.float32):
     return jnp.ones(shape, dtype) * value
 
   return init
+
+
+def positions_from_segment_ids(segment_ids: Array) -> Array:
+  """Computes packed positions from segment_ids.
+
+  See the following for an example of how packed inputs are represented
+  by `segment_ids` and `positions`:
+  https://github.com/google/seqio/blob/main/seqio/utils.py#L292
+
+  This functions derives the positions based on the segment_ids alone.
+
+  Args:
+    segment_ids: <int32>[batch, length] array of segmentation info for packed
+      examples.
+
+  Returns:
+    <int32>[batch, length] array of position info for packed examples.
+  """
+  segment_ids = jnp.asarray(segment_ids)
+
+  # Indicate where new segments start, other than the first segment.
+  start_indicator = segment_ids - jnp.pad(
+      segment_ids[:, :-1], ((0, 0), (1, 0)), constant_values=1)
+
+  raw_range = jnp.arange(segment_ids.shape[-1])
+  reset_offset = jax.lax.cummax(start_indicator * raw_range, axis=1)
+
+  input_mask = segment_ids > 0
+
+  return (raw_range - reset_offset) * input_mask

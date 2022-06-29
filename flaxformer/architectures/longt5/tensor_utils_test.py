@@ -441,6 +441,25 @@ class TensorUtilsTest(parameterized.TestCase):
             [-5, -4, -3, -2, -1, 0, 1, 2, 3],  #
         ])
 
+  def test_positions_from_segment_ids(self):
+    segment_ids = [
+        [1, 1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 2, 2, 3, 3, 3],  #
+        [1, 1, 1, 1, 1, 1, 1, 1, 2, 2, 3, 3, 3, 3, 0, 0],  #
+        [1, 1, 2, 3, 3, 4, 5, 5, 6, 6, 6, 6, 6, 6, 6, 6],  #
+        [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],  #
+    ]
+
+    expected_positions = [
+        [0, 1, 2, 3, 4, 5, 6, 0, 1, 2, 3, 4, 5, 0, 1, 2],  #
+        [0, 1, 2, 3, 4, 5, 6, 7, 0, 1, 0, 1, 2, 3, 0, 0],  #
+        [0, 1, 0, 0, 1, 0, 0, 1, 0, 1, 2, 3, 4, 5, 6, 7],  #
+        list(range(16)),  #
+    ]
+
+    np.testing.assert_array_equal(
+        expected_positions,
+        tensor_utils.positions_from_segment_ids(segment_ids))
+
 
 if __name__ == '__main__':
   absltest.main()

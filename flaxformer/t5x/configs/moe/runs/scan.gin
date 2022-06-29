@@ -1,0 +1,61 @@
+# Scan overrides for Mixture of Experts models.
+#
+# Include this run file when using scan.
+#
+# WARNING: Auxiliary MoE losses (load balancing, router z-loss, etc) are not
+# supported under scan. We also cannot report expert diversity metrics.
+#
+# Assumes the Adafactor optimizer is used.
+
+from __gin__ import dynamic_registration
+
+from flaxformer.architectures.moe import moe_architecture
+from flaxformer.architectures.t5 import t5_architecture
+from flaxformer.components import relative_position_biases
+
+from t5x import adafactor
+
+
+# Auxiliary losses are not yet supported under scan.
+AUX_LOSS_FACTOR = 0.0
+ROUTER_Z_LOSS_FACTOR = 0.0
+
+# TODO: 'minimal' remat not yet supported; waiting on
+#  https://github.com/google/jax/pull/10576.
+LAYER_REMAT = 'full'
+
+# Custom Adafactor rules.
+adafactor.Adafactor.factor_map = @adafactor.HParamMap()
+adafactor.HParamMap.rules = @adafactor.standard_factor_rules()
+adafactor.standard_factor_rules.scan_layers = True
+
+# Scan over encoder and decoder blocks.
+moe_architecture.SparseEncoder:
+  scan_layers = True
+  layer_remat = %LAYER_REMAT
+
+moe_architecture.SparseDecoder:
+  scan_layers = True
+  layer_remat = %LAYER_REMAT
+
+t5_architecture.EncoderDecoder:
+ scan_layers = True
+
+# Must use per-layer relative positional biases instead of shared biases.
+moe_architecture.SparseEncoder:
+  shared_relative_position_bias_factory = None
+
+moe_architecture.SparseEncoderLayer:
+  relative_position_bias_factory = @relative_position_biases.RelativePositionBiases
+
+t5_architecture.EncoderLayer:
+  relative_position_bias_factory = @relative_position_biases.RelativePositionBiases
+
+moe_architecture.SparseDecoder:
+  shared_relative_position_bias_factory = None
+
+moe_architecture.SparseDecoderLayer:
+  relative_position_bias_factory = @relative_position_biases.RelativePositionBiases
+
+t5_architecture.DecoderLayer:
+  relative_position_bias_factory = @relative_position_biases.RelativePositionBiases

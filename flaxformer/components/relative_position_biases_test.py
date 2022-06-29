@@ -21,7 +21,12 @@ from jax import random
 import jax.numpy as jnp
 import numpy as np
 
+from flaxformer import sharding
+from flaxformer import testing_utils
 from flaxformer.components import relative_position_biases
+
+expected_files = testing_utils.ExpectedJsonFiles(
+    'flaxformer/components/testdata')
 
 
 class RelativePositionBiasesTest(absltest.TestCase):
@@ -37,6 +42,24 @@ class RelativePositionBiasesTest(absltest.TestCase):
         dtype=jnp.float32,
     )
     super().setUp()
+
+  def test_relative_attention_renamed_head_axis(self):
+    """Tests that the head axis renaming is as expected."""
+    self.relative_attention = relative_position_biases.RelativePositionBiases(
+        num_buckets=12,
+        max_distance=10,
+        num_heads=3,
+        dtype=jnp.float32,
+        head_axis_name='relpos_heads')
+    variables = self.relative_attention.init(
+        random.PRNGKey(0), self.query_len, self.key_len)
+    sharding.check_params_and_axis_names_match(variables)
+    for axis_names in jax.tree_leaves(sharding.get_axis_names(variables)):
+      for axis_name in axis_names:
+        self.assertIn(axis_name, {'relpos_heads', 'relpos_buckets'})
+    expected_files.check_params_and_axes(variables['params'],
+                                         variables['params_axes'],
+                                         'relpos_bias_renamed_head_axis.json')
 
   def test_relative_attention_bidirectional_params(self):
     """Tests that bidirectional relative position biases have expected params."""

@@ -1,0 +1,81 @@
+{
+    "decoder": {
+        "decoder_norm": {
+            "scale": ["float32", "embed=13"]
+        },
+        "layers_0": {
+            "kv_fused": {
+                "qkernel": [
+                    "int8", "embed=13", "multiquery_heads=1",
+                    "kv_fused=128"
+                ],
+                "qscale": [
+                    "float32", "embed_qscale=1", "multiquery_heads=1",
+                    "kv_fused=128"
+                ]
+            },
+            "layer_norm": {
+                "scale": ["float32", "embed=13"]
+            },
+            "o_wo_fused": {
+                "qkernel":
+                    ["int8", "joined_o_wo_fused=2560", "embed=13"],
+                "qscale": [
+                    "float32", "joined_o_wo_fused_qscale=1", "embed=13"
+                ]
+            },
+            "q_wi_fused": {
+                "qkernel":
+                    ["int8", "embed=13", "heads=8", "q_wi_fused=576"],
+                "qscale": [
+                    "float32", "embed_qscale=1", "heads=8",
+                    "q_wi_fused=576"
+                ]
+            },
+            "relpos_bias": {
+                "rel_embedding":
+                    ["float32", "heads=8", "relpos_buckets=32"]
+            }
+        },
+        "layers_1": {
+            "kv_fused": {
+                "qkernel": [
+                    "int8", "embed=13", "multiquery_heads=1",
+                    "kv_fused=128"
+                ],
+                "qscale": [
+                    "float32", "embed_qscale=1", "multiquery_heads=1",
+                    "kv_fused=128"
+                ]
+            },
+            "layer_norm": {
+                "scale": ["float32", "embed=13"]
+            },
+            "o_wo_fused": {
+                "qkernel":
+                    ["int8", "joined_o_wo_fused=2560", "embed=13"],
+                "qscale": [
+                    "float32", "joined_o_wo_fused_qscale=1", "embed=13"
+                ]
+            },
+            "q_wi_fused": {
+                "qkernel":
+                    ["int8", "embed=13", "heads=8", "q_wi_fused=576"],
+                "qscale": [
+                    "float32", "embed_qscale=1", "heads=8",
+                    "q_wi_fused=576"
+                ]
+            },
+            "relpos_bias": {
+                "rel_embedding":
+                    ["float32", "heads=8", "relpos_buckets=32"]
+            }
+        },
+        "logits_dense": {
+            "kernel": ["float32", "unmodeled=13", "unmodeled=4"]
+        },
+        "token_embedder": {
+            "embedding": ["float32", "vocab=2000", "embed=13"]
+        }
+    }
+}

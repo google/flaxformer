@@ -21,7 +21,7 @@ the original T5 classes (assuming outputs are not that long).
 """
 
 import inspect
-from typing import Callable, Optional, Any
+from typing import Callable, Optional, Any, Tuple
 
 from flax import linen as nn
 import jax.numpy as jnp
@@ -728,3 +728,5 @@ class LongEncoderDecoder(nn.Module, param_remapping.ParameterRemappable):
         enable_dropout=enable_dropout,
         decode=decode,
         max_decode_length=max_decode_length)
+
+

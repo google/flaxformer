@@ -25,7 +25,7 @@ from aqt.jax_legacy.jax import quant_config as aqt_config
 from aqt.jax_legacy.jax import quantization as aqt
 import chex
 from flax import linen as nn
-import flax.core.variables as variables
+from flax.core import variables
 from flax.linen import initializers
 from flax.linen import partitioning as flax_partitioning
 from flax.linen.linear import default_kernel_init
@@ -42,6 +42,9 @@ from flaxformer.types import Array
 from flaxformer.types import DType
 from flaxformer.types import Initializer
 from flaxformer.types import PRNGKey
+
+
+RulesFallback = flax_partitioning.RulesFallback
 
 
 def _softmax_with_extra_logit(
@@ -930,14 +933,7 @@ class MultiHeadDotProductAttention(nn.Module, DenseAttention):
       sin, cos = embedding.generate_fixed_pos_embedding(
           dim, max_length, max_timescale=self.rotary_embedding_max_timescale)
       query, key = embedding.apply_rotary_embedding(
-          query,
-          key,
-          cos,
-          sin,
-          batch_size=inputs_q.shape[0],
-          num_heads=self.num_heads,
-          decode=decode,
-          rotary_index=rotary_index)
+          query, key, cos, sin, decode=decode, rotary_index=rotary_index)
 
     # Compute attention.
     attn_weights = self.compute_attention_fn(
@@ -1042,6 +1038,7 @@ class MultiQueryDotProductAttention(nn.Module, DenseAttention):
   use_aqt: Optional[bool] = False
   weight_params: Optional[aqt.QuantOps.WeightParams] = None
   act_params: Optional[aqt.QuantOps.ActHParams] = None
+  possibly_use_quantized_vars: bool = False
 
   def update_cache_prefill(
       self, key: Array, value: Array, cached_key: variables.Variable,
@@ -1120,8 +1117,7 @@ class MultiQueryDotProductAttention(nn.Module, DenseAttention):
       cached_value: The cache of previous values. [batch..., features_per_head,
         length]
       cache_index: The timestep that we are currently calculating the key and
-        value for. [batch] if we are decoding after doing a prefill or [1] if we
-        are starting with step-by-step decoding.
+        value for. [batch]
 
     Returns:
       The key, value, and the last timestep we just filled in the cache. Note:
@@ -1263,6 +1259,7 @@ class MultiQueryDotProductAttention(nn.Module, DenseAttention):
             # we do not have reshape kernel option here but we explicitly
             # reshape kernel.
             precision=self.precision,
+            possibly_use_quantized_vars=self.possibly_use_quantized_vars,
             name=name,
         )(inputs, padding_mask=None)
       else:
@@ -1329,6 +1326,13 @@ class MultiQueryDotProductAttention(nn.Module, DenseAttention):
           decode=decode,
           prefill=prefill,
           prefill_lengths=prefill_lengths)
+
+    sharding_prefix = 'attn_decode' if decode else 'attn_encode'
+
+    bias_sharding = (f'{sharding_prefix}_batch', f'{sharding_prefix}_heads',
+                     f'{sharding_prefix}_q_length',
+                     f'{sharding_prefix}_kv_length')
+
     # Note: We don't use `activation_partitioning.with_sharding_migration` here
     # because we do often want this 2D sharded. However, if rules are valid,
     # they should result in 2D sharding. We don't need to raise errors if both
@@ -1358,12 +1362,30 @@ class MultiQueryDotProductAttention(nn.Module, DenseAttention):
       # trick, which means we do a one-hot broadcast instead of a scatter/gather
       # operations, which gives a 3-4x speedup in practice.
       swap_dims = lambda x: x[:-2] + tuple(x[i] for i in [-1, -2])
-      cached_key = self.variable('cache', 'cached_key', jnp.zeros,
-                                 swap_dims(key.shape), key.dtype)
-      cached_value = self.variable('cache', 'cached_value', jnp.zeros,
-                                   swap_dims(value.shape), value.dtype)
-      cache_index = self.variable('cache', 'cache_index',
-                                  lambda: jnp.array(0, dtype=jnp.int32))
+      cached_key = flax_partitioning.variable_with_axes(
+          'cache',
+          'cached_key',
+          jnp.zeros,
+          swap_dims(key.shape),
+          key.dtype,
+          axes=('cache_batch', 'cache_kv', 'cache_length'),
+          fallback=RulesFallback.NO_CONSTRAINT)
+      cached_value = flax_partitioning.variable_with_axes(
+          'cache',
+          'cached_value',
+          jnp.zeros,
+          swap_dims(value.shape),
+          value.dtype,
+          axes=('cache_batch', 'cache_kv', 'cache_length'),
+          fallback=RulesFallback.NO_CONSTRAINT)
+      cache_index = flax_partitioning.variable_with_axes(
+          'cache',
+          'cache_index',
+          jnp.zeros,
+          query.shape[0],
+          jnp.int32,
+          axes=('cache_batch',),
+          fallback=RulesFallback.NO_CONSTRAINT)
       rotary_index = cache_index.value
 
       if is_initialized:
@@ -1433,6 +1455,11 @@ class MultiQueryDotProductAttention(nn.Module, DenseAttention):
                   jnp.arange(length),
                   tuple(batch_dims) +
                   (1, 1, length)) <= jnp.reshape(cur_index, (-1, 1, 1, 1)))
+
+          mask = flax_partitioning.with_sharding_constraint(
+              mask, (f'{sharding_prefix}_batch', None, None, None),
+              fallback=RulesFallback.NO_CONSTRAINT)
+
           # Grab the correct relative attention bias during decoding.
           if bias is not None:
             # The bias is a full attention matrix, but during decoding we only
@@ -1449,6 +1476,8 @@ class MultiQueryDotProductAttention(nn.Module, DenseAttention):
                 'bq, bhqk->bhk',
                 common_utils.onehot(cur_index, num_classes=length), bias)
             bias = jnp.expand_dims(bias, 2)
+            bias = flax_partitioning.with_sharding_constraint(
+                bias, bias_sharding, fallback=RulesFallback.NO_CONSTRAINT)
 
         # Currently, updating a variable inside of a method is not handled
         # in flax, so we return the actual values and assign them in the main
@@ -1467,16 +1496,35 @@ class MultiQueryDotProductAttention(nn.Module, DenseAttention):
           mask > 0,
           jnp.full(mask.shape, 0.).astype(self.dtype),
           jnp.full(mask.shape, -1e10).astype(self.dtype))
+      attention_bias = flax_partitioning.with_sharding_constraint(
+          attention_bias, bias_sharding, fallback=RulesFallback.NO_CONSTRAINT)
     else:
       attention_bias = None
 
     # Add provided bias term (e.g. relative position embedding).
     if bias is not None:
       attention_bias = combine_biases(attention_bias, bias)
+      attention_bias = flax_partitioning.with_sharding_constraint(
+          attention_bias, bias_sharding, fallback=RulesFallback.NO_CONSTRAINT)
 
     dropout_rng = None
     if enable_dropout and self.dropout_rate > 0.:
       dropout_rng = self.make_rng('dropout')
+
+    # During decode we typically want to reshard at this point from sharding by
+    # by head to sharding by batch. Give new names to the sharding axes to allow
+    # this reshard.
+    query = flax_partitioning.with_sharding_constraint(
+        query, (f'{sharding_prefix}_batch', f'{sharding_prefix}_q_length',
+                f'{sharding_prefix}_heads', 'kv'),
+        fallback=RulesFallback.NO_CONSTRAINT)
+    key = flax_partitioning.with_sharding_constraint(
+        key, (f'{sharding_prefix}_batch', f'{sharding_prefix}_kv_length', 'kv'),
+        fallback=RulesFallback.NO_CONSTRAINT)
+    value = flax_partitioning.with_sharding_constraint(
+        value,
+        (f'{sharding_prefix}_batch', f'{sharding_prefix}_kv_length', 'kv'),
+        fallback=RulesFallback.NO_CONSTRAINT)
 
     if self.use_rotary_embedding:
       # use rotary embeddings before attention
@@ -1487,14 +1535,7 @@ class MultiQueryDotProductAttention(nn.Module, DenseAttention):
       sin, cos = embedding.generate_fixed_pos_embedding(
           dim, max_length, max_timescale=self.rotary_embedding_max_timescale)
       query, key = embedding.apply_rotary_embedding(
-          query,
-          key,
-          cos,
-          sin,
-          batch_size=inputs_q.shape[0],
-          num_heads=self.num_heads,
-          decode=decode,
-          rotary_index=rotary_index)
+          query, key, cos, sin, decode=decode, rotary_index=rotary_index)
 
     # Apply attention.
     x = self.attention_fn(
@@ -1512,22 +1553,34 @@ class MultiQueryDotProductAttention(nn.Module, DenseAttention):
         use_extra_logit=self.use_extra_logit,
         float32_logits=self.float32_logits)  # pytype: disable=wrong-keyword-args
 
+    # During decode we typically want to reshard at this point from sharding by
+    # batch to sharding by head. Return to the old names of the sharding axes to
+    # allow this reshard.
+    x = flax_partitioning.with_sharding_constraint(
+        x, (f'{sharding_prefix}_batch', f'{sharding_prefix}_q_length',
+            f'{sharding_prefix}_heads', 'kv'),
+        fallback=RulesFallback.NO_CONSTRAINT)
+    x = flax_partitioning.with_sharding_constraint(
+        x, ('batch', 'length', 'heads', 'kv'),
+        fallback=RulesFallback.NO_CONSTRAINT)
+
     if precomputed_qkv is None:
-      # TODO: Add support for output quantization, once we can
-      # do so without any reshape.
+      kernel_axis_names = ['heads', 'kv', 'embed']
+      if self.use_aqt and self.weight_params is not None:
+        assert x.shape[-2:] == (self.num_heads, head_dim)
+        x = x.reshape(x.shape[:-2] + (self.num_heads * head_dim,))
+        kernel_axis_names = ['joined_kv', 'embed']
+
       # Back to the original inputs dimensions.
-      out = dense.DenseGeneral(
+      out = dense_output(
           features=features,
           axis=(-2, -1),
           kernel_init=self.kernel_init,
-          bias_init=self.bias_init,
-          use_bias=self.use_bias,
-          dtype=self.dtype,
-          precision=self.precision,
-          kernel_axis_names=['heads', 'kv', 'embed'],
+          kernel_axis_names=kernel_axis_names,
+          name='out',
+          inputs=x,
           reshape_kernel=not self.split_head_kernel,
-          name='out')(  # pytype: disable=wrong-arg-types
-              x)
+      )
     else:
       # in fused parallel layer, fused outer dense operation is external
       out = x
@@ -1868,7 +1921,7 @@ def make_decoder_mask(decoder_target_tokens: Array,
   # [batch..., 1, length, length]
   causal_mask = make_causal_mask(decoder_target_tokens, dtype=dtype)
 
-  # Positions with value 1 in `decoder_causal_attneition` can attend
+  # Positions with value 1 in `decoder_causal_attention` can attend
   # bidirectionally.
   if decoder_causal_attention is not None:
     # [batch..., 1, length, length]

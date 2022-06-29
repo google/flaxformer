@@ -1,9 +1,12 @@
-# Switch MoE XL model.
-# Provides MODEL
+# ST-MoE XL model.
+#
+# XL variant of the MeshTF ST-MoE model (https://arxiv.org/abs/2202.08906).
+#
+# Provides MODEL and NUM_EXPERTS.
 
 from flaxformer.architectures.moe import moe_layers
 
-include 'flaxformer/t5x/configs/moe/models/switch_base.gin'
+include 'flaxformer/t5x/configs/moe/models/st_moe_base.gin'
 
 # Architecture overrides
 NUM_ENCODER_LAYERS = 24
@@ -12,11 +15,16 @@ NUM_HEADS = 32
 HEAD_DIM = 64
 EMBED_DIM = 2048
 MLP_DIM = 5120
+GROUP_SIZE = 1024  # Small group size
 
 # MoE overrides
-# Replace every fourth dense MLP sublayer with MoE sublayer.
+NUM_EXPERTS = 16
+# Every fourth layer is an MoE sublayer.
 NUM_ENCODER_SPARSE_LAYERS = 6
 NUM_DECODER_SPARSE_LAYERS = 6
+# Larger capacity factors.
+TRAIN_EXPERT_CAPACITY_FACTOR = 2.
+EVAL_EXPERT_CAPACITY_FACTOR = 4.
 
 # Experimental.
 # For model parallelism for large models, we can reduce all-to-all

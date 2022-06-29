@@ -1,7 +1,15 @@
-# Switch MoE XXL model.
-# Provides MODEL
+# Switch Transformer XXL model.
+#
+# Based on the original Switch Transformer (https://arxiv.org/abs/2101.03961).
+#
+# Note that unlike the original Mesh Tensorflow Switch Transformer, this T5X
+# version does not use any jitter noise in the router.
+#
+# Provides MODEL and NUM_EXPERTS.
 
+from flaxformer.architectures.moe import moe_architecture
 from flaxformer.architectures.moe import moe_layers
+from flaxformer.components import dense
 
 include 'flaxformer/t5x/configs/moe/models/switch_base.gin'
 
@@ -12,11 +20,23 @@ NUM_HEADS = 64
 HEAD_DIM = 64
 EMBED_DIM = 4096
 MLP_DIM = 10240
+GROUP_SIZE = 4096  # Same as Large
 
 # MoE overrides
-# Replace every fourth dense MLP sublayer with MoE sublayer.
-NUM_ENCODER_SPARSE_LAYERS = 6
-NUM_DECODER_SPARSE_LAYERS = 6
+NUM_EXPERTS = 128
+# Every other layer has an MoE sublayer.
+NUM_ENCODER_SPARSE_LAYERS = 12
+NUM_DECODER_SPARSE_LAYERS = 12
+TRAIN_EXPERT_CAPACITY_FACTOR = 1.25
+EVAL_EXPERT_CAPACITY_FACTOR = 4.   # Larger than Large
+moe_layers.MoeLayer.min_expert_capacity = 2   # Smaller than Large
+
+# Switch Transformer XXL uses GEGLU activations.
+dense.MlpBlock.activations = ('gelu', 'linear')
+expert/dense.MlpBlock.activations = ('gelu', 'linear')
+
+# Switch Transformer XXL uses a separate output logits layer.
+moe_architecture.SparseDecoder.output_logits_factory = @output_logits/dense.DenseGeneral
 
 # Experimental.
 # For model parallelism for large models, we can reduce all-to-all

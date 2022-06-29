@@ -47,12 +47,16 @@ class RelativePositionBiases(nn.Module):
       different relative position weighting.
     dtype: Type of arrays through this module.
     embedding_init: initializer for relative embedding table.
+    head_axis_name: Axis to partition the relpos bias heads on. Setting this
+      field trades training performance for unbounded parallelism in mixed
+      models.
   """
   num_buckets: int
   max_distance: int
   num_heads: int
   dtype: Any
   embedding_init: Callable[..., Array] = nn.linear.default_embed_init
+  head_axis_name: str = 'heads'
 
   @staticmethod
   def _relative_position_bucket(relative_position,
@@ -156,7 +160,7 @@ class RelativePositionBiases(nn.Module):
         'rel_embedding',
         self.embedding_init, (self.num_heads, self.num_buckets),
         jnp.float32,
-        axes=('heads', 'relpos_buckets'))
+        axes=(self.head_axis_name, 'relpos_buckets'))
     relative_attention_bias = jnp.asarray(relative_attention_bias, self.dtype)
     # Instead of using a slow gather, we create a leading-dimension one-hot
     # array from rp_bucket and use it to perform the gather-equivalent via a

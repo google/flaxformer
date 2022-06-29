@@ -1,33 +1,46 @@
-# Switch ("top-1 tokens choose experts routing") MoE Base model.
+# Switch Transformer Base model.
 #
-# This modified version of the Switch Transformer is more closely aligned with
-# T5 v1.1 and more recent MoE models. It uses GEGLU activations with a smaller
-# MLP activation dimension, fewer sparse layers in the encoder and decoder,
-# a smaller default group size of 4096, and a separate (unshared) output logits
-# layer.
+# Based on the original Switch Transformer (https://arxiv.org/abs/2101.03961).
 #
-# For the original Switch Transformer, see models/switch_classic_base.gin.
+# Note that unlike the original Switch Transformer, this T5X version does not
+# use any jitter noise in the router.
 #
-# Provides MODEL
+# Provides MODEL and NUM_EXPERTS.
 
 from __gin__ import dynamic_registration
 
+from flaxformer.architectures.moe import moe_architecture
 from flaxformer.architectures.moe import moe_layers
 from flaxformer.architectures.moe import routing
+from flaxformer.components import dense
 import seqio
 from t5x import adafactor
 
 ARCHITECTURE = %gin.REQUIRED
-NUM_EXPERTS = %gin.REQUIRED
 
 include 'flaxformer/t5x/configs/moe/models/tokens_choose_base.gin'
 
+# Architecture overrides
+MLP_DIM = 3072
+
 # MoE overrides
+NUM_EXPERTS = 64
+# Replace every other MLP sublayer is an MoE sublayer.
+NUM_ENCODER_SPARSE_LAYERS = 6
+NUM_DECODER_SPARSE_LAYERS = 6
 TRAIN_EXPERT_CAPACITY_FACTOR = 1.25
 EVAL_EXPERT_CAPACITY_FACTOR = 2.
 NUM_SELECTED_EXPERTS = 1   # Switch routing
 AUX_LOSS_FACTOR = 0.01
 ROUTER_Z_LOSS_FACTOR = 0.0
+GROUP_SIZE = 8192
+
+# Switch Transformer Base uses relu activations.
+dense.MlpBlock.activations = ('relu',)
+expert/dense.MlpBlock.activations = ('relu',)
+
+# Switch Transformer Base re-uses the token embedder to compute output logits.
+moe_architecture.SparseDecoder.output_logits_factory = None
 
 # Switch Transformer doesn't use BPR in encoder (although most sparse encoders
 # generally see a boost from it).

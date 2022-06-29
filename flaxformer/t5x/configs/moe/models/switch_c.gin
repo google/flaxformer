@@ -5,12 +5,12 @@
 # Note that unlike the original Mesh Tensorflow Switch Transformer, this T5X
 # version does not use any jitter noise in the router.
 #
-# Provides MODEL
+# Provides MODEL and NUM_EXPERTS.
 
 from flaxformer.architectures.moe import moe_layers
 from flaxformer.components import dense
 
-include 'flaxformer/t5x/configs/moe/models/switch_classic_base.gin'
+include 'flaxformer/t5x/configs/moe/models/switch_base.gin'
 
 # Architecture overrides
 NUM_ENCODER_LAYERS = 15
@@ -22,6 +22,7 @@ MLP_DIM = 6144   # All MLPs are MoE MLPs in C model; Smaller than XXL
 GROUP_SIZE = 2048  # Smaller than XXL
 
 # MoE overrides
+NUM_EXPERTS = 2048
 # All MLP sublayers are sparse MoE MLP sublayers.
 NUM_ENCODER_SPARSE_LAYERS = %NUM_ENCODER_LAYERS
 NUM_DECODER_SPARSE_LAYERS = %NUM_DECODER_LAYERS

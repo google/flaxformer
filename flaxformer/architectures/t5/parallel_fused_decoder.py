@@ -14,12 +14,17 @@
 
 """Parallel Transformer decoder layer with fused parameters."""
 
+import functools
 from typing import Callable, Optional
 
 from absl import logging
+from aqt.jax_legacy.jax import flax_layers as aqt_flax_layers
+from aqt.jax_legacy.jax import quant_config as aqt_config
+from aqt.jax_legacy.jax import quantization as aqt
 from flax import linen as nn
 from jax import lax
 import jax.numpy as jnp
+
 from flaxformer import activation_partitioning
 from flaxformer.architectures.common import param_remapping
 from flaxformer.components import dense
@@ -59,6 +64,10 @@ class ParallelFusedDecoderLayer(nn.Module, param_remapping.ParameterRemappable):
   activation_partitioning_dims: int = 1
   sow_intermediates: bool = False
   scanned: bool = False
+  use_aqt: bool = False
+  weight_params: Optional[aqt.QuantOps.WeightParams] = None
+  act_params: Optional[aqt.QuantOps.ActHParams] = None
+  possibly_use_quantized_vars: bool = False
 
   def setup(self):
     if self.activation_partitioning_dims != 1:
@@ -98,7 +107,72 @@ class ParallelFusedDecoderLayer(nn.Module, param_remapping.ParameterRemappable):
                       (mlp_intermediate_dim // num_heads) * n_activations +
                       head_dim)
 
-    self.q_wi_fused = dense.DenseGeneral(
+    # TODO: move the  AQT branching code complexity out to the
+    # configuration system here and other places in Flaxformer.
+    def make_dense(
+        axis,
+        features,
+        use_bias,
+        dtype,
+        kernel_init,
+        bias_init,
+        reshape_kernel,
+        kernel_axis_names,
+        name,
+        enable_dropout,
+    ):
+      if self.use_aqt:
+        if self.weight_params is None and self.act_params is None:
+          raise ValueError(
+              'If use_aqt is True, either of weights or acts quantization need '
+              'to be specified using arguments `weight_params` or `act_params`.'
+          )
+        aqt_context = aqt_config.DynamicContext(
+            update_bounds=False, collect_acts_stats=False)
+        weight_prec = self.weight_params.prec if self.weight_params else None
+        half_shift = self.weight_params.half_shift if self.weight_params else False
+        aqt_hparams = aqt_flax_layers.DenseAqt.HParams(
+            weight_prec=weight_prec,
+            weight_half_shift=half_shift,
+            quant_act=self.act_params,  # currently supports fixed bounds only.
+            quant_type=aqt.QuantType.AQT,
+            weight_quant_granularity=aqt_config.QuantGranularity.PER_CHANNEL,
+        )
+        if kernel_axis_names == ('heads', 'o_wo_fused', 'embed'):
+          assert axis == (-2, -1)
+          kernel_axis_names = ('joined_o_wo_fused', 'embed')
+        aqt_dense = aqt_flax_layers.DenseAqt(
+            features=features,
+            hparams=aqt_hparams,
+            train=enable_dropout,
+            dynamic_context=aqt_context,
+            paxis_name=None,
+            # No "cross-replica" reduction expressed in the XLA graph at this
+            # stage. Will be imposed later, automatically, by XLA SPMD.
+            use_bias=use_bias,
+            kernel_init=kernel_init,
+            bias_init=bias_init,
+            dtype=dtype,
+            name=name,
+            possibly_use_quantized_vars=self.possibly_use_quantized_vars,
+            kernel_axis_names=kernel_axis_names)
+        # we do not have reshape kernel option here but we explicitly
+        # reshape kernel.
+        return functools.partial(aqt_dense, padding_mask=None)
+      else:
+        return dense.DenseGeneral(
+            axis=axis,
+            features=features,
+            use_bias=use_bias,
+            dtype=dtype,
+            kernel_init=kernel_init,
+            bias_init=bias_init,
+            reshape_kernel=reshape_kernel,
+            name=name,
+            kernel_axis_names=kernel_axis_names)
+
+    self.make_dense = make_dense
+    self.q_wi_fused_args = dict(
         axis=-1,
         features=fused_out_dims,
         use_bias=self.self_attention.use_bias,
@@ -106,8 +180,9 @@ class ParallelFusedDecoderLayer(nn.Module, param_remapping.ParameterRemappable):
         kernel_init=self.self_attention.kernel_init,
         bias_init=self.self_attention.bias_init,
         reshape_kernel=False,
+        name='q_wi_fused',
         kernel_axis_names=('embed', 'heads', 'q_wi_fused'))
-    self.kv_fused = dense.DenseGeneral(
+    self.kv_fused_args = dict(
         axis=-1,
         features=(1, 2 * head_dim),
         use_bias=self.self_attention.use_bias,
@@ -115,8 +190,9 @@ class ParallelFusedDecoderLayer(nn.Module, param_remapping.ParameterRemappable):
         kernel_init=self.self_attention.kernel_init,
         bias_init=self.self_attention.bias_init,
         reshape_kernel=False,
+        name='kv_fused',
         kernel_axis_names=('embed', 'multiquery_heads', 'kv_fused'))
-    self.o_wo_fused = dense.DenseGeneral(
+    self.o_wo_fused_args = dict(
         axis=(-2, -1),
         features=embed_dim,
         use_bias=self.self_attention.use_bias,
@@ -124,6 +200,7 @@ class ParallelFusedDecoderLayer(nn.Module, param_remapping.ParameterRemappable):
         kernel_init=self.self_attention.kernel_init,
         bias_init=self.self_attention.bias_init,
         reshape_kernel=False,
+        name='o_wo_fused',
         # o_wo_fused = mlp//heads + head_dim
         kernel_axis_names=('heads', 'o_wo_fused', 'embed'))
 
@@ -215,7 +292,9 @@ class ParallelFusedDecoderLayer(nn.Module, param_remapping.ParameterRemappable):
     # Use local fused Q + W_i to calculate fused results.
     # [batch, length, embed], [heads, mlp//heads * n_act + head_dim] ->
     # [batch, length, heads, mlp//heads * n_act + head_dim]
-    q_wi = self.q_wi_fused(x)
+    q_wi = self.make_dense(
+        **self.q_wi_fused_args, enable_dropout=enable_dropout)(
+            x)
     # Slice out query.
     query = lax.dynamic_slice_in_dim(q_wi, 0, head_dim, -1)
     # Slice out MLP inputs.
@@ -226,7 +305,7 @@ class ParallelFusedDecoderLayer(nn.Module, param_remapping.ParameterRemappable):
         for i in range(n_activations)
     ]
     # Use local fused K + V to calculate fused results.
-    kv = self.kv_fused(x)
+    kv = self.make_dense(**self.kv_fused_args, enable_dropout=enable_dropout)(x)
     kv = activation_partitioning.with_sharding(kv, 1)
     # Slice out key.
     key = jnp.squeeze(lax.dynamic_slice_in_dim(kv, 0, head_dim, -1), -2)
@@ -255,7 +334,14 @@ class ParallelFusedDecoderLayer(nn.Module, param_remapping.ParameterRemappable):
         enable_dropout=enable_dropout)
     # y_fused: [batch, length, heads, mlp//heads + head_dim]
     y_fused = jnp.concatenate([y_att, y_mlp], axis=-1)
-    y_out = self.o_wo_fused(y_fused)
+    if self.use_aqt and self.weight_params is not None:
+      input_dim = mlp_intermediate_dim // num_heads + head_dim
+      assert y_fused.shape[-2:] == (num_heads, input_dim)
+      y_fused = y_fused.reshape(y_fused.shape[:-2] + (num_heads * input_dim,))
+
+    y_out = self.make_dense(
+        **self.o_wo_fused_args, enable_dropout=enable_dropout)(
+            y_fused)
     # y *= 2**-0.5
     z = layer_input + self.dropout(y_out, deterministic=not enable_dropout)
     z = activation_partitioning.with_sharding_migration(

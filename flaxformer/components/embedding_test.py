@@ -96,6 +96,31 @@ class EmbedTest(parameterized.TestCase):
       embed.init(
           jax.random.PRNGKey(0), inputs, input_axis_names=('my_batch_dim',))
 
+  def test_embedding_axis_names_ctor(self):
+    rules = [
+        ('my_batch_dim', 'data'),
+        ('embed', None),
+        ('vocab', None),
+    ]
+    with flax_partitioning.axis_rules(rules):
+      embed = embedding.Embed(
+          num_embeddings=10, features=5, input_axis_names=('my_batch_dim',))
+      inputs = np.array([1], dtype=np.int64)
+      embed.init(jax.random.PRNGKey(0), inputs)
+
+  def test_embedding_axis_names_call_overrides(self):
+    rules = [
+        ('my_batch_dim', 'data'),
+        ('embed', None),
+        ('vocab', None),
+    ]
+    with flax_partitioning.axis_rules(rules):
+      embed = embedding.Embed(
+          num_embeddings=10, features=5, input_axis_names=('other_batch_dim',))
+      inputs = np.array([1], dtype=np.int64)
+      embed.init(
+          jax.random.PRNGKey(0), inputs, input_axis_names=('my_batch_dim',))
+
 
 class MultiEmbedTest(parameterized.TestCase):
 
@@ -548,6 +573,62 @@ class NgramHashEmbedTest(parameterized.TestCase):
     # Verify that the change to segment=1 didn't alter the outputs of segment=0.
     np.testing.assert_allclose(outputs1[..., :5, :], outputs2[..., :5, :])
 
+
+class RotaryTest(absltest.TestCase):
+
+  def test_rotary_embedding(self):
+    """Checks the shape of rotary encodings."""
+    batch = 2
+    qlen = 3
+    qheads = 4
+    d = 2 * 5
+    klen = 6
+    kheads = 7
+    maxlen = 8
+
+    q = np.ones((batch, qlen, qheads, d))
+    k = np.ones((batch, klen, kheads, d))
+    cos = np.ones((maxlen, d))
+    sin = np.ones((maxlen, d))
+    out_q, out_k = embedding.apply_rotary_embedding(q, k, cos, sin)
+    self.assertEqual(out_q.shape, q.shape)
+    self.assertEqual(out_k.shape, k.shape)
+
+  def test_rotary_embedding_multiquery(self):
+    """Checks the shape of rotary encodings."""
+    batch = 2
+    qlen = 3
+    qheads = 4
+    d = 2 * 5
+    klen = 6
+    maxlen = 8
+
+    q = np.ones((batch, qlen, qheads, d))
+    k = np.ones((batch, klen, d))
+    cos = np.ones((maxlen, d))
+    sin = np.ones((maxlen, d))
+    out_q, out_k = embedding.apply_rotary_embedding(q, k, cos, sin)
+    self.assertEqual(out_q.shape, q.shape)
+    self.assertEqual(out_k.shape, k.shape)
+
+  def test_rotary_embedding_decode(self):
+    """Checks the shape of rotary encodings."""
+    batch = 2
+    qlen = 1
+    qheads = 4
+    d = 2 * 5
+    klen = 6
+    maxlen = 8
+
+    q = np.ones((batch, qlen, qheads, d))
+    k = np.ones((batch, klen, d))
+    cos = np.ones((maxlen, d))
+    sin = np.ones((maxlen, d))
+    rotary_index = np.ones((batch,), dtype=np.int32)
+    out_q, out_k = embedding.apply_rotary_embedding(
+        q, k, cos, sin, decode=True, rotary_index=rotary_index)
+    self.assertEqual(out_q.shape, q.shape)
+    self.assertEqual(out_k.shape, k.shape)
 
 if __name__ == '__main__':
   absltest.main()

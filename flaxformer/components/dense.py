@@ -245,6 +245,7 @@ class MlpBlock(nn.Module):
   use_aqt: Optional[bool] = False
   weight_params: Optional[aqt.QuantOps.WeightParams] = None
   act_params: Optional[aqt.QuantOps.ActHParams] = None
+  possibly_use_quantized_vars: bool = False
 
   @nn.compact
   def __call__(self,
@@ -286,6 +287,7 @@ class MlpBlock(nn.Module):
         )
         batch, seq_len, channels = inputs.shape
         inputs = inputs.reshape((batch * seq_len, channels))
+
         result = aqt_flax_layers.DenseAqt(
             features=features,
             hparams=aqt_hparams,
@@ -300,6 +302,7 @@ class MlpBlock(nn.Module):
             dtype=self.dtype,
             kernel_axis_names=kernel_axis_names,
             name=name,
+            possibly_use_quantized_vars=self.possibly_use_quantized_vars,
         )(inputs, padding_mask=None)
         return result.reshape((batch, seq_len, features))
       else:

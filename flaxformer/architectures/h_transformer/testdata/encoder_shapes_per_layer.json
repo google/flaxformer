@@ -1,0 +1,119 @@
+{
+    "layers_0": {
+      "attention": {
+        "1d_relative_position_bias": {
+          "1d_relative_position_bias": [7, 1]
+        },
+        "key_multihead_projection": {
+          "bias": [512],
+          "kernel": [13, 512]
+        },
+        "out": {
+          "bias": [13],
+          "kernel": [512, 13]
+        },
+        "query_multihead_projection": {
+          "bias": [512],
+          "kernel": [13, 512]
+        },
+        "value_multihead_projection": {
+          "bias": [512],
+          "kernel": [13, 512]
+        }
+      },
+      "mlp": {
+        "wi": {
+          "kernel": [13, 26]
+        },
+        "wo": {
+          "kernel": [26, 13]
+        }
+      },
+      "pre_attention_layer_norm": {
+        "scale": [13]
+      },
+      "pre_mlp_layer_norm": {
+        "scale": [13]
+      }
+    },
+    "layers_1": {
+      "attention": {
+        "1d_relative_position_bias": {
+          "1d_relative_position_bias": [7, 1]
+        },
+        "key_multihead_projection": {
+          "bias": [512],
+          "kernel": [13, 512]
+        },
+        "out": {
+          "bias": [13],
+          "kernel": [512, 13]
+        },
+        "query_multihead_projection": {
+          "bias": [512],
+          "kernel": [13, 512]
+        },
+        "value_multihead_projection": {
+          "bias": [512],
+          "kernel": [13, 512]
+        }
+      },
+      "mlp": {
+        "wi": {
+          "kernel": [13, 26]
+        },
+        "wo": {
+          "kernel": [26, 13]
+        }
+      },
+      "pre_attention_layer_norm": {
+        "scale": [13]
+      },
+      "pre_mlp_layer_norm": {
+        "scale": [13]
+      }
+    },
+    "layers_2": {
+      "attention": {
+        "1d_relative_position_bias": {
+          "1d_relative_position_bias": [7, 1]
+        },
+        "key_multihead_projection": {
+          "bias": [512],
+          "kernel": [13, 512]
+        },
+        "out": {
+          "bias": [13],
+          "kernel": [512, 13]
+        },
+        "query_multihead_projection": {
+          "bias": [512],
+          "kernel": [13, 512]
+        },
+        "value_multihead_projection": {
+          "bias": [512],
+          "kernel": [13, 512]
+        }
+      },
+      "mlp": {
+        "wi": {
+          "kernel": [13, 26]
+        },
+        "wo": {
+          "kernel": [26, 13]
+        }
+      },
+      "pre_attention_layer_norm": {
+        "scale": [13]
+      },
+      "pre_mlp_layer_norm": {
+        "scale": [13]
+      }
+    },
+    "output_layer_norm": {
+      "scale": [13]
+    },
+    "token_embedder": {
+      "embedding": [2000, 13]
+    }
+}

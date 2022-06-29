@@ -26,7 +26,6 @@ from typing import (Any, Callable, DefaultDict, Dict, Generic, List, Mapping,
 import chex
 from flax import linen as nn
 from flax.linen import partitioning
-from flax.training import common_utils
 import jax
 from jax import lax
 from jax import numpy as jnp
@@ -195,6 +194,7 @@ class Embed(nn.Module, Embedder[Array]):
     one_hot: performs the gather with a one-hot contraction rather than a true
       gather. This is currently needed for SPMD partitioning.
     axes: default axis metadata names for the embedding table.
+    input_axis_names: default axis metadata names for the input activations.
   """
   num_embeddings: int
   features: int
@@ -204,6 +204,7 @@ class Embed(nn.Module, Embedder[Array]):
   embedding_init: Initializer = default_embed_init
   one_hot: bool = False
   axes: Sequence[str] = ('vocab', 'embed')
+  input_axis_names: Sequence[str] = ('batch', 'length')
   embedding: Array = dataclasses.field(init=False)
 
   def setup(self):
@@ -222,7 +223,7 @@ class Embed(nn.Module, Embedder[Array]):
       segment_ids: Optional[Array] = None,
       decode: bool = False,
       enable_dropout: bool = True,
-      input_axis_names: Optional[Sequence[str]] = ('batch', 'length'),
+      input_axis_names: Optional[Sequence[str]] = None,
   ) -> Array:
     """Embeds the inputs along the last dimension.
 
@@ -240,6 +241,8 @@ class Embed(nn.Module, Embedder[Array]):
       with an additional `features` dimension appended.
     """
     del segment_ids  # Unused.
+    if input_axis_names is None:
+      input_axis_names = self.input_axis_names
 
 
     if self.cast_input_dtype:
@@ -545,47 +548,49 @@ def rotate_half(x):
   return x
 
 
-@functools.partial(jax.jit, static_argnums=(4, 5, 6))
-def apply_rotary_embedding(q,
-                           k,
-                           cos,
-                           sin,
-                           batch_size=None,
-                           num_heads=None,
-                           decode=False,
-                           rotary_index=None):
+@functools.partial(jax.jit, static_argnums=(4,))
+def apply_rotary_embedding(q, k, cos, sin, decode=False, rotary_index=None):
   """Helper function to apply Rotary Embeddings."""
   if len(k.shape) == 3:
     # for multi query attention
     k = jnp.expand_dims(k, 2)
-  qlen, klen = q.shape[1], k.shape[1]
-  if batch_size:
-    sin = jax.lax.broadcast(sin, (batch_size,))
-    cos = jax.lax.broadcast(cos, (batch_size,))
-  if num_heads:
-    sin = jnp.expand_dims(sin, 2)
-    cos = jnp.expand_dims(cos, 2)
-    sin = jnp.tile(sin, [1, 1, num_heads, 1])
-    cos = jnp.tile(cos, [1, 1, num_heads, 1])
-  if decode and qlen >= 1:
-    if qlen == 1 and rotary_index is not None:
-      # we check qlen == 1 so that we don't do this when initializing cache.
-      idx = common_utils.onehot(rotary_index, num_classes=klen)
-      qcos = jnp.einsum('bq, bqhk->bhk', idx, cos)
-      qsin = jnp.einsum('bq, bqhk->bhk', idx, sin)
-      qcos = jnp.expand_dims(qcos, 1)
-      qsin = jnp.expand_dims(qsin, 1)
-    else:
-      qcos, qsin = cos[:, :qlen, :, :], sin[:, :qlen, :, :]
+    multiquery = True
   else:
-    qcos, qsin = cos[:, :qlen, :, :], sin[:, :qlen, :, :]
-  kcos, ksin = cos[:, :klen, :, :], sin[:, :klen, :, :]
-  if k.shape[2] == 1:
-    # handle multi-query attention case where key has only 1 head.
-    kcos, ksin = kcos[:, :, :1, :], ksin[:, :, :1, :]
+    multiquery = False
+
+  batch, qlen, qheads, d = q.shape
+  kbatch, klen, kheads, kd = k.shape
+  assert batch == kbatch, f'{batch} != {kbatch}'
+  assert d == kd, f'{d} != {kd}'
+
+  # cos: [len, d]
+  # sin: [len, d]
+  # rotary_index: [batch]
+
+  if decode and qlen == 1 and rotary_index is not None:
+    # we check qlen == 1 so that we don't do this when initializing cache.
+    qcos = cos[rotary_index, :]
+    qsin = sin[rotary_index, :]
+    # qcos, qsin: [batch, d]
+    qcos = jax.lax.broadcast_in_dim(qcos, (batch, qlen, qheads, d), (0, 3))
+    qsin = jax.lax.broadcast_in_dim(qsin, (batch, qlen, qheads, d), (0, 3))
+    # qcos, qsin: [batch, qlen, qheads, d]
+  else:
+    qcos, qsin = cos[:qlen, :], sin[:qlen, :]
+    # qcos, qsin: [qlen, d]
+    qcos = jax.lax.broadcast_in_dim(qcos, (batch, qlen, qheads, d), (1, 3))
+    qsin = jax.lax.broadcast_in_dim(qsin, (batch, qlen, qheads, d), (1, 3))
+    # qcos, qsin: [batch, qlen, qheads, d]
+
+  kcos, ksin = cos[:klen, :], sin[:klen, :]
+  # kcos, ksin: [klen, d]
+  kcos = jax.lax.broadcast_in_dim(kcos, (batch, klen, kheads, d), (1, 3))
+  ksin = jax.lax.broadcast_in_dim(ksin, (batch, klen, kheads, d), (1, 3))
+  # kcos, ksin: [batch, klen, kheads, d]
+
   out_q = (q * qcos) + (rotate_half(q) * qsin)
   out_k = (k * kcos) + (rotate_half(k) * ksin)
-  if out_q.shape[2] > 1 and out_k.shape[2] == 1:
+  if multiquery:
     out_k = jnp.squeeze(out_k, 2)
   return out_q, out_k
 

@@ -150,12 +150,8 @@ class MoeLayer(nn.Module):
           f'num_model_partitions={self.num_model_partitions} has no effect; '
           f'please set optimize_model_parallel_communications=False.')
 
-    if self.num_model_partitions == 1:
-      # No model parallelism. All devices are used to shard data.
-      self.num_expert_replicas = max(1, jax.device_count() // self.num_experts)
-    else:
-      # We do not support multiple copies of model parallel experts.
-      self.num_expert_replicas = 1
+    self.num_expert_replicas = _num_expert_replicas(self.num_experts,
+                                                    self.num_model_partitions)
 
   @nn.compact
   def __call__(self,
@@ -622,3 +618,22 @@ def _num_groups(num_tokens: int,
         'active (strict_group_size=True)')
 
   return num_groups
+
+
+def _num_expert_replicas(num_experts: int, num_model_partitions: int) -> int:
+  """Infer the number of expert replicas.
+
+  This computation assumes that we are using the T5X MoePjitPartitioner. In
+  particular, we assume that experts are replicated along the 'data' axis, whose
+  dimension is inversely proportional to the number of experts and number of
+  model parallel dimensions. See also
+  https://github.com/google-research/t5x/blob/bdd3928/t5x/contrib/moe/partitioning.py.
+
+  Args:
+    num_experts: Total number of experts, across all devices.
+    num_model_partitions: Size of model parallel submesh.
+
+  Returns:
+    Number of replicas per expert.
+  """
+  return max(1, jax.device_count() // (num_experts * num_model_partitions))

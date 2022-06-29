@@ -598,12 +598,11 @@ class BertEncoder(nn.Module):
         token_ids=token_ids, position_ids=position_ids, segment_ids=segment_ids)
     return embedded_inputs
 
-  def encode_from_embedded(self,
-                           embedded_inputs: Array,
-                           input_mask: Array,
-                           *,
-                           enable_dropout: Optional[bool] = None) -> Array:
-    """Runs the encoder on embedded inputs."""
+  def finalize_embeddings(self,
+                          embedded_inputs: Array,
+                          *,
+                          enable_dropout: Optional[bool] = None) -> Array:
+    """Finalize embedded inputs to be sent to the first transformer layer."""
     enable_dropout = nn.module.merge_param('enable_dropout',
                                            self.enable_dropout, enable_dropout)
 
@@ -613,7 +612,16 @@ class BertEncoder(nn.Module):
     else:
       deterministic = None
     embedded_inputs = self.embeddings_dropout(embedded_inputs, deterministic)
+    return embedded_inputs
 
+  def encode_from_embedded(self,
+                           embedded_inputs: Array,
+                           input_mask: Array,
+                           *,
+                           enable_dropout: Optional[bool] = None) -> Array:
+    """Runs the encoder on embedded inputs."""
+    embedded_inputs = self.finalize_embeddings(
+        embedded_inputs, enable_dropout=enable_dropout)
     attention_mask = dense_attention.make_attention_mask(input_mask, input_mask)
     return self.encoder_block(
         embedded_inputs,

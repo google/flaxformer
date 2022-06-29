@@ -477,7 +477,8 @@ class EtcTransientGlobalSelfAttention(nn.Module, LongSelfAttention):
   allowing simpler drop-in replacement in the Transformer API since there
   isn't a separate "global input" array carried along from layer to layer.
   The configuration can be thought of as something like ETC without g2l and g2g
-  components, only l2l and l2g.
+  components, only l2l and l2g.  (See https://arxiv.org/abs/2004.08483 for
+  more about ETC.)
 
   Attributes:
     num_heads: number of attention heads. Features (i.e. inputs_q.shape[-1])

@@ -18,7 +18,7 @@ These are combinators which assemble components (L2Norm, MLP, etc.) into
 networks.
 """
 
-from typing import Callable, Iterable, Mapping, NamedTuple, Optional
+from typing import Callable, Iterable, Mapping, NamedTuple, Optional, Union
 
 from flax import linen as nn
 from jax import lax

@@ -32,6 +32,8 @@ from jax import random
 import jax.numpy as jnp
 import numpy as np
 
+from flaxformer import testing_utils
+
 from flaxformer.components import dense
 from flaxformer.components.attention import dense_attention
 from flaxformer.types import Array
@@ -1622,13 +1624,75 @@ class QuantizedAttentionTest(parameterized.TestCase):
 
     np.testing.assert_allclose(
         result.tolist(),
-        [[[0.34379065, -4.300414], [0.34379065, -4.300414],
-          [0.36607888, -4.2530766]],
-         [[0.8072612, -7.256442], [0.7984385, -7.2548857],
-          [0.8072612, -7.256442]]],
+        [[[0.3442336916923523, -4.3061041831970215],
+          [0.3442336916923523, -4.3061041831970215],
+          [0.36651411652565, -4.258667469024658]],
+         [[0.807983934879303, -7.265725612640381],
+          [0.799161970615387, -7.264179706573486],
+          [0.807983934879303, -7.265725612640381]]],
         rtol=1e-6,
     )
 
+  def test_multiquery_dot_product_attention_materialized_weights(self):
+    weight_params = aqt.QuantOps.WeightParams(
+        prec=8, half_shift=False, axis=None)
+    module = dense_attention.MultiQueryDotProductAttention(
+        num_heads=2,
+        kernel_init=nn.initializers.xavier_uniform(),
+        bias_init=nn.initializers.normal(stddev=1e-6),
+        dtype=jnp.float32,
+        use_bias=True,
+        use_aqt=True,
+        weight_params=weight_params,
+        possibly_use_quantized_vars=True)
+
+    # enable_dropout
+
+    inputs_q = np.array(
+        [
+            # Batch 1.
+            [[1, 1], [1, 1], [1, 2]],
+            # Batch 2.
+            [[2, 2], [3, 1], [2, 2]],
+        ],
+        dtype=np.float32)
+    inputs_kv = np.array(
+        [
+            # Batch 1.
+            [[1, 1], [1, 1], [1, 2]],
+            # Batch 2.
+            [[2, 2], [3, 1], [2, 2]],
+        ],
+        dtype=np.float32)
+
+    _, params = module.init_with_output(
+        random.PRNGKey(0), inputs_q, inputs_kv, enable_dropout=False)
+
+    self.assertDictEqual(
+        testing_utils.param_dtypes_shapes_axes(params['params'],
+                                               params['params_axes']),
+        {
+            'key': {
+                'bias': ['float32', 'kv=1'],
+                'qkernel': ['int8', 'embed=2', 'kv=1'],
+                'qscale': ['float32', 'embed_qscale=1', 'kv=1']
+            },
+            'out': {
+                'bias': ['float32', 'embed=2'],
+                'qkernel': ['int8', 'joined_kv=2', 'embed=2'],
+                'qscale': ['float32', 'joined_kv_qscale=1', 'embed=2']
+            },
+            'query': {
+                'bias': ['float32', 'kv=2'],
+                'qkernel': ['int8', 'embed=2', 'heads=2', 'kv=1'],
+                'qscale': ['float32', 'embed_qscale=1', 'heads=2', 'kv=1']
+            },
+            'value': {
+                'bias': ['float32', 'kv=1'],
+                'qkernel': ['int8', 'embed=2', 'kv=1'],
+                'qscale': ['float32', 'embed_qscale=1', 'kv=1']
+            }
+        })
 
 if __name__ == '__main__':
   absltest.main()

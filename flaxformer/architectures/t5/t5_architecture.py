@@ -711,7 +711,7 @@ class Encoder(nn.Module, param_remapping.ParameterRemappable):
     self.input_dropout = self.input_dropout_factory()
 
     if self.scan_layers and self.shared_relative_position_bias_factory:
-      raise ValueError("Scanned layer mode doesn't support shared relative"
+      raise ValueError("Scanned layer mode doesn't support shared relative "
                        'position biases.')
     self.relpos_bias = (
         self.shared_relative_position_bias_factory()
@@ -725,33 +725,41 @@ class Encoder(nn.Module, param_remapping.ParameterRemappable):
       self.layers = [lyrf() for _ in range(self.num_layers)]
       self.encoder = common.TransparentLayerSequence(self.layers)
     else:
-      initializing = self.is_mutable_collection('params')
-      # We scan the parameters along axis scan_axis (default=1)
-      # as an XLA layout optimization.
-      params_spec = self.scan_axis if initializing else transforms.ScanIn(
-          self.scan_axis)
-      cache_spec = 0
-      scan_annotation = (
-          self.spmd_annotations['encoder']
-          if self.spmd_annotations is not None else None)
-      lyrf = transforms.factory_scan(
-          lyrf,
-          in_axes=(nn.broadcast, nn.broadcast, nn.broadcast),
-          variable_axes={
-              'params': params_spec,
-              'cache': cache_spec
-          },
-          split_rngs={
-              'params': True,
-              'dropout': True
-          },
-          length=self.num_layers,
-          data_transform=transforms.inner_scan_spmd(scan_annotation,
-                                                    self.scan_axis),
-      )
-      self.encoder = lyrf()
+      self.encoder = self._construct_scanned_encoder(lyrf, self.num_layers)
+
     self.encoder_norm = self.layer_norm_factory()
     self.output_dropout = self.output_dropout_factory()
+
+  def _construct_scanned_encoder(self, lyrf: Callable[[], nn.Module],
+                                 num_layers: int) -> nn.Module:
+    """Constructs encoder from layer factory using scan."""
+    initializing = self.is_mutable_collection('params')
+    # We scan the parameters along axis scan_axis (default=1)
+    # as an XLA layout optimization.
+    params_spec = self.scan_axis if initializing else transforms.ScanIn(
+        self.scan_axis)
+    cache_spec = 0
+    intermediates_spec = 0
+    scan_annotation = (
+        self.spmd_annotations['encoder']
+        if self.spmd_annotations is not None else None)
+    lyrf = transforms.factory_scan(
+        lyrf,
+        in_axes=(nn.broadcast, nn.broadcast, nn.broadcast),
+        variable_axes={
+            'params': params_spec,
+            'cache': cache_spec,
+            'intermediates': intermediates_spec,
+        },
+        split_rngs={
+            'params': True,
+            'dropout': True
+        },
+        length=num_layers,
+        data_transform=transforms.inner_scan_spmd(scan_annotation,
+                                                  self.scan_axis),
+    )
+    return lyrf()
 
   def embed_and_combine_inputs(self,
                                inputs,
@@ -947,38 +955,45 @@ class Decoder(nn.Module, param_remapping.ParameterRemappable):
       self.layers = [lyrf() for _ in range(self.num_layers)]
       self.decoder = common.TransparentLayerSequence(self.layers)
     else:
-      initializing = self.is_mutable_collection('params')
-      # We scan the parameters along scan_axis (default =1) as
-      # an XLA layout optimization.
-      params_spec = self.scan_axis if initializing else transforms.ScanIn(
-          self.scan_axis)
-      cache_spec = 0
-      scan_annotation = (
-          self.spmd_annotations['decoder']
-          if self.spmd_annotations is not None else None)
-      lyrf = transforms.factory_scan(
-          lyrf,
-          in_axes=(nn.broadcast, nn.broadcast, nn.broadcast, nn.broadcast,
-                   nn.broadcast, nn.broadcast, nn.broadcast, nn.broadcast,
-                   nn.broadcast),
-          variable_axes={
-              'params': params_spec,
-              'cache': cache_spec
-          },
-          split_rngs={
-              'params': True,
-              'dropout': True
-          },
-          length=self.num_layers,
-          data_transform=transforms.inner_scan_spmd(scan_annotation,
-                                                    self.scan_axis),
-          axis_name='layers',
-      )
-      self.decoder = lyrf()
+      self.decoder = self._construct_scanned_decoder(lyrf, self.num_layers)
 
     self.decoder_norm = self.layer_norm_factory()
     self.output_dropout = self.dropout_factory()
     self.setup_output_logits()
+
+  def _construct_scanned_decoder(self, lyrf: Callable[[], nn.Module],
+                                 num_layers: int) -> nn.Module:
+    """Constructs decoder from layer factory using scan."""
+    initializing = self.is_mutable_collection('params')
+    # We scan the parameters along scan_axis (default =1) as
+    # an XLA layout optimization.
+    params_spec = self.scan_axis if initializing else transforms.ScanIn(
+        self.scan_axis)
+    cache_spec = 0
+    intermediates_spec = 0
+    scan_annotation = (
+        self.spmd_annotations['decoder']
+        if self.spmd_annotations is not None else None)
+    lyrf = transforms.factory_scan(
+        lyrf,
+        in_axes=(nn.broadcast, nn.broadcast, nn.broadcast, nn.broadcast,
+                 nn.broadcast, nn.broadcast, nn.broadcast, nn.broadcast,
+                 nn.broadcast),
+        variable_axes={
+            'params': params_spec,
+            'cache': cache_spec,
+            'intermediates': intermediates_spec,
+        },
+        split_rngs={
+            'params': True,
+            'dropout': True
+        },
+        length=num_layers,
+        data_transform=transforms.inner_scan_spmd(scan_annotation,
+                                                  self.scan_axis),
+        axis_name='layers',
+    )
+    return lyrf()
 
   @nn.nowrap
   def setup_output_logits(self):
@@ -1080,6 +1095,9 @@ class Decoder(nn.Module, param_remapping.ParameterRemappable):
       logits = self.embedder.embedders['token_ids'].attend(decoder_outputs)  # pytype: disable=attribute-error
       # Correctly normalize pre-softmax logits for this shared case.
       logits = logits / jnp.sqrt(decoder_outputs.shape[-1])
+
+    if self.sow_intermediates:
+      self.sow('intermediates', 'logits', logits)
     return logits
 
   def __call__(self,
