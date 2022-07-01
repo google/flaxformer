@@ -420,11 +420,11 @@ class EncoderDecoderTest(absltest.TestCase):
         mutable=['intermediates'])
     intermediates = modified_variables['intermediates']
     encoder_layer_outputs = intermediates['encoder']['encoder']['activations']
-    # Shape: [num_layers, batch_size, seq_len, hidden_size]
-    self.assertEqual(encoder_layer_outputs[0].shape, (3, 16, 8, 13))
+    # Shape: [batch_size, seq_len, num_layers, hidden_size]
+    self.assertEqual(encoder_layer_outputs[0].shape, (16, 8, 3, 13))
     decoder_layer_outputs = intermediates['decoder']['decoder']['activations']
-    # Shape: [num_layers, batch_size, seq_len, hidden_size]
-    self.assertEqual(decoder_layer_outputs[0].shape, (2, 16, 7, 13))
+    # Shape: [batch_size, seq_len, num_layers, hidden_size]
+    self.assertEqual(decoder_layer_outputs[0].shape, (16, 7, 2, 13))
 
   def test_capture_input_gradients(self):
     """Tests that the input grads are captured."""

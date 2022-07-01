@@ -188,6 +188,99 @@ class DecoderOnlyTest(parameterized.TestCase):
                                 variables['params'],
                                 method=decoder.to_save_format)
     with self.subTest(name='check_params_and_output_shape'):
+      check_params(reformatted, 'decoder_only_shapes_per_layer.json')
+      self.assertEqual(output1.shape, self.expected_output_shape)
+
+    # Convert back to Flax module structure format and test again.
+    params2 = decoder.apply({}, reformatted, method=decoder.from_save_format)
+    output2 = decoder.apply(
+        {'params': params2},
+        self.inputs,
+        enable_dropout=False,
+    )
+    with self.subTest(name='check_flax_module_outputs'):
+      np.testing.assert_allclose(output1, output2, rtol=1e-8)
+
+
+class DecoderTest(parameterized.TestCase):
+
+  def setUp(self):
+    super().setUp()
+    self.inputs = np.array([
+        [101, 183, 20, 75],
+        [101, 392, 19, 7],
+    ],
+                           dtype=np.int32)
+    self.embed_size = 13
+    self.vocab_size = 2000
+    (batch, seq_len) = self.inputs.shape
+    self.expected_output_shape = (batch, seq_len, self.vocab_size)
+
+  @parameterized.named_parameters(
+      dict(testcase_name='scan_no_parallel', scan_layers=True, parallel=False),
+      dict(
+          testcase_name='no_scan_no_parallel',
+          scan_layers=False,
+          parallel=False),
+      dict(testcase_name='scan_parallel', scan_layers=True, parallel=True),
+      dict(testcase_name='no_scan_parallel', scan_layers=False, parallel=True),
+  )
+  def test_decoder_run(self, scan_layers, parallel):
+    decoder = h_transformer_test_utils.config_decoder(
+        embed_size=self.embed_size,
+        vocab_size=self.vocab_size,
+        scan_layers=scan_layers,
+        parallel=parallel)
+    output, _ = decoder.init_with_output(
+        random.PRNGKey(0), self.inputs, enable_dropout=False)
+    self.assertEqual(output.shape, self.expected_output_shape)
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name='scan',
+          scan_layers=True,
+          layer_remat_options=[
+              h_transformer_1d_architecture.LayerRematOptions.MINIMAL,
+              h_transformer_1d_architecture.LayerRematOptions.FULL
+          ]),
+      dict(
+          testcase_name='no_scan',
+          scan_layers=False,
+          layer_remat_options=[
+              h_transformer_1d_architecture.LayerRematOptions.NONE,
+              h_transformer_1d_architecture.LayerRematOptions.MINIMAL,
+              h_transformer_1d_architecture.LayerRematOptions.FULL
+          ]),
+  )
+  def test_scan_and_remat(self, scan_layers, layer_remat_options):
+    """Tests if decoder returns the same output for different scan/remat."""
+    outputs = []
+    for layer_remat in layer_remat_options:
+      decoder = h_transformer_test_utils.config_decoder(
+          embed_size=self.embed_size,
+          vocab_size=self.vocab_size,
+          scan_layers=scan_layers,
+          layer_remat=layer_remat)
+      output, _ = decoder.init_with_output(
+          random.PRNGKey(0), self.inputs, enable_dropout=False)
+      outputs.append(output)
+
+    for other_output in outputs[1:]:
+      np.testing.assert_allclose(outputs[0], other_output, rtol=1.5e-5)
+
+  def test_decoder_shapes_per_layer(self):
+    decoder = h_transformer_test_utils.config_decoder(
+        embed_size=self.embed_size, vocab_size=self.vocab_size)
+    output1, variables = decoder.init_with_output(
+        random.PRNGKey(0),
+        self.inputs,
+        enable_dropout=False,
+    )
+
+    reformatted = decoder.apply({},
+                                variables['params'],
+                                method=decoder.to_save_format)
+    with self.subTest(name='check_params_and_output_shape'):
       check_params(reformatted, 'decoder_shapes_per_layer.json')
       self.assertEqual(output1.shape, self.expected_output_shape)
 
@@ -196,6 +289,111 @@ class DecoderOnlyTest(parameterized.TestCase):
     output2 = decoder.apply(
         {'params': params2},
         self.inputs,
+        enable_dropout=False,
+    )
+    with self.subTest(name='check_flax_module_outputs'):
+      np.testing.assert_allclose(output1, output2, rtol=1e-8)
+
+
+class EncoderDecoderTest(parameterized.TestCase):
+
+  def setUp(self):
+    super().setUp()
+    inputs = np.array([
+        [101, 183, 20, 75],
+        [101, 392, 19, 7],
+    ], dtype=np.int32)
+    self.encoder_input_tokens = inputs
+    self.decoder_input_tokens = inputs
+    self.decoder_target_tokens = inputs
+    self.embed_size = 13
+    self.vocab_size = 2000
+    (batch, seq_len) = inputs.shape
+    self.expected_output_shape = (batch, seq_len, self.vocab_size)
+
+  @parameterized.named_parameters(
+      dict(testcase_name='scan', scan_layers=True),
+      dict(testcase_name='no_scan', scan_layers=False),
+  )
+  def test_encoder_decoder_run(self, scan_layers):
+    encoder_decoder = h_transformer_test_utils.config_encoder_decoder(
+        embed_size=self.embed_size,
+        vocab_size=self.vocab_size,
+        scan_layers=scan_layers)
+    output, _ = encoder_decoder.init_with_output(
+        random.PRNGKey(0),
+        encoder_input_tokens=self.encoder_input_tokens,
+        decoder_input_tokens=self.decoder_input_tokens,
+        decoder_target_tokens=self.decoder_target_tokens,
+        enable_dropout=False,
+    )
+    self.assertEqual(output.shape, self.expected_output_shape)
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name='scan',
+          scan_layers=True,
+          layer_remat_options=[
+              h_transformer_1d_architecture.LayerRematOptions.MINIMAL,
+              h_transformer_1d_architecture.LayerRematOptions.FULL
+          ]),
+      dict(
+          testcase_name='no_scan',
+          scan_layers=False,
+          layer_remat_options=[
+              h_transformer_1d_architecture.LayerRematOptions.NONE,
+              h_transformer_1d_architecture.LayerRematOptions.MINIMAL,
+              h_transformer_1d_architecture.LayerRematOptions.FULL
+          ]),
+  )
+  def test_scan_and_remat(self, scan_layers, layer_remat_options):
+    """Tests if encoder_decoder returns the same output for different scan/remat."""
+    outputs = []
+    for layer_remat in layer_remat_options:
+      encoder_decoder = h_transformer_test_utils.config_encoder_decoder(
+          embed_size=self.embed_size,
+          vocab_size=self.vocab_size,
+          scan_layers=scan_layers,
+          layer_remat=layer_remat)
+      output, _ = encoder_decoder.init_with_output(
+          random.PRNGKey(0),
+          encoder_input_tokens=self.encoder_input_tokens,
+          decoder_input_tokens=self.decoder_input_tokens,
+          decoder_target_tokens=self.decoder_target_tokens,
+          enable_dropout=False,
+      )
+      outputs.append(output)
+
+    for other_output in outputs[1:]:
+      np.testing.assert_allclose(outputs[0], other_output, rtol=1.5e-5)
+
+  def test_encoder_decoder_shapes_per_layer(self):
+    encoder_decoder = h_transformer_test_utils.config_encoder_decoder(
+        embed_size=self.embed_size, vocab_size=self.vocab_size)
+    output1, variables = encoder_decoder.init_with_output(
+        random.PRNGKey(0),
+        encoder_input_tokens=self.encoder_input_tokens,
+        decoder_input_tokens=self.decoder_input_tokens,
+        decoder_target_tokens=self.decoder_target_tokens,
+        enable_dropout=False,
+    )
+
+    reformatted = encoder_decoder.apply({},
+                                        variables['params'],
+                                        method=encoder_decoder.to_save_format)
+    with self.subTest(name='check_params_and_output_shape'):
+      check_params(reformatted, 'encoder_decoder_shapes_per_layer.json')
+      self.assertEqual(output1.shape, self.expected_output_shape)
+
+    # Convert back to Flax module structure format and test again.
+    params2 = encoder_decoder.apply({},
+                                    reformatted,
+                                    method=encoder_decoder.from_save_format)
+    output2 = encoder_decoder.apply(
+        {'params': params2},
+        encoder_input_tokens=self.encoder_input_tokens,
+        decoder_input_tokens=self.decoder_input_tokens,
+        decoder_target_tokens=self.decoder_target_tokens,
         enable_dropout=False,
     )
     with self.subTest(name='check_flax_module_outputs'):

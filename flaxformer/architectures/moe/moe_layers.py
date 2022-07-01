@@ -627,7 +627,7 @@ def _num_expert_replicas(num_experts: int, num_model_partitions: int) -> int:
   particular, we assume that experts are replicated along the 'data' axis, whose
   dimension is inversely proportional to the number of experts and number of
   model parallel dimensions. See also
-  https://github.com/google-research/t5x/blob/bdd3928/t5x/contrib/moe/partitioning.py.
+  https://github.com/google-research/t5x/blob/main/t5x/contrib/moe/partitioning.py.
 
   Args:
     num_experts: Total number of experts, across all devices.

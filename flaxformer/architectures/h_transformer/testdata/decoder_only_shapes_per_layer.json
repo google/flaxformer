@@ -1,6 +1,6 @@
 {
     "layers_0": {
-      "self_attention": {
+      "attention": {
         "1d_relative_position_bias": {
           "1d_relative_position_bias": [7, 1]
         },
@@ -29,7 +29,7 @@
           "kernel": [26, 13]
         }
       },
-      "pre_self_attention_layer_norm": {
+      "pre_attention_layer_norm": {
         "scale": [13]
       },
       "pre_mlp_layer_norm": {
@@ -37,7 +37,7 @@
       }
     },
     "layers_1": {
-      "self_attention": {
+      "attention": {
         "1d_relative_position_bias": {
           "1d_relative_position_bias": [7, 1]
         },
@@ -66,7 +66,7 @@
           "kernel": [26, 13]
         }
       },
-      "pre_self_attention_layer_norm": {
+      "pre_attention_layer_norm": {
         "scale": [13]
       },
       "pre_mlp_layer_norm": {
@@ -74,7 +74,7 @@
       }
     },
     "layers_2": {
-      "self_attention": {
+      "attention": {
         "1d_relative_position_bias": {
           "1d_relative_position_bias": [7, 1]
         },
@@ -103,7 +103,7 @@
           "kernel": [26, 13]
         }
       },
-      "pre_self_attention_layer_norm": {
+      "pre_attention_layer_norm": {
         "scale": [13]
       },
       "pre_mlp_layer_norm": {

@@ -18,10 +18,10 @@
                 "scale": ["float32", "embed=13"]
             },
             "o_wo_fused": {
-                "qkernel":
-                    ["int8", "joined_o_wo_fused=2560", "embed=13"],
+               "qkernel":
+                  ["int8", "heads=8", "o_wo_fused=320", "embed=13"],
                 "qscale": [
-                    "float32", "joined_o_wo_fused_qscale=1", "embed=13"
+                    "float32", "heads_qscale=1", "o_wo_fused_qscale=1", "embed=13"
                 ]
             },
             "q_wi_fused": {
@@ -53,9 +53,9 @@
             },
             "o_wo_fused": {
                 "qkernel":
-                    ["int8", "joined_o_wo_fused=2560", "embed=13"],
+                  ["int8", "heads=8", "o_wo_fused=320", "embed=13"],
                 "qscale": [
-                    "float32", "joined_o_wo_fused_qscale=1", "embed=13"
+                    "float32", "heads_qscale=1", "o_wo_fused_qscale=1", "embed=13"
                 ]
             },
             "q_wi_fused": {

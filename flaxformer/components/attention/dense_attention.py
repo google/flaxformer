@@ -1566,21 +1566,46 @@ class MultiQueryDotProductAttention(nn.Module, DenseAttention):
 
     if precomputed_qkv is None:
       kernel_axis_names = ['heads', 'kv', 'embed']
+      # TODO: activation quantization support is unimplemented
+      # here.
       if self.use_aqt and self.weight_params is not None:
-        assert x.shape[-2:] == (self.num_heads, head_dim)
-        x = x.reshape(x.shape[:-2] + (self.num_heads * head_dim,))
-        kernel_axis_names = ['joined_kv', 'embed']
-
-      # Back to the original inputs dimensions.
-      out = dense_output(
-          features=features,
-          axis=(-2, -1),
-          kernel_init=self.kernel_init,
-          kernel_axis_names=kernel_axis_names,
-          name='out',
-          inputs=x,
-          reshape_kernel=not self.split_head_kernel,
-      )
+        weight_prec = self.weight_params.prec if self.weight_params else None
+        half_shift = self.weight_params.half_shift if self.weight_params else False
+        aqt_hparams = aqt_flax_layers.DenseGeneralAqt.HParams(
+            weight_prec=weight_prec,
+            weight_half_shift=half_shift,
+            quant_act=None,  # currently supports fixed bounds only.
+            weight_quant_granularity=aqt_config.QuantGranularity.PER_CHANNEL,
+        )
+        out = aqt_flax_layers.DenseGeneralAqt(
+            hparams=aqt_hparams,
+            train=enable_dropout,
+            possibly_use_quantized_vars=self.possibly_use_quantized_vars,
+            features=features,
+            axis=(-2, -1),
+            kernel_init=self.kernel_init,
+            bias_init=self.bias_init,
+            use_bias=self.use_bias,
+            dtype=self.dtype,
+            precision=self.precision,
+            kernel_axis_names=kernel_axis_names,
+            reshape_kernel=not self.split_head_kernel,
+            name='out')(  # pytype: disable=wrong-arg-types
+                x)
+      else:
+        # Back to the original inputs dimensions.
+        out = dense.DenseGeneral(
+            features=features,
+            axis=(-2, -1),
+            kernel_init=self.kernel_init,
+            bias_init=self.bias_init,
+            use_bias=self.use_bias,
+            dtype=self.dtype,
+            precision=self.precision,
+            kernel_axis_names=kernel_axis_names,
+            reshape_kernel=not self.split_head_kernel,
+            name='out')(  # pytype: disable=wrong-arg-types
+                x)
     else:
       # in fused parallel layer, fused outer dense operation is external
       out = x

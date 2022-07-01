@@ -12,7 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Tests for Mixture of Experts gin configs."""
+"""Tests for encoder_decoder gin configs in this directory."""
+
+# "Unused" imports below are needed by gin configs.
+# pylint: disable=unused-import
 
 import os
 
@@ -24,12 +27,6 @@ from jax import numpy as jnp
 from jax import random
 import numpy as np
 from t5x import models as t5x_models
-# "Unused" imports below are needed by gin configs.
-# pylint: disable=unused-import
-from t5x import utils
-from t5x.contrib.moe import adafactor_utils
-from t5x.contrib.moe import models
-# pylint: enable=unused-import
 
 
 class GinConfigsTest(parameterized.TestCase):
@@ -39,53 +36,52 @@ class GinConfigsTest(parameterized.TestCase):
     super(GinConfigsTest, cls).setUpClass()
     cls.root = os.path.join(
         absltest.get_default_test_srcdir(),
-        'flaxformer/t5x/configs/moe')
+        'flaxformer/t5x/configs/h_transformer')
     gin.add_config_file_search_path(cls.root)
 
   def setUp(self):
     super().setUp()
     gin.clear_config()
 
-  @parameterized.parameters(
-      'experts_choose_small.gin',
-      'experts_choose_tiny.gin',
-      'tokens_choose_small.gin',
-      'tokens_choose_tiny.gin',
+  @parameterized.named_parameters(
+      dict(
+          testcase_name='1d_encoder_decoder_base',
+          filename='h_transformer_1d_encoder_decoder_base.gin'),
+      dict(
+          testcase_name='1d_encoder_decoder_small',
+          filename='h_transformer_1d_encoder_decoder_small.gin'),
+      dict(
+          testcase_name='1d_encoder_decoder_large',
+          filename='h_transformer_1d_encoder_decoder_large.gin'),
   )
-  def test_encoder_decoder_model_gin_config(self, filename):
+  def test_model_gin_config(self, filename):
     path = os.path.join(self.root, 'models', filename)
     gin.parse_config_file(path)
-    gin.parse_config("""
-      NUM_EXPERTS = 2
-      NUM_MODEL_PARTITIONS = 1
-      """)
     gin.finalize()  # Check for required values, etc.
 
     model_config_ref: gin.ConfigurableReference = gin.query_parameter('%MODEL')
 
-    # Instantiate T5X model (`t5x.contrib.moe.models.MoeEncoderDecoderModel`).
+    # Instantiate T5X model (e.g. `t5x.models.EncoderDecoderModel`).
     model: t5x_models.BaseModel = model_config_ref.scoped_configurable_fn()
 
-    encoder_input_tokens = jnp.ones((2, 4))
-    # For this test, decoder input and target tokens are fake values.
-    decoder_input_tokens = jnp.array([[1, 2, 1, 0], [0, 1, 0, 2]])
-    decoder_target_tokens = jnp.array([[1, 2, 1, 0], [0, 1, 0, 2]])
-    decoder_loss_weights = jnp.array([[1, 1, 1, 0], [0, 1, 0, 1]])
-
-    encoder_kwargs = {'encoder_input_tokens': encoder_input_tokens}
+    encoder_input_tokens = jnp.array([[1, 2, 1, 0], [1, 3, 0, 0]])
+    decoder_input_tokens = jnp.array([[1, 2, 0, 0], [4, 5, 0, 0]])
+    decoder_target_tokens = jnp.array([[1, 2, 0, 0], [4, 5, 0, 0]])
+    decoder_loss_weights = jnp.array([[1, 1, 0, 0], [1, 1, 0, 0]])
 
     variables = model.module.init(
         random.PRNGKey(0),
+        encoder_input_tokens=encoder_input_tokens,
         decoder_input_tokens=decoder_input_tokens,
         decoder_target_tokens=decoder_target_tokens,
-        enable_dropout=False,
-        **encoder_kwargs)
+        enable_dropout=False)
 
-    _ = model.module.apply({'params': variables['params']},
-                           decoder_input_tokens=decoder_input_tokens,
-                           decoder_target_tokens=decoder_target_tokens,
-                           enable_dropout=False,
-                           **encoder_kwargs)
+    output = model.module.apply({'params': variables['params']},
+                                encoder_input_tokens=encoder_input_tokens,
+                                decoder_input_tokens=decoder_input_tokens,
+                                decoder_target_tokens=decoder_target_tokens,
+                                enable_dropout=False)
+    del output  # Unused.
 
     batch = {
         'encoder_input_tokens': encoder_input_tokens,
@@ -93,24 +89,20 @@ class GinConfigsTest(parameterized.TestCase):
         'decoder_target_tokens': decoder_target_tokens,
         'decoder_loss_weights': decoder_loss_weights
     }
-    _ = model.score_batch(variables['params'], batch)
-
+    res = model.score_batch(variables['params'], batch)
+    del res  # Unused.
 
   def test_architecture_gin_config(self):
-    path = os.path.join(self.root, 'architectures', 'moe.gin')
+    filename = 'h_transformer_1d_encoder_decoder.gin'
+    path = os.path.join(self.root, 'architectures', filename)
     gin.parse_config_file(path)
     gin.parse_config("""
         NUM_HEADS = 2
-        NUM_ENCODER_LAYERS = 2
         NUM_DECODER_LAYERS = 2
-        NUM_ENCODER_SPARSE_LAYERS = 1
-        NUM_DECODER_SPARSE_LAYERS = 1
-        HEAD_DIM = 4
+        NUM_ENCODER_LAYERS = 2
         EMBED_DIM = 8
         MLP_DIM = 8
         NUM_EMBEDDINGS = 128
-        NUM_EXPERTS = 2
-        NUM_MODEL_PARTITIONS = 1
         """)
     gin.finalize()  # Check for required values, etc.
 
@@ -125,23 +117,21 @@ class GinConfigsTest(parameterized.TestCase):
     decoder_input_tokens = np.ones(shape, dtype=np.int32)
     decoder_target_tokens = np.ones(shape, dtype=np.int32)
 
-    encoder_kwargs = {'encoder_input_tokens': encoder_input_tokens}
-
-    _, variables = arch.init_with_output(
+    output, variables = arch.init_with_output(
         random.PRNGKey(0),
+        encoder_input_tokens=encoder_input_tokens,
         decoder_input_tokens=decoder_input_tokens,
         decoder_target_tokens=decoder_target_tokens,
-        enable_dropout=False,
-        decode=False,
-        max_decode_length=None,
-        **encoder_kwargs)
+        enable_dropout=False)
+    del output  # Unused.
 
     # Call with expected arrays (e.g. Call `__call__` with concrete sequences).
     _ = arch.apply(
         variables,
+        encoder_input_tokens=encoder_input_tokens,
         decoder_input_tokens=decoder_input_tokens,
         decoder_target_tokens=decoder_target_tokens,
-        **encoder_kwargs)
+        enable_dropout=False)
 
 
 if __name__ == '__main__':

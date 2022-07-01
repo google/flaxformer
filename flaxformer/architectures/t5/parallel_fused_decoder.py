@@ -335,13 +335,22 @@ class ParallelFusedDecoderLayer(nn.Module, param_remapping.ParameterRemappable):
     # y_fused: [batch, length, heads, mlp//heads + head_dim]
     y_fused = jnp.concatenate([y_att, y_mlp], axis=-1)
     if self.use_aqt and self.weight_params is not None:
-      input_dim = mlp_intermediate_dim // num_heads + head_dim
-      assert y_fused.shape[-2:] == (num_heads, input_dim)
-      y_fused = y_fused.reshape(y_fused.shape[:-2] + (num_heads * input_dim,))
-
-    y_out = self.make_dense(
-        **self.o_wo_fused_args, enable_dropout=enable_dropout)(
-            y_fused)
+      weight_prec = self.weight_params.prec if self.weight_params else None
+      half_shift = self.weight_params.half_shift if self.weight_params else False
+      aqt_hparams = aqt_flax_layers.DenseGeneralAqt.HParams(
+          weight_prec=weight_prec,
+          weight_half_shift=half_shift,
+          quant_act=None,  # currently supports fixed bounds only.
+          weight_quant_granularity=aqt_config.QuantGranularity.PER_CHANNEL,
+      )
+      y_out = aqt_flax_layers.DenseGeneralAqt(
+          **self.o_wo_fused_args,
+          hparams=aqt_hparams,
+          train=enable_dropout,
+          possibly_use_quantized_vars=self.possibly_use_quantized_vars)(
+              y_fused)
+    else:
+      y_out = dense.DenseGeneral(**self.o_wo_fused_args)(y_fused)
     # y *= 2**-0.5
     z = layer_input + self.dropout(y_out, deterministic=not enable_dropout)
     z = activation_partitioning.with_sharding_migration(

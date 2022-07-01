@@ -739,7 +739,7 @@ class Encoder(nn.Module, param_remapping.ParameterRemappable):
     params_spec = self.scan_axis if initializing else transforms.ScanIn(
         self.scan_axis)
     cache_spec = 0
-    intermediates_spec = 0
+    intermediates_spec = 2  # Stacks intermediate layer outputs in dimension 2.
     scan_annotation = (
         self.spmd_annotations['encoder']
         if self.spmd_annotations is not None else None)
@@ -970,7 +970,7 @@ class Decoder(nn.Module, param_remapping.ParameterRemappable):
     params_spec = self.scan_axis if initializing else transforms.ScanIn(
         self.scan_axis)
     cache_spec = 0
-    intermediates_spec = 0
+    intermediates_spec = 2  # Stacks intermediate layer outputs in dimension 2.
     scan_annotation = (
         self.spmd_annotations['decoder']
         if self.spmd_annotations is not None else None)

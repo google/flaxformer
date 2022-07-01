@@ -338,7 +338,7 @@ class MlpBlock(nn.Module):
     layer_norm: Performs layer normalization.
   """
   mlp: Mlp
-  dense_layer: nn.Dense
+  dense_layer: dense.DenseGeneral
   dropout: nn.Dropout
   layer_norm: nn.LayerNorm
 
@@ -369,7 +369,7 @@ class MlpBlock(nn.Module):
 
 
 class Mlp(nn.Module):
-  dense_layer: nn.Dense
+  dense_layer: dense.DenseGeneral
   activation: Activation
 
   def __call__(self, inputs: Array) -> Array:
@@ -774,6 +774,7 @@ def make_attention_block(
           kernel_init=kernel_init,
           bias_init=bias_init,
           use_bias=True,
+          kernel_axis_names=('heads', 'kv', 'embed'),
           dtype=dtype),
       # We chose to not broadcast dropout (compared to T5),
       # because of a lack of evidence that it was used by BERT).
@@ -821,18 +822,20 @@ def make_mlp_block(
   """Returns a Bert-style transformer MLP block."""
   return MlpBlock(
       mlp=Mlp(
-          dense_layer=nn.Dense(
+          dense_layer=dense.DenseGeneral(
               features=intermediate_dim,
+              kernel_axis_names=('embed', 'mlp'),
               use_bias=True,
               dtype=dtype,
               kernel_init=kernel_init,
               bias_init=bias_init),
           activation=nn.gelu),
-      dense_layer=nn.Dense(
+      dense_layer=dense.DenseGeneral(
           features=hidden_size,
           use_bias=True,
           dtype=dtype,
           kernel_init=kernel_init,
+          kernel_axis_names=('mlp', 'embed'),
           bias_init=bias_init),
       dropout=nn.Dropout(
           rate=dropout_rate,

@@ -11,7 +11,7 @@
         "scale": [13]
       },
       "o_wo_fused": {
-        "kernel": [2560, 13]
+        "kernel": [8, 320, 13]
       },
       "q_wi_fused": {
         "kernel": [13, 8, 576]
@@ -28,7 +28,7 @@
         "scale": [13]
       },
       "o_wo_fused": {
-        "kernel": [2560, 13]
+        "kernel": [8, 320, 13]
       },
       "q_wi_fused": {
         "kernel": [13, 8, 576]

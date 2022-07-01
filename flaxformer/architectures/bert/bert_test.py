@@ -318,7 +318,7 @@ class AttentionBlockTest(absltest.TestCase):
     inputs = random.uniform(random.PRNGKey(0), input_shape, dtype=jnp.float32)
     layer = bert.make_attention_block(
         bert.make_attention_layer(num_heads=2), hidden_size=4)
-    result, _ = layer.init_with_output(
+    result, variables = layer.init_with_output(
         {
             'params': params_key,
             'dropout': dropout_key
@@ -327,6 +327,33 @@ class AttentionBlockTest(absltest.TestCase):
         attention_targets=inputs,
         enable_dropout=False)
     self.assertEqual(input_shape, result.shape)
+
+    # Note: The layernorm has no axes annotations.
+    params = variables['params'].unfreeze()
+    del params['layer_norm']
+    self.assertDictEqual(
+        testing_utils.param_dtypes_shapes_axes(params,
+                                               variables['params_axes']),
+        {
+            'attention_layer': {
+                'key': {
+                    'kernel': ['float32', 'embed=4', 'joined_kv=4'],
+                    'bias': ['float32', 'joined_kv=4']
+                },
+                'query': {
+                    'kernel': ['float32', 'embed=4', 'joined_kv=4'],
+                    'bias': ['float32', 'joined_kv=4']
+                },
+                'value': {
+                    'kernel': ['float32', 'embed=4', 'joined_kv=4'],
+                    'bias': ['float32', 'joined_kv=4']
+                },
+            },
+            'dense_layer': {
+                'kernel': ['float32', 'joined_kv=4', 'embed=4'],
+                'bias': ['float32', 'embed=4']
+            },
+        })
 
   def test_output_shape_with_mask(self):
     """Tests that attention block's output is of correct shape with a mask."""
@@ -376,7 +403,7 @@ class MlpBlockTest(absltest.TestCase):
     input_shape = (2, 3, 4)
     inputs = random.uniform(random.PRNGKey(0), input_shape, dtype=jnp.float32)
     layer = bert.make_mlp_block(hidden_size=4, intermediate_dim=14)
-    result, _ = layer.init_with_output(
+    result, variables = layer.init_with_output(
         {
             'params': params_key,
             'dropout': dropout_key
@@ -384,6 +411,25 @@ class MlpBlockTest(absltest.TestCase):
         inputs,
         enable_dropout=False)
     self.assertEqual(input_shape, result.shape)
+
+    # Note: The layernorm has no axes annotations.
+    params = variables['params'].unfreeze()
+    del params['layer_norm']
+    self.assertDictEqual(
+        testing_utils.param_dtypes_shapes_axes(params,
+                                               variables['params_axes']),
+        {
+            'mlp': {
+                'dense_layer': {
+                    'kernel': ['float32', 'embed=4', 'mlp=14'],
+                    'bias': ['float32', 'mlp=14']
+                },
+            },
+            'dense_layer': {
+                'kernel': ['float32', 'mlp=14', 'embed=4'],
+                'bias': ['float32', 'embed=4']
+            },
+        })
 
 
 if __name__ == '__main__':
