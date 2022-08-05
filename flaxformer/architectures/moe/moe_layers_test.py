@@ -68,6 +68,7 @@ class MoeLayerTest(parameterized.TestCase):
           jitter_noise=0.,
           num_selected_experts=2,
           batch_prioritized_routing=True,
+          ignore_padding_tokens=True,
           dtype=jnp.float32)
     else:
       router = routing.TokensChooseScatterRouter(
@@ -75,6 +76,7 @@ class MoeLayerTest(parameterized.TestCase):
           jitter_noise=0.,
           num_selected_experts=2,
           batch_prioritized_routing=True,
+          ignore_padding_tokens=True,
           dtype=jnp.float32)
 
     expert = dense.MlpBlock(
@@ -115,7 +117,11 @@ class MoeLayerTest(parameterized.TestCase):
     self.assertEqual(actual_outputs.shape,
                      (batch_size, max_seq_length, hidden_dim))
 
-    self.assertIn('diversity_metrics', state['intermediates'])
+    for metric in [
+        'auxiliary_loss', 'router_z_loss', 'fraction_tokens_left_behind',
+        'expert_usage', 'router_confidence'
+    ]:
+      self.assertIn(metric, state['intermediates'])
 
   def test_scatter_mask_dispatch_equal(self):
     batch_size = 4
@@ -150,14 +156,16 @@ class MoeLayerTest(parameterized.TestCase):
         jitter_noise=0.,
         num_selected_experts=2,
         batch_prioritized_routing=True,
-        dtype=jnp.float32)
+        dtype=jnp.float32,
+        ignore_padding_tokens=False)
     masked_moe_layer = moe_layer_factory(router=masked_router)
     scatter_router = routing.TokensChooseScatterRouter(
         router_weights=router_weights,
         jitter_noise=0.,
         num_selected_experts=2,
         batch_prioritized_routing=True,
-        dtype=jnp.float32)
+        dtype=jnp.float32,
+        ignore_padding_tokens=False)
     scatter_moe_layer = moe_layer_factory(router=scatter_router)
 
     inputs = jax.random.uniform(
@@ -272,7 +280,8 @@ class MoeLayerTest(parameterized.TestCase):
     router = routing.ExpertsChooseMaskedRouter(
         router_weights=routing.RouterWeights(name='router_weights'),
         jitter_noise=0.,
-        dtype=jnp.float32)
+        dtype=jnp.float32,
+        ignore_padding_tokens=True)
     moe_layer = moe_layers.MoeLayer(
         num_experts=2,
         router=router,

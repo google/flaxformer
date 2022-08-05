@@ -32,7 +32,6 @@ EVAL_EXPERT_CAPACITY_FACTOR = 2.0
 # Helps w/ pre-training stability.
 ROUTER_Z_LOSS_FACTOR = 0.001
 
-# Experimental.
 # For model parallelism for large models, we can reduce all-to-all
 # communication by partitioning inputs before transferring data.
-# moe_layers.MoeLayer.optimize_model_parallel_communications = True
+moe_layers.MoeLayer.optimize_model_parallel_communications = True

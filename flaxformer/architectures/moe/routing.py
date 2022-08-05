@@ -14,7 +14,7 @@
 
 """Mixture of Experts routing mechanisms."""
 
-from typing import Any, Tuple
+from typing import Any, Optional, Tuple
 
 import flax
 from flax import linen as nn
@@ -222,10 +222,16 @@ class Router(nn.Module):
     jitter_noise: Amplitude of jitter noise applied to router logits.
     dtype: Numeric float type for returned combine array. All actual
       computations are performed in float32 of the input for stability.
+    ignore_padding_tokens: Whether to ignore padding tokens during routing. Note
+      that some routers (e.g. TokensChooseMaskedRouter) will completely ignore
+      padding tokens, while others (e.g. TokensChooseScatterRouter and
+      ExpertsChooseMaskedRouter) will simply down-weight the probability of
+      selecting padding tokens.
   """
   router_weights: RouterWeights
   jitter_noise: float
   dtype: jnp.dtype
+  ignore_padding_tokens: bool
 
   def __call__(self,
                token_inputs: Array,
@@ -252,8 +258,24 @@ class Router(nn.Module):
         router_probs, ('batch', 'length', 'unmodeled'))
     router_logits = flax_partitioning.with_sharding_constraint(
         router_logits, ('batch', 'length', 'unmodeled'))
+
+    if self.ignore_padding_tokens:
+      # To identify non-padding tokens, we rely on the fact that padding tokens
+      # in the inputs have already been masked in the default T5 architecture.
+      # See
+      # https://github.com/google/flaxformer/blob/9712a16/flaxformer/architectures/t5/t5_architecture.py#L315
+      # and
+      # https://github.com/google/flaxformer/blob/9712a16/flaxformer/architectures/t5/t5_architecture.py#L603.
+      padding_mask = jnp.array((jnp.sum(jnp.abs(token_inputs), axis=-1) > 0),
+                               dtype=token_inputs.dtype)
+      router_logits *= jnp.expand_dims(padding_mask, axis=-1)
+    else:
+      padding_mask = None
+
     instructions = self._compute_routing_instructions(router_probs,
+                                                      padding_mask,
                                                       expert_capacity)
+
     return instructions.replace(router_z_loss=_router_z_loss(router_logits))
 
   def _compute_router_probabilities(self, token_inputs: Array, num_experts: int,
@@ -293,6 +315,7 @@ class Router(nn.Module):
     return router_probabilities, router_logits
 
   def _compute_routing_instructions(self, router_probs: Array,
+                                    padding_mask: Optional[Array],
                                     expert_capacity: int) -> RouterOutput:
     """Computes instructions for routing inputs to experts."""
     raise NotImplementedError(
@@ -311,12 +334,15 @@ class ScatterRouter(Router):
   """
 
   def _compute_routing_instructions(self, router_probs: Array,
+                                    padding_mask: Optional[Array],
                                     expert_capacity: int) -> RouterIndices:
     """Computes instructions for routing inputs to experts.
 
     Args:
       router_probs: <float32>[num_groups, tokens_per_group, num_experts]
         probabilities used to determine the routing of tokens to the experts.
+      padding_mask: <float32>[num_groups, tokens_per_group] padding logit mask
+        used to identify padding tokens that should be ignored by the router.
       expert_capacity: Each group will send this many tokens to each expert.
 
     Returns:
@@ -338,12 +364,15 @@ class MaskedRouter(Router):
   """
 
   def _compute_routing_instructions(self, router_probs: Array,
+                                    padding_mask: Optional[Array],
                                     expert_capacity: int) -> RouterMask:
     """Computes masks for the top-k experts per token.
 
     Args:
       router_probs: <float32>[num_groups, tokens_per_group, num_experts]
         probabilities used to determine the routing of tokens to the experts.
+      padding_mask: <float32>[num_groups, tokens_per_group] padding logit mask
+        used to identify padding tokens that should be ignored by the router.
       expert_capacity: Each group will send this many tokens to each expert.
 
     Returns:
@@ -378,18 +407,29 @@ class TokensChooseScatterRouter(ScatterRouter):
   batch_prioritized_routing: bool
 
   def _compute_routing_instructions(self, router_probs: Array,
+                                    padding_mask: Optional[Array],
                                     expert_capacity: int) -> RouterIndices:
     """Computes dispatch indices and combine weights for the top-k experts.
 
     Args:
       router_probs: <float32>[num_groups, tokens_per_group, num_experts]
         probabilities used to determine the routing of tokens to the experts.
+      padding_mask: <float32>[num_groups, tokens_per_group] padding logit mask
+        used to identify padding tokens that should be down-weighted by the
+        router.
       expert_capacity: Each group will send this many tokens to each expert.
 
     Returns:
         Dispatch indices and combine weights for scatter/gather-based routing.
     """
     num_groups, tokens_per_group, num_experts = router_probs.shape
+
+    if padding_mask is not None:
+      # Because `expert_indices` are directly used for scatter-based routing, we
+      # mask probabilities corresponding to tokens before the top-k operation.
+      # Note that, unlike for mask-based tokens-choose routing, the
+      # (down-weighted) padding tokens may still be selected.
+      router_probs *= jnp.expand_dims(padding_mask, axis=-1)
 
     # Top-k router probability and corresponding expert indices for each token.
     # Shape: [num_groups, tokens_per_group, num_selected_experts].
@@ -491,12 +531,15 @@ class TokensChooseMaskedRouter(MaskedRouter):
   batch_prioritized_routing: bool
 
   def _compute_routing_instructions(self, router_probs: Array,
+                                    padding_mask: Optional[Array],
                                     expert_capacity: int) -> RouterMask:
     """Computes masks for the top-k experts per token.
 
     Args:
       router_probs: <float32>[num_groups, tokens_per_group, num_experts]
         probabilities used to determine the routing of tokens to the experts.
+      padding_mask: <float32>[num_groups, tokens_per_group] padding logit mask
+        used to identify padding tokens that should be ignored by the router.
       expert_capacity: Each group will send this many tokens to each expert.
 
     Returns:
@@ -508,6 +551,23 @@ class TokensChooseMaskedRouter(MaskedRouter):
     # Shape: [num_groups, tokens_per_group, num_selected_experts].
     expert_gate, expert_index = _top_k(
         router_probs, k=self.num_selected_experts)
+
+    if padding_mask is not None:
+      # Mask applied to gate. Exclude choices corresponding to padding tokens.
+      gate_mask = jnp.expand_dims(padding_mask, axis=-1)
+      expert_gate *= gate_mask
+
+      # Set `expert_index` elements corresponding to padding to negative
+      # numbers. Negative `expert_index` elements will ultimately be dropped in
+      # the one_hot conversion to the `expert_mask`.
+      # First convert nonzero padding elements to negative values.
+      expert_index *= 2 * gate_mask - 1.
+      # Handle zero padding elements by negatively shifting all padding.
+      expert_index += jnp.repeat(
+          gate_mask - 1., self.num_selected_experts, axis=-1)
+
+      # To correctly compute load balancing loss, we also mask out probs.
+      router_probs *= gate_mask
 
     auxiliary_loss = _load_balancing_loss(router_probs, expert_index)
 
@@ -589,18 +649,29 @@ class ExpertsChooseMaskedRouter(MaskedRouter):
   """
 
   def _compute_routing_instructions(self, router_probs: Array,
+                                    padding_mask: Optional[Array],
                                     expert_capacity: int) -> RouterMask:
     """Computes masks for the highest probability token per expert.
 
     Args:
       router_probs: <float32>[num_groups, tokens_per_group, num_experts]
         probabilities used to determine the routing of tokens to the experts.
+      padding_mask: <float32>[num_groups, tokens_per_group] padding logit mask
+        used to identify padding tokens that should be down-weighted by the
+        router.
       expert_capacity: Each group will send this many tokens to each expert.
 
     Returns:
         Dispatch and combine arrays for routing with masked matmuls.
     """
     tokens_per_group = router_probs.shape[1]
+
+    if padding_mask is not None:
+      # Because experts choose tokens, we mask probabilities corresponding to
+      # tokens before the top-k operation. Note that, unlike for masked-based
+      # tokens-choose routing, the experts here may still choose to select the
+      # (down-weighted) padding tokens.
+      router_probs *= jnp.expand_dims(padding_mask, axis=-1)
 
     # vmap over group dimension.
     router_probs_t = jax.vmap(lambda m: m.transpose())(router_probs)

@@ -1,0 +1,67 @@
+# Flaxformer Perceiver AR architecture.
+#
+# Note that xmap is used to work around XLA partitioning issues with gathers.
+# If regular vmap is used, a bunch of extra allgathers are added.
+#
+# Requires the following flags:
+# --experimental_xmap_spmd_lowering=True
+# --experimental_xmap_spmd_lowering_manual=True
+#
+# Required to be overridden:
+#
+# - NUM_LATENTS
+# - NUM_DECODER_LAYERS
+# - NUM_HEADS
+# - HEAD_DIM
+# - EMBED_DIM
+# - MLP_DIM
+from __gin__ import dynamic_registration
+
+from flax import linen
+
+from flaxformer.architectures.perceiver_ar import perceiver_ar_architecture
+from flaxformer.architectures.t5 import t5_architecture
+from flaxformer.components.attention import dense_attention
+from flaxformer.components import dense
+from flaxformer.components import embedding
+from flaxformer.components import layer_norm
+
+# Use most architecture defaults from t5_flaxformer.
+include 'flaxformer/t5x/configs/t5/architectures/t5_flaxformer.gin'
+
+# Must be overridden.
+NUM_LATENTS = %gin.REQUIRED
+
+NUM_ENCODER_LAYERS = 0
+
+# Architecture
+ARCHITECTURE = @perceiver_ar_architecture.DecoderOnly()
+perceiver_ar_architecture.DecoderOnly:
+  decoder_factory = @perceiver_ar_architecture.Decoder
+  dtype = %ACTIVATION_DTYPE
+
+# Decoder
+perceiver_ar_architecture.Decoder:
+  num_latents = %NUM_LATENTS
+  num_layers = %NUM_DECODER_LAYERS
+  layer_factory = @perceiver_ar_architecture.DecoderLayer
+  dropout_factory = %DROPOUT_FACTORY
+  layer_norm_factory = @layer_norm.T5LayerNorm
+  output_logits_factory = None
+  position_embedder_factory = None
+  shared_relative_position_bias_factory = None
+  dtype = %ACTIVATION_DTYPE
+  token_embedder_factory = @embedding.Embed
+
+# Decoder Layer
+perceiver_ar_architecture.DecoderLayer:
+  self_attention = @dense_attention.MultiHeadDotProductAttention()
+  encoder_decoder_attention = @dense_attention.MultiHeadDotProductAttention()
+  mlp = @dense.MlpBlock()
+  dropout_factory = %DROPOUT_FACTORY
+  layer_norm_factory = @layer_norm.T5LayerNorm
+  activation_partitioning_dims = %ACTIVATION_PARTITIONING_DIMS
+  num_latents = %NUM_LATENTS
+
+# Rope
+dense_attention.MultiHeadDotProductAttention.use_rotary_embedding = True

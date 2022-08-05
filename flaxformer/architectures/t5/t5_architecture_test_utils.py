@@ -52,7 +52,7 @@ def make_token_emb1(vocab_size, dtype, features=13):
       name='token_embedder')
 
 
-def make_attention1(num_attn_heads, dtype):
+def make_attention1(num_attn_heads, dtype, use_rotary_embedding=False):
   """First test configuration for attention."""
   return dense_attention.MultiHeadDotProductAttention(
       num_heads=num_attn_heads,
@@ -63,7 +63,8 @@ def make_attention1(num_attn_heads, dtype):
       bias_init=BIAS_INIT,
       use_bias=False,
       broadcast_dropout=True,
-      dropout_rate=0.1)
+      dropout_rate=0.1,
+      use_rotary_embedding=use_rotary_embedding)
 
 
 def make_mlp1(dtype):
@@ -229,6 +230,7 @@ def make_parallel_fused_transformer_config(
     use_aqt: bool = False,
     weight_params: Optional[aqt.QuantOps.WeightParams] = None,
     possibly_use_quantized_vars: bool = False,
+    is_quant_finetune_mode: bool = False,
 ) -> t5_architecture.DecoderOnly:
   """Returns an EncoderDecoder with parallel=True."""
   dtype = jnp.bfloat16
@@ -278,7 +280,8 @@ def make_parallel_fused_transformer_config(
             lambda: _make_relative_position_bias(num_attn_heads, dtype)),
         use_aqt=use_aqt,
         weight_params=weight_params,
-        possibly_use_quantized_vars=possibly_use_quantized_vars)
+        possibly_use_quantized_vars=possibly_use_quantized_vars,
+        is_quant_finetune_mode=is_quant_finetune_mode)
 
   def _make_output_logits():
     return dense.DenseGeneral(

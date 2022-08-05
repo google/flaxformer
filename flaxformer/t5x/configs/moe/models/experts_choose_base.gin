@@ -50,6 +50,7 @@ sparse_encoder/routing.ExpertsChooseMaskedRouter:
   router_weights = @routing.RouterWeights()
   jitter_noise = %JITTER_NOISE  # provided by moe.gin
   dtype = %MOE_TRUNCATED_DTYPE  # provided by moe.gin
+  ignore_padding_tokens = False
 # We use top-2 tokens choose routing in the decoder.
 NUM_SELECTED_EXPERTS = 2  # Top-2 routing for decoder
 

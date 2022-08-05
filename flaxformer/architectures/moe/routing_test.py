@@ -55,6 +55,7 @@ class RoutingTest(parameterized.TestCase):
         num_selected_experts=num_selected_experts,
         jitter_noise=0.01,
         batch_prioritized_routing=True,
+        ignore_padding_tokens=False,
         dtype=jnp.float32).init_with_output(
             {
                 'params': jax.random.PRNGKey(0),
@@ -106,6 +107,7 @@ class RoutingTest(parameterized.TestCase):
         num_selected_experts=num_selected_experts,
         jitter_noise=0.01,
         batch_prioritized_routing=False,
+        ignore_padding_tokens=False,
         dtype=jnp.float32).init_with_output(
             {
                 'params': jax.random.PRNGKey(0),
@@ -157,6 +159,7 @@ class RoutingTest(parameterized.TestCase):
         num_selected_experts=num_selected_experts,
         jitter_noise=0.01,
         batch_prioritized_routing=True,
+        ignore_padding_tokens=False,
         dtype=jnp.float32).init_with_output(
             {
                 'params': jax.random.PRNGKey(0),
@@ -218,6 +221,7 @@ class RoutingTest(parameterized.TestCase):
         num_selected_experts=num_selected_experts,
         jitter_noise=0.,
         batch_prioritized_routing=True,
+        ignore_padding_tokens=False,
         dtype=jnp.float32).init_with_output(
             jax.random.PRNGKey(0), token_inputs, num_experts, expert_capacity)
 
@@ -255,6 +259,193 @@ class RoutingTest(parameterized.TestCase):
     self.assertEqual(router_mask.auxiliary_loss, 1.0006511)
     self.assertEqual(router_mask.router_z_loss, 0.47721353)
 
+  def test_routers_ignore_padding(self):
+    num_groups = 2
+    tokens_per_group = 6
+    hidden_dim = 2
+    num_experts = 2
+    num_selected_experts = 2
+    expert_capacity = 1  # Total capacity = 2*2*1 = 4 < num_tokens
+    rng = jax.random.PRNGKey(0)
+
+    token_inputs = jax.random.uniform(
+        rng, (num_groups, tokens_per_group, hidden_dim), minval=0, maxval=1)
+    # Simulate masked inputs.
+    padding_mask = jax.random.randint(
+        rng, (num_groups, tokens_per_group, 1), minval=0, maxval=2)
+    token_inputs *= padding_mask
+
+    router_weights = routing.RouterWeights(name='router_weights')
+
+    with self.subTest(name='tokens_choose_masked_router'):
+      router_mask, _ = routing.TokensChooseMaskedRouter(
+          router_weights=router_weights,
+          num_selected_experts=num_selected_experts,
+          jitter_noise=0.,
+          batch_prioritized_routing=True,
+          ignore_padding_tokens=True,
+          dtype=jnp.float32).init_with_output(
+              jax.random.PRNGKey(0), token_inputs, num_experts, expert_capacity)
+
+      expected_mask = jnp.array([
+          [
+              [[False], [False]],
+              [[True], [True]],
+              [[False], [False]],
+              [[False], [False]],
+              [[False], [False]],
+              [[False], [False]],
+          ],
+          [
+              [[False], [False]],
+              [[True], [True]],
+              [[False], [False]],
+              [[False], [False]],
+              [[False], [False]],
+              [[False], [False]],
+          ],
+      ],
+                                dtype=jnp.bool_)
+
+      np.testing.assert_allclose(router_mask.dispatch_mask, expected_mask)
+
+      expected_weights = jnp.array([
+          [
+              [[0.], [0.]],
+              [[0.50390625], [0.49804688]],
+              [[0.0], [0.]],
+              [[0.0], [0.]],
+              [[0.0], [0.]],
+              [[0.0], [0.]],
+          ],
+          [
+              [[0.], [0.]],
+              [[0.50390625], [0.49414062]],
+              [[0.], [0.]],
+              [[0.], [0.]],
+              [[0.], [0.]],
+              [[0.], [0.]],
+          ],
+      ],
+                                   dtype=jnp.float32)
+      np.testing.assert_allclose(router_mask.combine_array, expected_weights)
+
+      self.assertEqual(router_mask.auxiliary_loss, 0.6951497)
+      self.assertEqual(router_mask.router_z_loss, 0.48541257)
+
+    with self.subTest(name='tokens_choose_scatter_router'):
+      router_mask, _ = routing.TokensChooseScatterRouter(
+          router_weights=router_weights,
+          num_selected_experts=num_selected_experts,
+          jitter_noise=0.,
+          batch_prioritized_routing=True,
+          ignore_padding_tokens=True,
+          dtype=jnp.float32).init_with_output(
+              jax.random.PRNGKey(0), token_inputs, num_experts, expert_capacity)
+
+      print('tokens choose scatter')
+      print(router_mask)
+
+      expected_indices = jnp.array([
+          [
+              [[0, 4], [1, 4]],
+              [[0, 0], [1, 0]],
+              [[0, 1], [1, 1]],
+              [[0, 5], [1, 5]],
+              [[0, 2], [1, 2]],
+              [[0, 3], [1, 3]],
+          ],
+          [
+              [[0, 3], [1, 3]],
+              [[0, 0], [1, 0]],
+              [[0, 1], [1, 1]],
+              [[0, 4], [1, 4]],
+              [[0, 2], [1, 2]],
+              [[0, 5], [1, 5]],
+          ],
+      ],
+                                   dtype=jnp.int32)
+
+      np.testing.assert_allclose(router_mask.dispatch_indices, expected_indices)
+
+      expected_weights = jnp.array([
+          [
+              [0., 0.],
+              [0.50390625, 0.49804688],
+              [0., 0.],
+              [0., 0.],
+              [0., 0.],
+              [0., 0.],
+          ],
+          [
+              [0., 0.],
+              [0.50390625, 0.49414062],
+              [0., 0.],
+              [0., 0.],
+              [0., 0.],
+              [0., 0.],
+          ],
+      ],
+                                   dtype=jnp.float32)
+      np.testing.assert_allclose(router_mask.combine_weights, expected_weights)
+
+      self.assertEqual(router_mask.auxiliary_loss, 1.1676432)
+      self.assertEqual(router_mask.router_z_loss, 0.48541257)
+
+    with self.subTest(name='experts_choose_masked_router'):
+      router_mask, _ = routing.ExpertsChooseMaskedRouter(
+          router_weights=router_weights,
+          jitter_noise=0.,
+          ignore_padding_tokens=True,
+          dtype=jnp.float32).init_with_output(
+              jax.random.PRNGKey(0), token_inputs, num_experts, expert_capacity)
+
+      expected_mask = jnp.array([
+          [
+              [[0], [0]],
+              [[1], [1]],
+              [[0], [0]],
+              [[0], [0]],
+              [[0], [0]],
+              [[0], [0]],
+          ],
+          [
+              [[0], [0]],
+              [[1], [0]],
+              [[0], [1]],
+              [[0], [0]],
+              [[0], [0]],
+              [[0], [0]],
+          ],
+      ],
+                                dtype=jnp.bool_)
+
+      np.testing.assert_allclose(router_mask.dispatch_mask, expected_mask)
+
+      expected_weights = jnp.array([
+          [
+              [[0.], [0.]],
+              [[0.50390625], [0.49804688]],
+              [[0.0], [0.]],
+              [[0.0], [0.]],
+              [[0.0], [0.]],
+              [[0.0], [0.]],
+          ],
+          [
+              [[0.], [0.]],
+              [[0.50390625], [0.]],
+              [[0.], [0.49804688]],
+              [[0.], [0.]],
+              [[0.], [0.]],
+              [[0.], [0.]],
+          ],
+      ],
+                                   dtype=jnp.float32)
+      np.testing.assert_allclose(router_mask.combine_array, expected_weights)
+
+      self.assertEqual(router_mask.auxiliary_loss, 0.)
+      self.assertEqual(router_mask.router_z_loss, 0.48541257)
+
   def test_tokens_choose_one_expert_mask_router_no_bpr(self):
     num_groups = 2
     tokens_per_group = 3
@@ -271,6 +462,7 @@ class RoutingTest(parameterized.TestCase):
         num_selected_experts=num_selected_experts,
         jitter_noise=0.,
         batch_prioritized_routing=False,
+        ignore_padding_tokens=False,
         dtype=jnp.float32).init_with_output(
             jax.random.PRNGKey(0), token_inputs, num_experts, expert_capacity)
 
@@ -324,6 +516,7 @@ class RoutingTest(parameterized.TestCase):
         num_selected_experts=num_selected_experts,
         jitter_noise=0.01,
         batch_prioritized_routing=True,
+        ignore_padding_tokens=False,
         dtype=jnp.float32).init_with_output(
             {
                 'params': jax.random.PRNGKey(0),
@@ -381,7 +574,8 @@ class RoutingTest(parameterized.TestCase):
     router_mask, _ = routing.ExpertsChooseMaskedRouter(
         router_weights=routing.RouterWeights(name='router_weights'),
         jitter_noise=0.,
-        dtype=jnp.float32).init_with_output(
+        dtype=jnp.float32,
+        ignore_padding_tokens=False).init_with_output(
             jax.random.PRNGKey(0), token_inputs, num_experts, expert_capacity)
 
     expected_mask = jnp.array([
@@ -442,7 +636,8 @@ class RoutingTest(parameterized.TestCase):
         num_selected_experts=num_selected_experts,
         jitter_noise=0.,
         batch_prioritized_routing=True,
-        dtype=jnp.float32).init_with_output(
+        dtype=jnp.float32,
+        ignore_padding_tokens=False).init_with_output(
             jax.random.PRNGKey(0), token_inputs, num_experts, expert_capacity)
     # Manipulate masked router dispatch and combine arrays to match format of
     # scatter router output.
@@ -458,7 +653,8 @@ class RoutingTest(parameterized.TestCase):
         num_selected_experts=num_selected_experts,
         jitter_noise=0.,
         batch_prioritized_routing=True,
-        dtype=jnp.float32).init_with_output(
+        dtype=jnp.float32,
+        ignore_padding_tokens=False).init_with_output(
             jax.random.PRNGKey(0), token_inputs, num_experts, expert_capacity)
     # Manipulate scatter router dispatch and combine indices to match format of
     # masked router output.

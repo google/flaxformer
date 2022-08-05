@@ -20,7 +20,6 @@ import functools
 from typing import Optional
 
 from absl import logging
-import flax
 from flax import linen as nn
 from flax.linen import partitioning as flax_partitioning
 import jax
@@ -31,38 +30,6 @@ from flaxformer.architectures.moe import scatter_utils
 from flaxformer.components import dense
 from flaxformer.types import Array
 from flaxformer.types import DType
-
-
-@flax.struct.dataclass
-class DiversityMetrics:
-  """Metrics for analyzing diversity among experts in mixture of experts models.
-
-  Attributes:
-    auxiliary_loss: Auxiliary load balancing loss.
-    router_z_loss: Router z-loss. Encourages router logits to remain small in an
-      effort to improve stability.
-    fraction_tokens_left_behind: Fraction of tokens NOT processed by any expert.
-    expert_usage: Fraction of total capacity, across all experts, used to
-      process tokens. Larger expert capacities or non-uniform token routing will
-      result in smaller expert usage values.
-    router_confidence: How confident the router is about the tokens that it has
-      routed.
-  """
-  auxiliary_loss: float
-  router_z_loss: float
-
-  fraction_tokens_left_behind: float
-  expert_usage: float
-  router_confidence: float
-
-  def __add__(self, other):
-    return DiversityMetrics(
-        self.auxiliary_loss + other.auxiliary_loss,
-        self.router_z_loss + other.router_z_loss,
-        self.fraction_tokens_left_behind + other.fraction_tokens_left_behind,
-        self.expert_usage + other.expert_usage,
-        self.router_confidence + other.router_confidence,
-    )
 
 
 class MoeLayer(nn.Module):
@@ -246,7 +213,6 @@ class MoeLayer(nn.Module):
       <float>[num_groups, tokens_per_group, hidden_dim] outputs from experts.
     """
     num_groups, tokens_per_group, hidden_dim = token_inputs.shape
-    num_tokens = num_groups * tokens_per_group
 
     router_indices = self.router(
         token_inputs,
@@ -311,8 +277,20 @@ class MoeLayer(nn.Module):
     # Number of tokens that were dispatched to at least one expert.
     num_tokens_dispatched_somewhere = jnp.max(
         successfully_routed, axis=-1).sum()
-    fraction_tokens_left_behind = 1.0 - num_tokens_dispatched_somewhere / float(
-        num_tokens)
+    if self.router.ignore_padding_tokens:
+      # Only count non-padding tokens.
+      # To identify non-padding tokens, we rely on the fact that padding tokens
+      # in the inputs have already been zeroed out in the default T5
+      # architecture. See
+      # https://github.com/google/flaxformer/blob/9712a16/flaxformer/architectures/t5/t5_architecture.py#L315
+      # and
+      # https://github.com/google/flaxformer/blob/9712a16/flaxformer/architectures/t5/t5_architecture.py#L603.
+      num_tokens = jnp.array((jnp.sum(jnp.abs(token_inputs), axis=-1) > 0),
+                             dtype=token_inputs.dtype).sum()
+    else:
+      num_tokens = float(num_groups * tokens_per_group)
+    fraction_tokens_left_behind = 1.0 - num_tokens_dispatched_somewhere / num_tokens
+
     # Total number of tokens that were dispatched (one token could be dispatched
     # to multiple experts).
     num_tokens_dispatched = successfully_routed.sum()
@@ -351,7 +329,6 @@ class MoeLayer(nn.Module):
       <float>[num_groups, tokens_per_group, hidden_dim] outputs from experts.
     """
     num_groups, tokens_per_group, _ = token_inputs.shape
-    num_tokens = num_groups * tokens_per_group
 
     router_mask = self.router(
         token_inputs,
@@ -379,8 +356,20 @@ class MoeLayer(nn.Module):
     # Number of tokens that were dispatched to at least one expert.
     num_tokens_dispatched_somewhere = jnp.max(
         router_mask.dispatch_mask, axis=(-1, -2)).sum()
-    fraction_tokens_left_behind = 1.0 - num_tokens_dispatched_somewhere / float(
-        num_tokens)
+    if self.router.ignore_padding_tokens:
+      # Only count non-padding tokens.
+      # To identify non-padding tokens, we rely on the fact that padding tokens
+      # in the inputs have already been zeroed out in the default T5
+      # architecture. See
+      # https://github.com/google/flaxformer/blob/9712a16/flaxformer/architectures/t5/t5_architecture.py#L315
+      # and
+      # https://github.com/google/flaxformer/blob/9712a16/flaxformer/architectures/t5/t5_architecture.py#L603.
+      num_tokens = jnp.array((jnp.sum(jnp.abs(token_inputs), axis=-1) > 0),
+                             dtype=token_inputs.dtype).sum()
+    else:
+      num_tokens = float(num_groups * tokens_per_group)
+    fraction_tokens_left_behind = 1.0 - num_tokens_dispatched_somewhere / num_tokens
+
     # Total number of tokens that were dispatched (one token could be
     # dispatched to multiple experts).
     num_tokens_dispatched = router_mask.dispatch_mask.sum()
@@ -498,15 +487,27 @@ class MoeLayer(nn.Module):
                           fraction_tokens_left_behind: float,
                           router_confidence: float, expert_usage: float):
     """Sows metrics to analyze expert routing."""
-    self.sow(
-        'intermediates',
-        'diversity_metrics',
-        DiversityMetrics(auxiliary_loss, router_z_loss,
-                         fraction_tokens_left_behind, expert_usage,
-                         router_confidence),
-        init_fn=lambda: DiversityMetrics(0., 0., 0., 0., 0.),
-        # DiversityMetrics are summed if repeated calls are made.
-        reduce_fn=lambda a, b: a + b)
+
+    def wrap_in_trivial_dimensions(metric: float) -> Array:
+      """Adds trivial dims for compatibility with other sown intermediates."""
+      return jnp.asarray(metric).reshape((1, 1))
+
+    def reduce_metrics(a: Array, b: Array) -> Array:
+      """Sums diversity metrics with trivial dimensions."""
+      return wrap_in_trivial_dimensions(jnp.squeeze(a) + jnp.squeeze(b))
+
+    for metric, value in [('auxiliary_loss', auxiliary_loss),
+                          ('router_z_loss', router_z_loss),
+                          ('fraction_tokens_left_behind',
+                           fraction_tokens_left_behind),
+                          ('router_confidence', router_confidence),
+                          ('expert_usage', expert_usage)]:
+      self.sow(
+          'intermediates',
+          metric,
+          wrap_in_trivial_dimensions(value),
+          init_fn=lambda: wrap_in_trivial_dimensions(0.),
+          reduce_fn=reduce_metrics)
 
   def _swapaxes_with_sharding_constraint(self, array: Array, axis1: int,
                                          axis2: int, expert_capacity: int,

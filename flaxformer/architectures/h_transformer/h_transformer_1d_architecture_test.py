@@ -20,8 +20,8 @@ from jax import random
 import numpy as np
 
 from flaxformer import testing_utils
-from flaxformer.architectures.h_transformer import h_transformer_1d_architecture
 from flaxformer.architectures.h_transformer import h_transformer_1d_architecture_test_utils as h_transformer_test_utils
+from flaxformer.architectures.h_transformer import h_transformer_utils as utils
 
 testdata_dir = 'flaxformer/architectures/h_transformer/testdata'
 expected_files = testing_utils.ExpectedJsonFiles(testdata_dir)
@@ -61,16 +61,14 @@ class EncoderTest(parameterized.TestCase):
           testcase_name='scan',
           scan_layers=True,
           layer_remat_options=[
-              h_transformer_1d_architecture.LayerRematOptions.MINIMAL,
-              h_transformer_1d_architecture.LayerRematOptions.FULL
+              utils.LayerRematOptions.MINIMAL, utils.LayerRematOptions.FULL
           ]),
       dict(
           testcase_name='no_scan',
           scan_layers=False,
           layer_remat_options=[
-              h_transformer_1d_architecture.LayerRematOptions.NONE,
-              h_transformer_1d_architecture.LayerRematOptions.MINIMAL,
-              h_transformer_1d_architecture.LayerRematOptions.FULL
+              utils.LayerRematOptions.NONE, utils.LayerRematOptions.MINIMAL,
+              utils.LayerRematOptions.FULL
           ]),
   )
   def test_scan_and_remat(self, scan_layers, layer_remat_options):
@@ -147,16 +145,14 @@ class DecoderOnlyTest(parameterized.TestCase):
           testcase_name='scan',
           scan_layers=True,
           layer_remat_options=[
-              h_transformer_1d_architecture.LayerRematOptions.MINIMAL,
-              h_transformer_1d_architecture.LayerRematOptions.FULL
+              utils.LayerRematOptions.MINIMAL, utils.LayerRematOptions.FULL
           ]),
       dict(
           testcase_name='no_scan',
           scan_layers=False,
           layer_remat_options=[
-              h_transformer_1d_architecture.LayerRematOptions.NONE,
-              h_transformer_1d_architecture.LayerRematOptions.MINIMAL,
-              h_transformer_1d_architecture.LayerRematOptions.FULL
+              utils.LayerRematOptions.NONE, utils.LayerRematOptions.MINIMAL,
+              utils.LayerRematOptions.FULL
           ]),
   )
   def test_scan_and_remat(self, scan_layers, layer_remat_options):
@@ -240,16 +236,14 @@ class DecoderTest(parameterized.TestCase):
           testcase_name='scan',
           scan_layers=True,
           layer_remat_options=[
-              h_transformer_1d_architecture.LayerRematOptions.MINIMAL,
-              h_transformer_1d_architecture.LayerRematOptions.FULL
+              utils.LayerRematOptions.MINIMAL, utils.LayerRematOptions.FULL
           ]),
       dict(
           testcase_name='no_scan',
           scan_layers=False,
           layer_remat_options=[
-              h_transformer_1d_architecture.LayerRematOptions.NONE,
-              h_transformer_1d_architecture.LayerRematOptions.MINIMAL,
-              h_transformer_1d_architecture.LayerRematOptions.FULL
+              utils.LayerRematOptions.NONE, utils.LayerRematOptions.MINIMAL,
+              utils.LayerRematOptions.FULL
           ]),
   )
   def test_scan_and_remat(self, scan_layers, layer_remat_options):
@@ -334,16 +328,14 @@ class EncoderDecoderTest(parameterized.TestCase):
           testcase_name='scan',
           scan_layers=True,
           layer_remat_options=[
-              h_transformer_1d_architecture.LayerRematOptions.MINIMAL,
-              h_transformer_1d_architecture.LayerRematOptions.FULL
+              utils.LayerRematOptions.MINIMAL, utils.LayerRematOptions.FULL
           ]),
       dict(
           testcase_name='no_scan',
           scan_layers=False,
           layer_remat_options=[
-              h_transformer_1d_architecture.LayerRematOptions.NONE,
-              h_transformer_1d_architecture.LayerRematOptions.MINIMAL,
-              h_transformer_1d_architecture.LayerRematOptions.FULL
+              utils.LayerRematOptions.NONE, utils.LayerRematOptions.MINIMAL,
+              utils.LayerRematOptions.FULL
           ]),
   )
   def test_scan_and_remat(self, scan_layers, layer_remat_options):

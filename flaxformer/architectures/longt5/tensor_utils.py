@@ -330,6 +330,42 @@ def make_3block_relative_position(block_len: int) -> np.ndarray:
   return pos_ids[np.newaxis, :] - center_pos_ids[:, np.newaxis]
 
 
+def make_custom_3block_relative_position(block_len: int,
+                                         positions: Array) -> Array:
+  """Makes customized 3-blocked relative positions for local attention.
+
+  Unlike `make_3block_relative_position`, this function takes the
+  `positions` input to customize the relative attention pattern, which may
+  be different for each example.
+
+  Args:
+    block_len: integer length of each block.
+    positions: [batch, seq_len] shaped integer Array.
+
+  Returns:
+    [batch, num_blocks, block_len, 3 * block_len] integer Array of relative
+    positions.
+
+  Note: The sign convention we use is that the relative position is the position
+    of the key minus the position of the query; i.e. it is the query position
+    which receives a minus sign.
+  """
+  positions = jnp.asarray(positions)
+  padding_position = -1
+
+  # [batch, num_blocks, block_len] shape.
+  positions_blocked = split_into_blocks(
+      positions, block_len, axis=-1, pad_value=padding_position)
+
+  # [batch, num_blocks, 3 * block_len] shape.
+  positions_3blocked = concat_3_blocks(
+      positions_blocked, block_axis=-2, seq_axis=-1, pad_value=padding_position)
+
+  # [batch, num_blocks, block_len, 3 * block_len] shape.
+  return (positions_3blocked[..., jnp.newaxis, :] -
+          positions_blocked[..., jnp.newaxis])
+
+
 def constant_init(value, dtype=jnp.float32):
   """Returns an initializer that initializes all values to a constant."""
 

@@ -31,7 +31,8 @@ ACTIVATION_DTYPE = 'bfloat16'
 ACTIVATION_PARTITIONING_DIMS = 1
 SCALE = 1.0
 DROPOUT_RATE = 0.0
-NUM_CLUSTERS = 2
+ENCODER_NUM_CLUSTERS = 2
+DECODER_NUM_CLUSTERS =16
 
 # Macros
 BIAS_INIT = @bias_init/linen.initializers.normal()
@@ -107,7 +108,7 @@ token_embedder_init/linen.initializers.normal.stddev = 1.0
 # h-attention EncoderSelfAttention
 h_attention.OneDimEncoderSelfAttention:
   num_heads = %NUM_HEADS
-  num_clusters = %NUM_CLUSTERS
+  num_clusters = %ENCODER_NUM_CLUSTERS
   dtype = %ACTIVATION_DTYPE
   kernel_init =  @attention_kernel_init/linen.initializers.variance_scaling()
   bias_init = %BIAS_INIT
@@ -118,7 +119,7 @@ h_attention.OneDimEncoderSelfAttention:
 # h-attention DecoderSelfAttention
 h_attention.OneDimDecoderSelfAttention:
   num_heads = %NUM_HEADS
-  num_clusters = %NUM_CLUSTERS
+  num_clusters = %DECODER_NUM_CLUSTERS
   dtype = %ACTIVATION_DTYPE
   kernel_init =  @attention_kernel_init/linen.initializers.variance_scaling()
   bias_init = %BIAS_INIT

@@ -519,7 +519,8 @@ class SparseDecoder(t5_architecture.Decoder):
       self.decoder = self._construct_scanned_decoder(
           block_factory,
           num_layers=_num_scan_blocks(self.num_layers, self.num_sparse_layers,
-                                      self.sparse_layout))
+                                      self.sparse_layout),
+          num_broadcast_args=9)
 
     self.decoder_norm = self.layer_norm_factory()
     self.output_dropout = self.dropout_factory()

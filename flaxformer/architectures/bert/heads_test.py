@@ -67,8 +67,20 @@ class BertHeadsTest(parameterized.TestCase):
         self.mask,
         enable_dropout=False)
     pooler = heads.BertPooler()
-    output, _ = pooler.init_with_output(jax.random.PRNGKey(0), bert_output)
+    output, variables = pooler.init_with_output(
+        jax.random.PRNGKey(0), bert_output)
     self.assertEqual((2, self.hidden_size), output.shape)
+
+    params = variables['params']
+    self.assertDictEqual(
+        testing_utils.param_dtypes_shapes_axes(params,
+                                               variables['params_axes']),
+        {
+            'dense': {
+                'bias': ['float32', 'mlp=4'],
+                'kernel': ['float32', 'embed=4', 'mlp=4']
+            }
+        })
 
   def test_bert_classifier(self):
     """Tests whether Classifier returns correct shape."""
@@ -83,9 +95,26 @@ class BertHeadsTest(parameterized.TestCase):
     pooler = heads.BertPooler()
     classifier_head = heads.ClassifierHead(
         pooler, num_classes, enable_dropout=False)
-    output, _ = classifier_head.init_with_output(
+    output, variables = classifier_head.init_with_output(
         jax.random.PRNGKey(0), bert_output)
     self.assertEqual((2, num_classes), output.shape)
+
+    params = variables['params']
+    self.assertDictEqual(
+        testing_utils.param_dtypes_shapes_axes(params,
+                                               variables['params_axes']),
+        {
+            'dense': {
+                'bias': ['float32', 'mlp=10'],
+                'kernel': ['float32', 'embed=4', 'mlp=10']
+            },
+            'pooler': {
+                'dense': {
+                    'bias': ['float32', 'mlp=4'],
+                    'kernel': ['float32', 'embed=4', 'mlp=4']
+                }
+            }
+        })
 
   def test_bert_nsp(self):
     """Tests whether NSP returns correct shape."""
@@ -98,8 +127,26 @@ class BertHeadsTest(parameterized.TestCase):
         enable_dropout=False)
     pooler = heads.BertPooler()
     nsp_head = heads.NSPHead(pooler)
-    output, _ = nsp_head.init_with_output(jax.random.PRNGKey(0), bert_output)
+    output, variables = nsp_head.init_with_output(
+        jax.random.PRNGKey(0), bert_output)
     self.assertEqual((2, 2), output.shape)
+
+    params = variables['params']
+    self.assertDictEqual(
+        testing_utils.param_dtypes_shapes_axes(params,
+                                               variables['params_axes']),
+        {
+            'dense': {
+                'bias': ['float32', 'mlp=2'],
+                'kernel': ['float32', 'embed=4', 'mlp=2']
+            },
+            'pooler': {
+                'dense': {
+                    'bias': ['float32', 'mlp=4'],
+                    'kernel': ['float32', 'embed=4', 'mlp=4']
+                }
+            }
+        })
 
   def test_gather_indices(self):
     """Tests that gather indices selects the right items in a batch."""
@@ -171,6 +218,82 @@ class BertHeadsTest(parameterized.TestCase):
     self.assertSameStructure(param_shapes, expected_param_shapes)
     self.assertEqual((batch_size, seq_length, self.vocab_size), output.shape)
 
+    params = variables['params'].unfreeze()['mlm_head']
+    del params['layer_norm']
+    del params['bias']
+    self.assertDictEqual(
+        testing_utils.param_dtypes_shapes_axes(
+            params, variables['params_axes']['mlm_head']), {
+                'dense': {
+                    'bias': ['float32', 'mlp=4'],
+                    'kernel': ['float32', 'embed=4', 'mlp=4']
+                }
+            })
+
+  def test_MLP(self):
+    """Tests whether Token Classifier returns correct shape."""
+    num_classes = 10
+    bert_output, _ = self.model.init_with_output(
+        jax.random.PRNGKey(0),
+        self.token_ids,
+        self.position_ids,
+        self.segment_ids,
+        self.mask,
+        enable_dropout=False)
+    mlp = heads.MLP(features=[self.hidden_size, num_classes])
+    output, variables = mlp.init_with_output(
+        jax.random.PRNGKey(0), bert_output, enable_dropout=False)
+    # We have batch_size=2 and seq_length=3
+    self.assertEqual((2, 3, num_classes), output.shape)
+
+    params = variables['params']
+    self.assertDictEqual(
+        testing_utils.param_dtypes_shapes_axes(params,
+                                               variables['params_axes']),
+        {
+            'dense_0': {
+                'bias': ['float32', 'mlp=4'],
+                'kernel': ['float32', 'embed=4', 'mlp=4']
+            },
+            'dense_1': {
+                'bias': ['float32', 'mlp=10'],
+                'kernel': ['float32', 'embed=4', 'mlp=10']
+            }
+        })
+
+  def test_bert_token_classifier(self):
+    """Tests whether Token Classifier returns correct shape."""
+    num_classes = 10
+    bert_output, _ = self.model.init_with_output(
+        jax.random.PRNGKey(0),
+        self.token_ids,
+        self.position_ids,
+        self.segment_ids,
+        self.mask,
+        enable_dropout=False)
+    token_classifier_head = heads.TokenClassifierHead(
+        features=[self.hidden_size, num_classes])
+    output, variables = token_classifier_head.init_with_output(
+        jax.random.PRNGKey(0), bert_output, enable_dropout=False)
+    # We have batch_size=2 and seq_length=3
+    self.assertEqual((2, 3, num_classes), output.shape)
+
+    params = variables['params']
+    self.assertDictEqual(
+        testing_utils.param_dtypes_shapes_axes(params,
+                                               variables['params_axes']),
+        {
+            'mlp': {
+                'dense_0': {
+                    'bias': ['float32', 'mlp=4'],
+                    'kernel': ['float32', 'embed=4', 'mlp=4']
+                },
+                'dense_1': {
+                    'bias': ['float32', 'mlp=10'],
+                    'kernel': ['float32', 'embed=4', 'mlp=10']
+                }
+            }
+        })
 
 if __name__ == '__main__':
   absltest.main()

@@ -15,7 +15,7 @@
 """Parallel Transformer decoder layer with fused parameters."""
 
 import functools
-from typing import Callable, Optional
+from typing import Callable, Optional, Tuple
 
 from absl import logging
 from aqt.jax_legacy.jax import flax_layers as aqt_flax_layers
@@ -53,7 +53,9 @@ class ParallelFusedDecoderLayer(nn.Module, param_remapping.ParameterRemappable):
       bias module, usually owned by the Decoder.
     activation_partitioning_dims: When set to 2, partitions intermediate
       variables containing the input and output of the decoder layer.
-    sow_intermediates: whether to track intermediates using Module.sow.
+    sow_intermediates: Whether to track intermediates using Module.sow.
+    is_quant_finetune_mode: Whether the layer is loaded for quantization
+      finetuning. It's only applied in the context of quantization.
   """
   self_attention: nn.Module
   mlp: nn.Module
@@ -68,6 +70,7 @@ class ParallelFusedDecoderLayer(nn.Module, param_remapping.ParameterRemappable):
   weight_params: Optional[aqt.QuantOps.WeightParams] = None
   act_params: Optional[aqt.QuantOps.ActHParams] = None
   possibly_use_quantized_vars: bool = False
+  is_quant_finetune_mode: bool = False
 
   def setup(self):
     if self.activation_partitioning_dims != 1:
@@ -119,7 +122,6 @@ class ParallelFusedDecoderLayer(nn.Module, param_remapping.ParameterRemappable):
         reshape_kernel,
         kernel_axis_names,
         name,
-        enable_dropout,
     ):
       if self.use_aqt:
         if self.weight_params is None and self.act_params is None:
@@ -144,7 +146,7 @@ class ParallelFusedDecoderLayer(nn.Module, param_remapping.ParameterRemappable):
         aqt_dense = aqt_flax_layers.DenseAqt(
             features=features,
             hparams=aqt_hparams,
-            train=enable_dropout,
+            train=self.is_quant_finetune_mode,
             dynamic_context=aqt_context,
             paxis_name=None,
             # No "cross-replica" reduction expressed in the XLA graph at this
@@ -204,6 +206,13 @@ class ParallelFusedDecoderLayer(nn.Module, param_remapping.ParameterRemappable):
         # o_wo_fused = mlp//heads + head_dim
         kernel_axis_names=('heads', 'o_wo_fused', 'embed'))
 
+  def _create_residuals_and_queries(self, layer_input: Array, x: Array,
+                                    logit_mask: Array,
+                                    **kwargs) -> Tuple[Array, Array, Array]:
+    """Slice layer inputs to get versions to use as queries."""
+    # This is a no-op unless overridden by a subclass.
+    return layer_input, x, logit_mask
+
   @nn.compact
   def __call__(self,
                targets,
@@ -216,7 +225,8 @@ class ParallelFusedDecoderLayer(nn.Module, param_remapping.ParameterRemappable):
                decode: bool = False,
                max_decode_length: Optional[int] = None,
                prefill: bool = False,
-               prefill_lengths: Optional[Array] = None):
+               prefill_lengths: Optional[Array] = None,
+               **kwargs):
     """Applies ParallelFusedDecoder1DBlock module.
 
     Args:
@@ -237,6 +247,8 @@ class ParallelFusedDecoderLayer(nn.Module, param_remapping.ParameterRemappable):
       prefill: Whether to run a partial sequence to prefill the cache.
       prefill_lengths: The length of each partial sequence we are filling in the
         cache, lengths are inferred from the mask if not provided.
+      **kwargs: Remaining keyword arguments. Passed to
+        _create_residuals_and_queries.
 
     Returns:
       output after transformer encoder-decoder block.
@@ -289,12 +301,17 @@ class ParallelFusedDecoderLayer(nn.Module, param_remapping.ParameterRemappable):
       head_dim = self.self_attention.qkv_features // num_heads
     n_activations = len(self.mlp.activations)
     mlp_intermediate_dim = self.mlp.intermediate_dim
+
+    # Normally a no-op unless overridden by a subclass.
+    layer_input_residual, x_queries, logit_mask_queries = (
+        self._create_residuals_and_queries(layer_input, x, logit_mask,
+                                           **kwargs))
+    del logit_mask_queries
+
     # Use local fused Q + W_i to calculate fused results.
     # [batch, length, embed], [heads, mlp//heads * n_act + head_dim] ->
     # [batch, length, heads, mlp//heads * n_act + head_dim]
-    q_wi = self.make_dense(
-        **self.q_wi_fused_args, enable_dropout=enable_dropout)(
-            x)
+    q_wi = self.make_dense(**self.q_wi_fused_args)(x_queries)
     # Slice out query.
     query = lax.dynamic_slice_in_dim(q_wi, 0, head_dim, -1)
     # Slice out MLP inputs.
@@ -305,7 +322,7 @@ class ParallelFusedDecoderLayer(nn.Module, param_remapping.ParameterRemappable):
         for i in range(n_activations)
     ]
     # Use local fused K + V to calculate fused results.
-    kv = self.make_dense(**self.kv_fused_args, enable_dropout=enable_dropout)(x)
+    kv = self.make_dense(**self.kv_fused_args)(x)
     kv = activation_partitioning.with_sharding(kv, 1)
     # Slice out key.
     key = jnp.squeeze(lax.dynamic_slice_in_dim(kv, 0, head_dim, -1), -2)
@@ -316,7 +333,7 @@ class ParallelFusedDecoderLayer(nn.Module, param_remapping.ParameterRemappable):
 
     # y_att: [batch, length, heads, head_dim]
     y_att = self.self_attention(
-        x,
+        x_queries,
         x,
         mask=decoder_mask,
         bias=decoder_bias,
@@ -346,13 +363,14 @@ class ParallelFusedDecoderLayer(nn.Module, param_remapping.ParameterRemappable):
       y_out = aqt_flax_layers.DenseGeneralAqt(
           **self.o_wo_fused_args,
           hparams=aqt_hparams,
-          train=enable_dropout,
+          train=self.is_quant_finetune_mode,
           possibly_use_quantized_vars=self.possibly_use_quantized_vars)(
               y_fused)
     else:
       y_out = dense.DenseGeneral(**self.o_wo_fused_args)(y_fused)
     # y *= 2**-0.5
-    z = layer_input + self.dropout(y_out, deterministic=not enable_dropout)
+    z = layer_input_residual + self.dropout(
+        y_out, deterministic=not enable_dropout)
     z = activation_partitioning.with_sharding_migration(
         z,
         self.activation_partitioning_dims,

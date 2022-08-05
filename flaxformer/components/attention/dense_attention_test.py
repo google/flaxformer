@@ -1618,7 +1618,7 @@ class QuantizedAttentionTest(parameterized.TestCase):
     })
     result, params = module.init_with_output(
         random.PRNGKey(0), inputs_q, inputs_kv, enable_dropout=False)
-    jax.tree_multimap(
+    jax.tree_map(
         functools.partial(np.testing.assert_allclose, rtol=1e-6), params,
         expected_params)
 

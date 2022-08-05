@@ -16,10 +16,6 @@ from flaxformer.components import relative_position_biases
 from t5x import adafactor
 
 
-# Auxiliary losses are not yet supported under scan.
-AUX_LOSS_FACTOR = 0.0
-ROUTER_Z_LOSS_FACTOR = 0.0
-
 # TODO: 'minimal' remat not yet supported; waiting on
 #  https://github.com/google/jax/pull/10576.
 LAYER_REMAT = 'full'
@@ -39,6 +35,9 @@ moe_architecture.SparseDecoder:
   layer_remat = %LAYER_REMAT
 
 t5_architecture.EncoderDecoder:
+ scan_layers = True
+
+t5_architecture.DecoderOnly:
  scan_layers = True
 
 # Must use per-layer relative positional biases instead of shared biases.

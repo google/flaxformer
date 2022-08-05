@@ -1,0 +1,17 @@
+include 'flaxformer/t5x/configs/perceiver_ar/models/perceiver_ar_base.gin'
+include 'third_party/py/t5x/configs/runs/pretrain.gin'
+
+# Register necessary SeqIO Tasks/Mixtures.
+import t5.data.mixtures
+from t5x import utils
+
+
+MIXTURE_OR_TASK_NAME = "c4_v220_full_lm"
+TASK_FEATURE_LENGTHS = {"targets": 8192}
+TRAIN_STEPS = 100_000
+DROPOUT_RATE = 0.0
+BATCH_SIZE = 128
+
+# Perceiver AR does not support packing.
+train/utils.DatasetConfig.pack = False
+train_eval/utils.DatasetConfig.pack = False

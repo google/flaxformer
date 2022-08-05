@@ -80,7 +80,7 @@ class LayerSequence(nn.Module, param_remapping.ParameterRemappable):
     return current_activations
 
 
-@dataclasses.dataclass
+@dataclasses.dataclass(frozen=True)
 class TransparentLayerSequence:
   """Version of LayerSequence that doesn't add pytree keys.
 

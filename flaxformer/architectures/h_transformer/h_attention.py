@@ -298,6 +298,18 @@ class HierarchicalAttention(nn.Module, metaclass=abc.ABCMeta):
        Instance of TokenHierarchy.
     """
 
+  @abc.abstractmethod
+  def _setup_position_bias(self,
+                           hierarchy) -> h_rpb.HierarchicalRelativePositionBias:
+    """Sets up hierarchical position bias.
+
+    Args:
+      hierarchy: Token hierarchy.
+
+    Returns:
+       Instance of HierarchicalRelativePositionBias.
+    """
+
   def _shard_over_head_dimension(self, qkv: Array) -> Array:
     """Shards multihead projections.
 
@@ -396,6 +408,7 @@ class HierarchicalAttention(nn.Module, metaclass=abc.ABCMeta):
     if self.use_rpb:
       zero_block_mask = hierarchy.gen_packed_zero_block_mask(
           use_growth_factor=False)
+      position_bias_fn = self._setup_position_bias(hierarchy)
 
     if self.rescale_logits:
       head_dim = query[th.TokenBlockName.ANCHOR].shape[-1]
@@ -407,7 +420,7 @@ class HierarchicalAttention(nn.Module, metaclass=abc.ABCMeta):
       similarity[block_name] = _matmult(query[block_name], key[block_name])
       if self.use_rpb:
         block_coord = hierarchy.block_coord[block_name]
-        position_bias = self.position_bias_fn(block_coord)
+        position_bias = position_bias_fn(block_coord)
         if block_name == th.TokenBlockName.ANCHOR:
           similarity[block_name] += position_bias
         else:
@@ -700,14 +713,6 @@ class OneDimHierarchicalAttention(HierarchicalAttention):
   See arxiv.org/abs/2107.11906 for algorithm details.
   """
 
-  def setup(self):
-    if self.use_rpb:
-      num_heads = self.num_heads if self.use_multihead_rpb else 1
-      self.position_bias_fn = h_rpb.OneDimHierarchicalRelativePositionBias(
-          num_cluster=self.num_clusters,
-          num_head=num_heads,
-          name='1d_relative_position_bias')
-
   def _setup_hierarchy(self, features: int,
                        for_self_attention: bool) -> th.OneDimTokenHierarchy:
     return th.OneDimTokenHierarchy(
@@ -719,6 +724,23 @@ class OneDimHierarchicalAttention(HierarchicalAttention):
         coarsening_kernel_type=self.coarsening_kernel_type,
         interpolation_kernel_type=self.interpolation_kernel_type,
         dtype=self.dtype)
+
+  def _setup_position_bias(
+      self, hierarchy: th.OneDimTokenHierarchy
+  ) -> h_rpb.OneDimHierarchicalRelativePositionBias:
+    """Sets up hierarchical position bias.
+
+    Args:
+      hierarchy: OneDimTokenHierarchy.
+
+    Returns:
+       Instance of OneDimHierarchicalRelativePositionBias.
+    """
+    num_heads = self.num_heads if self.use_multihead_rpb else 1
+    return h_rpb.OneDimHierarchicalRelativePositionBias(
+        num_cluster=hierarchy.num_cluster,
+        num_head=num_heads,
+        name='1d_relative_position_bias')
 
   def _gen_correction_mask(
       self, hierarchy: th.TokenHierarchy) -> Dict[th.TokenBlockName, Array]:

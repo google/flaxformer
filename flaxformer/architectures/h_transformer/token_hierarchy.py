@@ -329,6 +329,13 @@ class TokenHierarchy(metaclass=abc.ABCMeta):
       self._num_block[level] = self._num_block[level - 1] // 2
 
     self._setup_block_hierarchy()
+    logging.info('seq_len = %d', seq_len)
+    logging.info('num_cluster = %d', self._num_cluster)
+    logging.info('num_level = %d', self._num_level)
+    logging.info('num_block = %s', self._num_block)
+    logging.info('total_num_block = %d', self._total_num_block)
+    logging.info('num_fine_block = %d', self._num_fine_block)
+    logging.info('num_coarse_block = %d', self._num_coarse_block)
 
   def _setup_block_hierarchy(self):
     self._num_fine_block = 0

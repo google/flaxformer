@@ -23,6 +23,7 @@ from absl.testing import absltest
 from absl.testing import parameterized
 from flax import linen as nn
 import gin
+import jax
 from jax import numpy as jnp
 from jax import random
 import numpy as np
@@ -46,16 +47,7 @@ class GinConfigsTest(parameterized.TestCase):
 
   @parameterized.parameters(
       'longt5_1_1_base.gin',
-      'longt5_1_1_large.gin',
       'longt5_1_1_transient_global_base.gin',
-      'longt5_1_1_transient_global_large.gin',
-      # The following files are intentionally excluded because they require
-      # excessive resources and the other tests above sufficiently cover these
-      # cases:
-      # 'longt5_1_1_xl.gin',
-      # 'longt5_1_1_xxl.gin',
-      # 'longt5_1_1_transient_global_xl.gin',
-      # 'longt5_1_1_transient_global_xxl.gin',
   )
   def test_model_gin_config(self, filename):
     path = os.path.join(self.root, 'models', filename)
@@ -97,6 +89,58 @@ class GinConfigsTest(parameterized.TestCase):
     }
     res = model.score_batch(variables['params'], batch)
     del res  # Unused.
+
+  @parameterized.parameters(
+      'longt5_1_1_large.gin',
+      'longt5_1_1_xl.gin',
+      'longt5_1_1_xxl.gin',
+      'longt5_1_1_transient_global_large.gin',
+      'longt5_1_1_transient_global_xl.gin',
+      'longt5_1_1_transient_global_xxl.gin',
+  )
+  def test_model_gin_config_symbolically(self, filename):
+    # For the large model sizes we just test shapes symbolically to avoid
+    # excessive resource usage.
+
+    path = os.path.join(self.root, 'models', filename)
+    gin.parse_config_file(path)
+    gin.finalize()  # Check for required values, etc.
+
+    model_config_ref: gin.ConfigurableReference = gin.query_parameter('%MODEL')
+
+    # Instantiate T5X model (e.g. `t5x.models.EncoderDecoderModel`).
+    model: t5x_models.BaseModel = model_config_ref.scoped_configurable_fn()
+
+    encoder_input_tokens = jnp.ones((2, 3))
+    # For this test, decoder input and target tokens are fake values.
+    decoder_input_tokens = jnp.array([[1, 2, 1, 0], [0, 1, 0, 2]])
+    decoder_target_tokens = jnp.array([[1, 2, 1, 0], [0, 1, 0, 2]])
+
+    def init_and_apply_model(encoder_input_tokens, decoder_input_tokens,
+                             decoder_target_tokens):
+      encoder_kwargs = {'encoder_input_tokens': encoder_input_tokens}
+
+      variables = model.module.init(
+          random.PRNGKey(0),
+          decoder_input_tokens=decoder_input_tokens,
+          decoder_target_tokens=decoder_target_tokens,
+          enable_dropout=False,
+          **encoder_kwargs)
+
+      return model.module.apply({'params': variables['params']},
+                                decoder_input_tokens=decoder_input_tokens,
+                                decoder_target_tokens=decoder_target_tokens,
+                                enable_dropout=False,
+                                **encoder_kwargs)
+
+    result = jax.eval_shape(
+        init_and_apply_model,
+        encoder_input_tokens=encoder_input_tokens,
+        decoder_input_tokens=decoder_input_tokens,
+        decoder_target_tokens=decoder_target_tokens)
+
+    self.assertLen(result.shape, 3)
+    np.testing.assert_array_equal([2, 4], result.shape[:2])
 
   @parameterized.parameters('longt5_1_1_flaxformer.gin',
                             'longt5_1_1_transient_global_flaxformer.gin')

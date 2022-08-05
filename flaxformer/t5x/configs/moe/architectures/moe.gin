@@ -246,6 +246,7 @@ routing.TokensChooseMaskedRouter:
   num_selected_experts = %NUM_SELECTED_EXPERTS
   jitter_noise = %JITTER_NOISE
   dtype = %MOE_TRUNCATED_DTYPE
+  ignore_padding_tokens = False
 sparse_encoder/routing.TokensChooseMaskedRouter:
   batch_prioritized_routing = True
 sparse_decoder/routing.TokensChooseMaskedRouter:

@@ -54,6 +54,9 @@ MLP_KERNEL_INIT = nn.initializers.variance_scaling(1.0, 'fan_in',
 BIAS_INIT = nn.initializers.normal(stddev=1e-6)
 DTYPE = jnp.float32
 
+MOE_METRICS = ('auxiliary_loss', 'router_z_loss', 'fraction_tokens_left_behind',
+               'expert_usage', 'router_confidence')
+
 
 _make_dropout = lambda: nn.Dropout(rate=0.1, broadcast_dims=(-2,))
 _make_layer_norm = layer_norm.T5LayerNorm
@@ -99,7 +102,7 @@ def _make_dense_mlp() -> dense.MlpBlock:
       dtype=DTYPE)
 
 
-def _make_sparse_mlp() -> MoeLayer:
+def _make_sparse_mlp(ignore_padding_tokens: bool = False) -> MoeLayer:
   """Test configuration for the sparse MLP."""
   expert = dense.MlpBlock(
       use_bias=True,
@@ -111,7 +114,8 @@ def _make_sparse_mlp() -> MoeLayer:
       num_selected_experts=1,
       jitter_noise=0.,
       batch_prioritized_routing=True,
-      dtype=jnp.float32)
+      dtype=jnp.float32,
+      ignore_padding_tokens=ignore_padding_tokens)
   return MoeLayer(
       num_experts=4,
       router=router,
@@ -134,14 +138,15 @@ def _make_relative_position_bias(
       embedding_init=RELPOS_BIAS_INIT)
 
 
-def _make_sparse_encoder_layer(extra_mlp: bool = False,
-                               shared_relative_position_bias: Optional[
-                                   nn.Module] = None,
-                               scanned=False) -> SparseEncoderLayer:
+def _make_sparse_encoder_layer(
+    extra_mlp: bool = False,
+    shared_relative_position_bias: Optional[nn.Module] = None,
+    scanned: bool = False,
+    ignore_padding_tokens: bool = False) -> SparseEncoderLayer:
   """Test configuration for sparse MLP-attention encoder blocks."""
   return SparseEncoderLayer(
       attention=_make_multi_query_attention(),
-      mlp=_make_sparse_mlp(),
+      mlp=_make_sparse_mlp(ignore_padding_tokens=ignore_padding_tokens),
       extra_mlp=_make_dense_mlp() if extra_mlp else None,
       dropout_factory=_make_dropout,
       layer_norm_factory=_make_layer_norm,
@@ -152,7 +157,7 @@ def _make_sparse_encoder_layer(extra_mlp: bool = False,
 
 def _make_dense_encoder_layer(shared_relative_position_bias: Optional[
     nn.Module] = None,
-                              scanned=False) -> EncoderLayer:
+                              scanned: bool = False) -> EncoderLayer:
   """Test configuration for dense MLP-attention encoder blocks."""
   return EncoderLayer(
       attention=_make_multi_query_attention(),
@@ -164,15 +169,16 @@ def _make_dense_encoder_layer(shared_relative_position_bias: Optional[
       scanned=scanned)
 
 
-def _make_sparse_decoder_layer(extra_mlp: bool = False,
-                               shared_relative_position_bias: Optional[
-                                   nn.Module] = None,
-                               scanned=False) -> SparseDecoderLayer:
+def _make_sparse_decoder_layer(
+    extra_mlp: bool = False,
+    shared_relative_position_bias: Optional[nn.Module] = None,
+    scanned: bool = False,
+    ignore_padding_tokens: bool = False) -> SparseDecoderLayer:
   """Test configuration for sparse MLP-self-attention decoder blocks."""
   return SparseDecoderLayer(
       self_attention=_make_multi_query_attention(),
       encoder_decoder_attention=_make_multi_query_attention(),
-      mlp=_make_sparse_mlp(),
+      mlp=_make_sparse_mlp(ignore_padding_tokens=ignore_padding_tokens),
       extra_mlp=_make_dense_mlp() if extra_mlp else None,
       dropout_factory=_make_dropout,
       layer_norm_factory=_make_layer_norm,
@@ -183,7 +189,7 @@ def _make_sparse_decoder_layer(extra_mlp: bool = False,
 
 def _make_dense_decoder_layer(shared_relative_position_bias: Optional[
     nn.Module] = None,
-                              scanned=False) -> DecoderLayer:
+                              scanned: bool = False) -> DecoderLayer:
   """Test configuration for dense MLP-self-self_attention decoder blocks."""
   return DecoderLayer(
       self_attention=_make_multi_query_attention(),
@@ -296,6 +302,85 @@ class MoeArchitectureTest(parameterized.TestCase):
     if extra_mlp:
       # Check that the additional mlp blocks are added to the sparse layers.
       self.assertIn('extra_mlp', decoder_layer_1)
+
+  def test_moe_architecture_logit_mask_propagates(self):
+    batch_size = 2
+    seq_length = 4
+    num_embeddings = 5
+
+    encoder_factory = functools.partial(
+        moe_architecture.SparseEncoder,
+        num_layers=1,
+        num_sparse_layers=1,
+        sparse_layout=LayerLayout.MIXED,
+        sparse_layer_factory=functools.partial(
+            _make_sparse_encoder_layer, ignore_padding_tokens=True),
+        layer_factory=_make_dense_encoder_layer,
+        input_dropout_factory=_make_dropout,
+        output_dropout_factory=_make_dropout,
+        layer_norm_factory=_make_layer_norm,
+    )
+    decoder_factory = functools.partial(
+        moe_architecture.SparseDecoder,
+        num_layers=1,
+        num_sparse_layers=1,
+        sparse_layout=LayerLayout.MIDDLE,
+        sparse_layer_factory=functools.partial(
+            _make_sparse_decoder_layer, ignore_padding_tokens=True),
+        layer_factory=_make_dense_decoder_layer,
+        dropout_factory=_make_dropout,
+        layer_norm_factory=_make_layer_norm,
+    )
+
+    transformer = t5_architecture.EncoderDecoder(
+        shared_token_embedder_factory=functools.partial(
+            _make_token_emb, num_embeddings=num_embeddings),
+        encoder_factory=encoder_factory,
+        decoder_factory=decoder_factory,
+    )
+
+    encoder_input_tokens = jax.random.randint(
+        jax.random.PRNGKey(0), (batch_size, seq_length), minval=0, maxval=4)
+    decoder_input_tokens = jax.random.randint(
+        jax.random.PRNGKey(1), (batch_size, seq_length), minval=0, maxval=4)
+    decoder_target_tokens = jax.random.randint(
+        jax.random.PRNGKey(2), (batch_size, seq_length), minval=0, maxval=4)
+    output, _ = transformer.init_with_output(
+        {
+            'params': random.PRNGKey(0),
+            'dropout': random.PRNGKey(0)
+        },
+        encoder_input_tokens=encoder_input_tokens,
+        decoder_input_tokens=decoder_input_tokens,
+        decoder_target_tokens=decoder_target_tokens,
+        enable_dropout=False,
+    )
+
+    # To identify padding vs non-padding tokens in MoE models, we rely on how
+    # the Flaxformer T5 architectures constructs and applies the logit mask.
+    # See
+    # https://github.com/google/flaxformer/blob/9712a16/flaxformer/architectures/t5/t5_architecture.py#L315
+    # and
+    # https://github.com/google/flaxformer/blob/9712a16/flaxformer/architectures/t5/t5_architecture.py#L603.
+    # So here, we test the specific outputs to catch any changes to the
+    # underlying T5 architecture logic.
+    np.testing.assert_allclose(
+        output, [
+            [
+                [1.0098116, -0.07620703, 2.2726512, 1.5326656, -0.56177557],
+                [-0.94259655, 1.7607443, 2.3942919, 0.72459084, -1.0425543],
+                [0.02322888, 0.65254104, 4.597586, 1.4008591, -0.45962948],
+                [-0.94259655, 1.7607443, 2.3942919, 0.72459084, -1.0425543],
+            ],
+            [
+                [0.01904473, 0.6017947, 4.61797, 1.3143052, -0.33733633],
+                [0.04458817, 0.12540922, 2.4217446, 3.548073, 0.06769713],
+                [0.01904476, 0.6017947, 4.61797, 1.3143052, -0.33733624],
+                [0., 0., 0., 0., 0.],
+            ],
+        ],
+        rtol=1e-6,
+        atol=1e-6)
 
   def test_degenerate_architecture(self):
     batch_size = 2
@@ -427,179 +512,196 @@ class MoeArchitectureTest(parameterized.TestCase):
         decoder_target_tokens=decoder_target_tokens,
         enable_dropout=False)
 
-    self.assertEqual(output.shape, (batch_size, seq_length, num_embeddings))
+    with self.subTest(name='init_with_output'):
+      self.assertEqual(output.shape, (batch_size, seq_length, num_embeddings))
 
-    # Verify model keys and param shapes for scan.
-    self.assertEqual(
-        jax.tree_map(jnp.shape, variables['params']['encoder']),
-        flax.core.FrozenDict({
-            'encoder': {
-                'subblock_0': {
-                    'attention': {
-                        'key': {
-                            # (emb_dim, scan_dim, qkv_features // num_heads)
-                            'kernel': (13, 2, 2),
-                        },
-                        'out': {
-                            # (qkv_features, scan_dim, emb_dim)
-                            'kernel': (16, 2, 13),
-                        },
-                        'query': {
-                            'kernel': (13, 2, 16),
-                        },
-                        'value': {
-                            'kernel': (13, 2, 2),
-                        },
-                    },
-                    'mlp': {
-                        'wi': {
-                            # (emb_dim, scan_dim, dense MLP dim)
-                            'kernel': (13, 2, 8),
-                        },
-                        'wo': {
-                            'kernel': (8, 2, 13),
-                        },
-                    },
-                    'pre_attention_layer_norm': {
-                        'scale': (13, 2),  # (emb_dim, scan_dim)
-                    },
-                    'pre_mlp_layer_norm': {
-                        'scale': (13, 2),
-                    },
-                    'relpos_bias': {
-                        'rel_embedding': (8, 2, 32),
-                    },
-                },
-                'subblock_1': {
-                    'attention': {
-                        'key': {
-                            'kernel': (13, 2, 2),
-                        },
-                        'out': {
-                            'kernel': (16, 2, 13),
-                        },
-                        'query': {
-                            'kernel': (13, 2, 16),
-                        },
-                        'value': {
-                            'kernel': (13, 2, 2),
-                        },
-                    },
-                    'mlp': {
-                        'expert': {
-                            'wi': {
-                                'bias': (4, 2, 16),
-                                # (num_experts, scan_dim, emb_dim, MoE MLP dim)
-                                'kernel': (4, 2, 13, 16),
-                            },
-                            'wo': {
-                                'bias': (4, 2, 13),
-                                'kernel': (4, 2, 16, 13),
-                            },
-                        },
-                        'router': {
-                            'router_weights': {
-                                'w': {
-                                    'bias': (4, 2),
-                                    # (emb_dim, scan_dim, num_experts)
-                                    'kernel': (13, 2, 4),
-                                },
-                            },
-                        },
-                    },
-                    'pre_attention_layer_norm': {
-                        'scale': (13, 2),
-                    },
-                    'pre_mlp_layer_norm': {
-                        'scale': (13, 2),
-                    },
-                    'relpos_bias': {
-                        'rel_embedding': (8, 2, 32),
-                    },
-                },
-            },
-            'encoder_norm': {
-                'scale': (13,),
-            },
-        }))
+      # Verify model keys and param shapes for scan.
+      self.assertEqual(
+          jax.tree_map(jnp.shape, variables['params']['encoder']),
+          flax.core.FrozenDict({
+              'encoder': {
+                  'subblock_0': {
+                      'attention': {
+                          'key': {
+                              # (emb_dim, scan_dim, qkv_features // num_heads)
+                              'kernel': (13, 2, 2),
+                          },
+                          'out': {
+                              # (qkv_features, scan_dim, emb_dim)
+                              'kernel': (16, 2, 13),
+                          },
+                          'query': {
+                              'kernel': (13, 2, 16),
+                          },
+                          'value': {
+                              'kernel': (13, 2, 2),
+                          },
+                      },
+                      'mlp': {
+                          'wi': {
+                              # (emb_dim, scan_dim, dense MLP dim)
+                              'kernel': (13, 2, 8),
+                          },
+                          'wo': {
+                              'kernel': (8, 2, 13),
+                          },
+                      },
+                      'pre_attention_layer_norm': {
+                          'scale': (13, 2),  # (emb_dim, scan_dim)
+                      },
+                      'pre_mlp_layer_norm': {
+                          'scale': (13, 2),
+                      },
+                      'relpos_bias': {
+                          'rel_embedding': (8, 2, 32),
+                      },
+                  },
+                  'subblock_1': {
+                      'attention': {
+                          'key': {
+                              'kernel': (13, 2, 2),
+                          },
+                          'out': {
+                              'kernel': (16, 2, 13),
+                          },
+                          'query': {
+                              'kernel': (13, 2, 16),
+                          },
+                          'value': {
+                              'kernel': (13, 2, 2),
+                          },
+                      },
+                      'mlp': {
+                          'expert': {
+                              'wi': {
+                                  'bias': (4, 2, 16),
+                                  # (num_experts, scan_dim, emb_dim, MoE MLP)
+                                  'kernel': (4, 2, 13, 16),
+                              },
+                              'wo': {
+                                  'bias': (4, 2, 13),
+                                  'kernel': (4, 2, 16, 13),
+                              },
+                          },
+                          'router': {
+                              'router_weights': {
+                                  'w': {
+                                      'bias': (4, 2),
+                                      # (emb_dim, scan_dim, num_experts)
+                                      'kernel': (13, 2, 4),
+                                  },
+                              },
+                          },
+                      },
+                      'pre_attention_layer_norm': {
+                          'scale': (13, 2),
+                      },
+                      'pre_mlp_layer_norm': {
+                          'scale': (13, 2),
+                      },
+                      'relpos_bias': {
+                          'rel_embedding': (8, 2, 32),
+                      },
+                  },
+              },
+              'encoder_norm': {
+                  'scale': (13,),
+              },
+          }))
 
-    self.assertEqual(
-        jax.tree_map(jnp.shape, variables['params']['decoder']),
-        flax.core.FrozenDict({
-            'decoder': {
-                'subblock_0': {
-                    'encoder_decoder_attention': {
-                        'key': {
-                            # (emb_dim, scan_dim, qkv_features // num_heads)
-                            'kernel': (13, 3, 2),
-                        },
-                        'out': {
-                            # (qkv_features, scan_dim, emb_dim)
-                            'kernel': (16, 3, 13),
-                        },
-                        'query': {
-                            'kernel': (13, 3, 16),
-                        },
-                        'value': {
-                            'kernel': (13, 3, 2),
-                        },
-                    },
-                    'mlp': {
-                        'expert': {
-                            'wi': {
-                                'bias': (4, 3, 16),
-                                # (num_experts, scan_dim, emb_dim, MoE MLP dim)
-                                'kernel': (4, 3, 13, 16),
-                            },
-                            'wo': {
-                                'bias': (4, 3, 13),
-                                'kernel': (4, 3, 16, 13),
-                            },
-                        },
-                        'router': {
-                            'router_weights': {
-                                'w': {
-                                    'bias': (4, 3),
-                                    # (emb_dim, scan_dim, num_experts)
-                                    'kernel': (13, 3, 4),
-                                },
-                            },
-                        },
-                    },
-                    'pre_cross_attention_layer_norm': {
-                        # (emb_dim, scan_dim)
-                        'scale': (13, 3),
-                    },
-                    'pre_mlp_layer_norm': {
-                        'scale': (13, 3),
-                    },
-                    'pre_self_attention_layer_norm': {
-                        'scale': (13, 3),
-                    },
-                    'relpos_bias': {
-                        'rel_embedding': (8, 3, 32),
-                    },
-                    'self_attention': {
-                        'key': {
-                            'kernel': (13, 3, 2),
-                        },
-                        'out': {
-                            # (qkv_features, scan_dim, emb_dim)
-                            'kernel': (16, 3, 13),
-                        },
-                        'query': {
-                            'kernel': (13, 3, 16),
-                        },
-                        'value': {
-                            'kernel': (13, 3, 2),
-                        },
-                    },
-                },
-            },
-            'decoder_norm': {
-                'scale': (13,),
-            },
-        }))
+      self.assertEqual(
+          jax.tree_map(jnp.shape, variables['params']['decoder']),
+          flax.core.FrozenDict({
+              'decoder': {
+                  'subblock_0': {
+                      'encoder_decoder_attention': {
+                          'key': {
+                              # (emb_dim, scan_dim, qkv_features // num_heads)
+                              'kernel': (13, 3, 2),
+                          },
+                          'out': {
+                              # (qkv_features, scan_dim, emb_dim)
+                              'kernel': (16, 3, 13),
+                          },
+                          'query': {
+                              'kernel': (13, 3, 16),
+                          },
+                          'value': {
+                              'kernel': (13, 3, 2),
+                          },
+                      },
+                      'mlp': {
+                          'expert': {
+                              'wi': {
+                                  'bias': (4, 3, 16),
+                                  # (num_experts, scan_dim, emb_dim, MoE MLP)
+                                  'kernel': (4, 3, 13, 16),
+                              },
+                              'wo': {
+                                  'bias': (4, 3, 13),
+                                  'kernel': (4, 3, 16, 13),
+                              },
+                          },
+                          'router': {
+                              'router_weights': {
+                                  'w': {
+                                      'bias': (4, 3),
+                                      # (emb_dim, scan_dim, num_experts)
+                                      'kernel': (13, 3, 4),
+                                  },
+                              },
+                          },
+                      },
+                      'pre_cross_attention_layer_norm': {
+                          # (emb_dim, scan_dim)
+                          'scale': (13, 3),
+                      },
+                      'pre_mlp_layer_norm': {
+                          'scale': (13, 3),
+                      },
+                      'pre_self_attention_layer_norm': {
+                          'scale': (13, 3),
+                      },
+                      'relpos_bias': {
+                          'rel_embedding': (8, 3, 32),
+                      },
+                      'self_attention': {
+                          'key': {
+                              'kernel': (13, 3, 2),
+                          },
+                          'out': {
+                              # (qkv_features, scan_dim, emb_dim)
+                              'kernel': (16, 3, 13),
+                          },
+                          'query': {
+                              'kernel': (13, 3, 16),
+                          },
+                          'value': {
+                              'kernel': (13, 3, 2),
+                          },
+                      },
+                  },
+              },
+              'decoder_norm': {
+                  'scale': (13,),
+              },
+          }))
+
+    with self.subTest(name='sow_intermediates'):
+      _, modified_variables = scanned_transformer.apply(
+          {'params': variables['params']},
+          encoder_input_tokens=encoder_input_tokens,
+          decoder_input_tokens=decoder_input_tokens,
+          decoder_target_tokens=decoder_target_tokens,
+          enable_dropout=False,
+          mutable=['intermediates'])
+      intermediates = modified_variables['intermediates']
+
+      for metric in MOE_METRICS:
+        self.assertIn(metric,
+                      intermediates['encoder']['encoder']['subblock_1']['mlp'])
+        self.assertIn(metric,
+                      intermediates['decoder']['decoder']['subblock_0']['mlp'])
 
   @parameterized.named_parameters(
       dict(

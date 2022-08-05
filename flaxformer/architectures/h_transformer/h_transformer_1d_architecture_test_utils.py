@@ -21,6 +21,7 @@ from jax import numpy as jnp
 
 from flaxformer.architectures.h_transformer import h_attention
 from flaxformer.architectures.h_transformer import h_transformer_1d_architecture
+from flaxformer.architectures.h_transformer import h_transformer_utils as utils
 from flaxformer.components import dense
 from flaxformer.components import embedding
 from flaxformer.components import layer_norm
@@ -94,8 +95,7 @@ def _cross_attention_factory(num_heads, qkv_features):
 def config_encoder(
     embed_size: int = 13,
     scan_layers: bool = False,
-    layer_remat: h_transformer_1d_architecture
-    .LayerRematOptions = h_transformer_1d_architecture.LayerRematOptions.LEGACY,
+    layer_remat: utils.LayerRematOptions = utils.LayerRematOptions.LEGACY,
     layer_norm_factory: Callable[..., nn.Module] = layer_norm.T5LayerNorm,
     dropout_factory: Callable[
         ..., nn.Module] = lambda: nn.Dropout(rate=0.1, broadcast_dims=(-2,)),
@@ -133,8 +133,7 @@ def config_encoder(
 def config_decoder_only(
     embed_size: int = 13,
     scan_layers: bool = False,
-    layer_remat: h_transformer_1d_architecture
-    .LayerRematOptions = h_transformer_1d_architecture.LayerRematOptions.LEGACY,
+    layer_remat: utils.LayerRematOptions = utils.LayerRematOptions.LEGACY,
     layer_norm_factory: Callable[..., nn.Module] = layer_norm.T5LayerNorm,
     dropout_factory: Callable[
         ..., nn.Module] = lambda: nn.Dropout(rate=0.1, broadcast_dims=(-2,)),
@@ -173,8 +172,7 @@ def config_decoder(
     embed_size: int = 13,
     scan_layers: bool = False,
     parallel: bool = False,
-    layer_remat: h_transformer_1d_architecture
-    .LayerRematOptions = h_transformer_1d_architecture.LayerRematOptions.LEGACY,
+    layer_remat: utils.LayerRematOptions = utils.LayerRematOptions.LEGACY,
     layer_norm_factory: Callable[..., nn.Module] = layer_norm.T5LayerNorm,
     dropout_factory: Callable[
         ..., nn.Module] = lambda: nn.Dropout(rate=0.1, broadcast_dims=(-2,)),
@@ -214,8 +212,7 @@ def config_decoder(
 def config_encoder_decoder(
     embed_size: int = 13,
     scan_layers: bool = False,
-    layer_remat: h_transformer_1d_architecture
-    .LayerRematOptions = h_transformer_1d_architecture.LayerRematOptions.LEGACY,
+    layer_remat: utils.LayerRematOptions = utils.LayerRematOptions.LEGACY,
     layer_norm_factory: Callable[..., nn.Module] = layer_norm.T5LayerNorm,
     dropout_factory: Callable[
         ..., nn.Module] = lambda: nn.Dropout(rate=0.1, broadcast_dims=(-2,)),

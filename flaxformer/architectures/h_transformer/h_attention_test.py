@@ -35,13 +35,27 @@ class HAttention1DTest(parameterized.TestCase):
     self.feature_size = self.num_heads * self.head_dim
 
   def test_bad_input_shape(self):
-    # Delibrately set a wrong shape here to trigger the assertion.
+    # Delibrately sets a wrong shape here to trigger the ValueError.
     inputs_q = jnp.ones((1, 1, 8, 2))
     with self.assertRaises(ValueError):
       attention_module = h_attention.OneDimEncoderSelfAttention(
           num_heads=self.num_heads, num_clusters=2, use_rpb=True)
       rng = {'params': random.PRNGKey(0), 'dropout': random.PRNGKey(1)}
       attention_module.init(rng, inputs_q, padding_mask=None)
+
+  def test_large_num_clusters(self):
+    # Delibrately sets num_clusters > sequence_length//2. This used to trigger
+    # a bug. It has been fixed. So this should always pass.
+    num_clusters = 16
+    seq_len = 4
+    inputs_q = jnp.ones((self.batch_size, seq_len, self.feature_size))
+    rng = {'params': random.PRNGKey(0), 'dropout': random.PRNGKey(1)}
+    attention_module = h_attention.OneDimEncoderSelfAttention(
+        num_heads=self.num_heads, num_clusters=num_clusters, use_rpb=True)
+    result, _ = attention_module.init_with_output(
+        rng, inputs_q, padding_mask=None)
+    expected_shape = inputs_q.shape
+    self.assertEqual(result.shape, expected_shape)
 
   @parameterized.named_parameters(
       dict(

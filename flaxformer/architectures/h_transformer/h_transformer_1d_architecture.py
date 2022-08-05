@@ -14,40 +14,23 @@
 
 """Defines architecture classes for h_transformer_1d models."""
 
-import enum
 import inspect
-from typing import Callable, Optional, Any, Tuple
+from typing import Callable, Optional, Any
 
+from absl import logging
 from flax import linen as nn
-import jax
 from jax import numpy as jnp
 from typing_extensions import Protocol
 
 from flaxformer import transformer_common as common
 from flaxformer.architectures.common import param_remapping
+from flaxformer.architectures.h_transformer import h_transformer_utils as utils
 from flaxformer.components import embedding
 from flaxformer.components import transforms
 from flaxformer.components.attention import dense_attention
 from flaxformer.types import Array
 
 _SCAN_AXIS = 1
-
-
-@enum.unique
-class LayerRematOptions(enum.Enum):
-  """Options for layer remat configuration.
-
-  Attributes:
-    NONE: For no use of jax.remat.
-    MINIMAL: For recomputing only non-matmul ops in backprop.
-    FULL: For recomputing the whole layer in backprop.
-    LEGACY: For compatibility with existing configs. Previously
-      scan_layers=False implied NONE, scan_layers=True implied FULL.
-  """
-  NONE = enum.auto()
-  MINIMAL = enum.auto()
-  FULL = enum.auto()
-  LEGACY = enum.auto()
 
 
 class MakeEncoderFn(Protocol):
@@ -70,46 +53,6 @@ class MakeEncoderFn(Protocol):
     Returns:
       Encoder instance.
     """
-
-
-def maybe_remat(lyrf: Callable[[], nn.Module], layer_remat: LayerRematOptions,
-                scan_layers: bool,
-                static_argnums: Tuple[int, ...]) -> Callable[[], nn.Module]:
-  """Maybe applies jax.remat with the indicated policy to a layer factory.
-
-  Args:
-    lyrf: Encoder or decoder layer factory.
-    layer_remat: Config for per-layer remat. See commenst for LayerRematOptions.
-    scan_layers: Whether to use jax.lax.scan for the stack of layers.
-    static_argnums: The static_argnums to use for the jax.remat call.
-
-  Returns:
-    Potentially remat-wrapped layer factory.
-
-  Raises:
-    ValueError: This is triggered by an unsupported layer_mat option.
-  """
-  if layer_remat == LayerRematOptions.LEGACY:
-    layer_remat = (
-        LayerRematOptions.FULL if scan_layers else LayerRematOptions.NONE)
-
-  if layer_remat == LayerRematOptions.NONE:
-    return lyrf
-
-  if layer_remat == LayerRematOptions.FULL:
-    remat_policy = None
-  elif layer_remat == LayerRematOptions.MINIMAL:
-    remat_policy = jax.checkpoint_policies.checkpoint_dots_with_no_batch_dims
-  else:
-    raise ValueError('Unsupported layer_remat option.')
-
-  lyrf = transforms.factory_remat(
-      lyrf,
-      concrete=False,
-      prevent_cse=False,
-      static_argnums=static_argnums,
-      policy=remat_policy)
-  return lyrf
 
 
 def _activation_partitioning_fn(y):
@@ -146,6 +89,13 @@ class EncoderLayer(nn.Module, param_remapping.ParameterRemappable):
       self.pre_mlp_layer_norm = self.layer_norm_factory()
       self.post_mlp_dropout = self.dropout_factory()
 
+  def _validate_inputs(self, inputs):
+    if inputs.ndim != 3:
+      raise ValueError(f'Expect inputs.ndim=3, but inputs.ndim={inputs.ndim}')
+
+  def _activation_partitioning_fn(self, y):
+    return _activation_partitioning_fn(y)
+
   def __call__(self,
                inputs: Array,
                inputs_mask: Array,
@@ -165,12 +115,11 @@ class EncoderLayer(nn.Module, param_remapping.ParameterRemappable):
     Raises:
       ValueError: This is triggered if inputs array has the wrong rank.
     """
-    if inputs.ndim != 3:
-      raise ValueError(f'Expect inputs.ndim=3, but inputs.ndim={inputs.ndim}')
+    self._validate_inputs(inputs)
 
-    layer_input = _activation_partitioning_fn(inputs)
+    layer_input = self._activation_partitioning_fn(inputs)
     layer_input = self.pre_attention_layer_norm(layer_input)
-    layer_input = _activation_partitioning_fn(layer_input)
+    layer_input = self._activation_partitioning_fn(layer_input)
     if self.parallel:
       y = (
           self.attention(
@@ -190,13 +139,13 @@ class EncoderLayer(nn.Module, param_remapping.ParameterRemappable):
           layer_input, inputs_mask, enable_dropout=enable_dropout)
       x = layer_input + self.post_attention_dropout(
           x, deterministic=not enable_dropout)
-      x = _activation_partitioning_fn(x)
+      x = self._activation_partitioning_fn(x)
       # MLP block.
       y = self.pre_mlp_layer_norm(x)
-      y = _activation_partitioning_fn(y)
+      y = self._activation_partitioning_fn(y)
       y = self.mlp(y, enable_dropout=enable_dropout)
       y = x + self.post_mlp_dropout(y, deterministic=not enable_dropout)
-    y = _activation_partitioning_fn(y)
+    y = self._activation_partitioning_fn(y)
 
     if self.sow_intermediates:
       self.sow('intermediates', 'activations', y)
@@ -208,8 +157,8 @@ class EncoderLayer(nn.Module, param_remapping.ParameterRemappable):
       return y
 
 
-class EncoderAndDecoderBase(nn.Module, param_remapping.ParameterRemappable):
-  """Base class for Encoder and Decoder classes.
+class EncoderAndDecoderLayers(nn.Module, param_remapping.ParameterRemappable):
+  """Base class for Encoder and Decoder layers.
 
   Attributes:
     layer_factory: A callable that returns an EncoderLayer or DecoderOnlyLayer.
@@ -224,52 +173,31 @@ class EncoderAndDecoderBase(nn.Module, param_remapping.ParameterRemappable):
       recomputation in the backward pass.
     scan_layers: Whether to scan over layers.
     spmd_annotations: The spmd annotations needed for scanned layers.
-    token_embedder_factory: A callable that returns a token embedder. Please
-      provide either this or `shared_token_embedder`.
-    shared_token_embedder: A callable that returns a token embedder shared
-      between both encoder and decoder.
   """
   layer_factory: Callable[[], nn.Module]
   input_dropout_factory: Callable[[], nn.Module]
   output_dropout_factory: Callable[[], nn.Module]
   layer_norm_factory: Callable[[], nn.Module]
   num_layers: int
-  layer_remat: LayerRematOptions = LayerRematOptions.LEGACY
+  layer_remat: utils.LayerRematOptions = utils.LayerRematOptions.LEGACY
   scan_layers: bool = False
   spmd_annotations: Any = None
 
-  # Embedders: Either a token_embedder_factory factory or shared_token_embedder
-  # must be provided.
-  token_embedder_factory: Optional[Callable[[], embedding.Embed]] = None
-  shared_token_embedder: Optional[embedding.Embed] = None
-
   def setup(self):
-    self._setup_embedders()
     self.input_dropout = self.input_dropout_factory()
     self.output_layer_norm = self.layer_norm_factory()
     self.output_dropout = self.output_dropout_factory()
 
-  def _setup_embedders(self):
-    if (self.token_embedder_factory,
-        self.shared_token_embedder).count(None) != 1:
-      raise ValueError(
-          'Please set exactly one of token_embedder_factory or '
-          'shared_token_embedder. The token_embedder_factory was '
-          f'{self.token_embedder_factory}, and shared_token_embedder was '
-          f'{self.shared_token_embedder}.')
-    if self.shared_token_embedder is not None:
-      self.embedder = self.shared_token_embedder
-    else:
-      self.token_embedder_factory: Callable[[], embedding.Embed]
-      self.embedder = self.token_embedder_factory()
-
   def _setup_layers(self, module_name: str,
                     num_arguments: int) -> Callable[..., Array]:
-    lyrf = maybe_remat(
+    lyrf = utils.maybe_remat(
         self.layer_factory,
         self.layer_remat,
         self.scan_layers,
         static_argnums=(2,))
+    logging.info(
+        'Finished setting up a set of %d h-transformer encoder/decoder layers,',
+        self.num_layers)
 
     if self.scan_layers:
       initializing = self.is_mutable_collection('params')
@@ -295,12 +223,46 @@ class EncoderAndDecoderBase(nn.Module, param_remapping.ParameterRemappable):
           length=self.num_layers,
           data_transform=transforms.inner_scan_spmd(scan_annotation,
                                                     _SCAN_AXIS),
-          axis_name='layers',
+          axes_collections=('params', 'cache'),
       )
       return lyrf()
     else:
       self.layers = [lyrf() for _ in range(self.num_layers)]
       return common.TransparentLayerSequence(self.layers)
+
+
+class EncoderAndDecoderBase(EncoderAndDecoderLayers):
+  """Base class for Encoder and Decoder classes.
+
+  Attributes:
+    token_embedder_factory: A callable that returns a token embedder. Please
+      provide either this or `shared_token_embedder`.
+    shared_token_embedder: A callable that returns a token embedder shared
+      between both encoder and decoder.
+  """
+  # Embedders: Either a token_embedder_factory factory or shared_token_embedder
+  # must be provided.
+  token_embedder_factory: Optional[Callable[[], embedding.Embed]] = None
+  shared_token_embedder: Optional[embedding.Embed] = None
+
+  def setup(self):
+    super().setup()
+    self._setup_embedders()
+
+  def _setup_embedders(self):
+    if (self.token_embedder_factory,
+        self.shared_token_embedder).count(None) != 1:
+      raise ValueError(
+          'Please set exactly one of token_embedder_factory or '
+          'shared_token_embedder. The token_embedder_factory was '
+          f'{self.token_embedder_factory}, and shared_token_embedder was '
+          f'{self.shared_token_embedder}.')
+    if self.shared_token_embedder is not None:
+      self.embedder = self.shared_token_embedder
+    else:
+      self.token_embedder_factory: Callable[[], embedding.Embed]
+      self.embedder = self.token_embedder_factory()
+    logging.info('Finished setting up an embedder for h-transformer.')
 
 
 class Encoder(EncoderAndDecoderBase):
@@ -309,6 +271,7 @@ class Encoder(EncoderAndDecoderBase):
   def setup(self):
     super().setup()
     self.encoder = self._setup_layers('encoder', num_arguments=2)
+    logging.info('Finished setting up h-transformer encoder.')
 
   def __call__(self,
                inputs: Array,
@@ -411,6 +374,7 @@ class DecoderOnly(EncoderAndDecoderBase):
     self.output_logits: Optional[nn.Module]
     self.output_logits = (
         self.output_logits_factory() if self.output_logits_factory else None)
+    logging.info('Finished setting up h-transformer decoder-only.')
 
   def __call__(self,
                inputs: Array,
@@ -525,6 +489,9 @@ class DecoderLayer(nn.Module, param_remapping.ParameterRemappable):
       self.pre_mlp_layer_norm = self.layer_norm_factory()
       self.post_mlp_dropout = self.dropout_factory()
 
+  def _activation_partitioning_fn(self, y):
+    return _activation_partitioning_fn(y)
+
   def __call__(self,
                decoder_inputs: Array,
                decoder_inputs_mask: Array,
@@ -564,9 +531,9 @@ class DecoderLayer(nn.Module, param_remapping.ParameterRemappable):
     if encoder_outputs is not None and self.encoder_decoder_attention is None:
       raise ValueError('Expected encoder_decoder_attention to be populated.')
 
-    layer_inputs = _activation_partitioning_fn(decoder_inputs)
+    layer_inputs = self._activation_partitioning_fn(decoder_inputs)
     x = self.pre_self_attention_layer_norm(layer_inputs)
-    x = _activation_partitioning_fn(x)
+    x = self._activation_partitioning_fn(x)
     if self.parallel:
       y = (
           self.self_attention(
@@ -588,7 +555,7 @@ class DecoderLayer(nn.Module, param_remapping.ParameterRemappable):
           x, decoder_inputs_mask, enable_dropout=enable_dropout)
       x = layer_inputs + self.post_self_attention_dropout(
           x, deterministic=not enable_dropout)
-      x = _activation_partitioning_fn(x)
+      x = self._activation_partitioning_fn(x)
 
       # Encoder-Decoder block.
       if encoder_outputs is None:
@@ -597,7 +564,7 @@ class DecoderLayer(nn.Module, param_remapping.ParameterRemappable):
         y = x
       else:
         y = self.pre_cross_attention_layer_norm(x)
-        y = _activation_partitioning_fn(y)
+        y = self._activation_partitioning_fn(y)
 
         if logit_mask is not None:
           y = logit_mask * y
@@ -609,11 +576,11 @@ class DecoderLayer(nn.Module, param_remapping.ParameterRemappable):
             enable_dropout=enable_dropout)
         y = x + self.post_cross_attention_dropout(
             y, deterministic=not enable_dropout)
-        y = _activation_partitioning_fn(y)
+        y = self._activation_partitioning_fn(y)
 
       # MLP block.
       z = self.pre_mlp_layer_norm(y)
-      z = _activation_partitioning_fn(z)
+      z = self._activation_partitioning_fn(z)
 
       if logit_mask is not None:
         z = logit_mask * z
@@ -621,7 +588,7 @@ class DecoderLayer(nn.Module, param_remapping.ParameterRemappable):
       z = self.mlp(z, enable_dropout=enable_dropout)
       z = y + self.post_mlp_dropout(z, deterministic=not enable_dropout)
 
-    z = _activation_partitioning_fn(z)
+    z = self._activation_partitioning_fn(z)
 
     if self.sow_intermediates:
       self.sow('intermediates', 'activations', z)
@@ -656,6 +623,7 @@ class Decoder(EncoderAndDecoderBase):
     self.output_logits: Optional[nn.Module]
     self.output_logits = (
         self.output_logits_factory() if self.output_logits_factory else None)
+    logging.info('Finished setting up h-transformer decoder.')
 
   def __call__(self,
                decoder_input_tokens: Array,
@@ -826,6 +794,8 @@ class EncoderDecoder(nn.Module, param_remapping.ParameterRemappable):
     else:
       self.decoder = self.decoder_factory(
           shared_token_embedder=self.token_embedder)
+
+    logging.info('Finished setting up h-transformer encoder-decoder.')
 
   @property
   def encoder_embedder(self) -> embedding.Embed:

@@ -134,7 +134,7 @@ class ExpectedJsonFiles:
   def __init__(self, base_path: str):
     self.path = pathlib.Path(absltest.get_default_test_srcdir()) / base_path
 
-  def get_params(self, filename: str) -> Mapping[str, Any]:
+  def get_params(self, filename: str) -> Dict[str, Any]:
     with open(self.path / filename) as f:
       return json.load(f)
 
@@ -179,7 +179,8 @@ class ExpectedJsonFiles:
     expected = self.get_params(expected_filename)
 
     if actual != expected:
-      print(format_params_shapes(actual))
+      print('actual:\n', format_params_shapes(actual))
+      print('expected:\n', format_params_shapes(expected))
       raise AssertionError(
           f'Didn\'t match JSON params in {expected_filename}. See actual '
           'values above.')

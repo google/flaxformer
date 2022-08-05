@@ -1,0 +1,41 @@
+ {
+  "decoder": {
+    "decoder_norm": {
+      "scale": [13]
+    },
+    "layers_0": {
+      "kv_fused": {
+        "kernel": [13, 1, 128]
+      },
+      "layer_norm": {
+        "scale": [13]
+      },
+      "o_wo_fused": {
+        "kernel": [8, 320, 13]
+      },
+      "q_wi_fused": {
+        "kernel": [13, 8, 576]
+      }
+    },
+    "layers_1": {
+      "kv_fused": {
+        "kernel": [13, 1, 128]
+      },
+      "layer_norm": {
+        "scale": [13]
+      },
+      "o_wo_fused": {
+        "kernel": [8, 320, 13]
+      },
+      "q_wi_fused": {
+        "kernel": [13, 8, 576]
+      }
+    },
+    "logits_dense": {
+      "kernel": [13, 4]
+    },
+    "token_embedder": {
+      "embedding": [2000, 13]
+    }
+  }
+}

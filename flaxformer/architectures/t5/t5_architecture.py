@@ -427,6 +427,13 @@ class DecoderLayer(nn.Module, param_remapping.ParameterRemappable):
             f'bias factory.\nInstance value: {self.relpos_bias}')
     return decoder_bias, encoder_decoder_bias
 
+  def _create_residuals_and_queries(self, layer_input: Array, x: Array,
+                                    logit_mask: Array,
+                                    **kwargs) -> Tuple[Array, Array, Array]:
+    """Slice layer inputs to get versions to use as queries."""
+    # This is a no-op unless overridden by a subclass.
+    return layer_input, x, logit_mask
+
   def __call__(self,
                targets,
                encoded,
@@ -438,7 +445,8 @@ class DecoderLayer(nn.Module, param_remapping.ParameterRemappable):
                decode: bool = False,
                max_decode_length: Optional[int] = None,
                prefill: bool = False,
-               prefill_lengths: Optional[Array] = None):
+               prefill_lengths: Optional[Array] = None,
+               **kwargs):
     """Applies EncoderDecoder1DBlock module.
 
     Args:
@@ -460,6 +468,8 @@ class DecoderLayer(nn.Module, param_remapping.ParameterRemappable):
       prefill: Whether to run a partial sequence to prefill the cache.
       prefill_lengths: The length of each partial sequence we are filling in the
         cache, lengths are inferred from the mask if not provided.
+      **kwargs: Remaining keyword arguments. Passed to
+        _create_residuals_and_queries.
 
     Returns:
       output after transformer encoder-decoder block.
@@ -494,13 +504,18 @@ class DecoderLayer(nn.Module, param_remapping.ParameterRemappable):
           self.activation_partitioning_dims,
           logical_axis_names=('batch', 'length', 'embed'))
 
+      # Normally a no-op unless overridden by a subclass.
+      layer_input_residual, x_queries, logit_mask_queries = (
+          self._create_residuals_and_queries(layer_input, x, logit_mask,
+                                             **kwargs))
+
       # Shared relative position embedding attention biases.
       decoder_bias, encoder_decoder_bias = self.get_bias(
           max_decode_length, decode, layer_input=x, encoded=encoded)
 
       y = (
           self.self_attention(
-              x,
+              x_queries,
               x,
               decoder_mask,
               decoder_bias,
@@ -521,7 +536,8 @@ class DecoderLayer(nn.Module, param_remapping.ParameterRemappable):
             encoder_decoder_bias,
             enable_dropout=enable_dropout)
       y *= (3 if encoded is not None else 2)**-0.5
-      z = layer_input + self.dropout(y, deterministic=not enable_dropout)
+      z = layer_input_residual + self.dropout(
+          y, deterministic=not enable_dropout)
     else:
       # layer_input is derived from decoder_input_tokens.
       x = self.pre_self_attention_layer_norm(
@@ -534,8 +550,20 @@ class DecoderLayer(nn.Module, param_remapping.ParameterRemappable):
           self.activation_partitioning_dims,
           logical_axis_names=('batch', 'length', 'embed'))
 
+      # Normally a no-op unless overridden by a subclass.
+      layer_input_residual, x_queries, logit_mask_queries = (
+          self._create_residuals_and_queries(layer_input, x, logit_mask,
+                                             **kwargs))
+
       if logit_mask is not None:
-        x = logit_mask * x
+        # When using QKV fusion, x and x_queries must be the exact same
+        # Python object, so reuse the object if possible.
+        if x is x_queries and logit_mask is logit_mask_queries:
+          x = logit_mask * x
+          x_queries = x
+        else:
+          x = logit_mask * x
+          x_queries = logit_mask_queries * x_queries
 
       # Shared relative position embedding attention biases.
       decoder_bias, encoder_decoder_bias = self.get_bias(
@@ -544,7 +572,7 @@ class DecoderLayer(nn.Module, param_remapping.ParameterRemappable):
       # The first and second arguments to the attention are the same,
       # i.e., this is a self-attention layer.
       x = self.self_attention(
-          x,
+          x_queries,
           x,
           decoder_mask,
           decoder_bias,
@@ -552,7 +580,7 @@ class DecoderLayer(nn.Module, param_remapping.ParameterRemappable):
           decode=decode,
           prefill=prefill,
           prefill_lengths=prefill_lengths)
-      x = layer_input + self.post_self_attention_dropout(
+      x = layer_input_residual + self.post_self_attention_dropout(
           x, deterministic=not enable_dropout)
       x = activation_partitioning.with_sharding_migration(
           x,
@@ -576,7 +604,7 @@ class DecoderLayer(nn.Module, param_remapping.ParameterRemappable):
             logical_axis_names=('batch', 'length', 'embed'))
 
         if logit_mask is not None:
-          y = logit_mask * y
+          y = logit_mask_queries * y
 
         y = self.encoder_decoder_attention(
             y,
@@ -600,7 +628,7 @@ class DecoderLayer(nn.Module, param_remapping.ParameterRemappable):
           logical_axis_names=('batch', 'length', 'embed'))
 
       if logit_mask is not None:
-        z = logit_mask * z
+        z = logit_mask_queries * z
 
       z = self.mlp(
           z,
@@ -758,6 +786,7 @@ class Encoder(nn.Module, param_remapping.ParameterRemappable):
         length=num_layers,
         data_transform=transforms.inner_scan_spmd(scan_annotation,
                                                   self.scan_axis),
+        axes_collections=('params', 'cache'),
     )
     return lyrf()
 
@@ -944,6 +973,13 @@ class Decoder(nn.Module, param_remapping.ParameterRemappable):
         self.shared_relative_position_bias_factory()
         if self.shared_relative_position_bias_factory is not None else None)
 
+    self.decoder = self._setup_layer_sequence()
+
+    self.decoder_norm = self.layer_norm_factory()
+    self.output_dropout = self.dropout_factory()
+    self.setup_output_logits()
+
+  def _setup_layer_sequence(self):
     lyrf = lambda: self.layer_factory(  # pylint: disable=g-long-lambda
         shared_relative_position_bias=self.relpos_bias)
     lyrf = maybe_remat(
@@ -953,17 +989,17 @@ class Decoder(nn.Module, param_remapping.ParameterRemappable):
         static_argnums=(5, 6, 7, 8, 9))
     if not self.scan_layers:
       self.layers = [lyrf() for _ in range(self.num_layers)]
-      self.decoder = common.TransparentLayerSequence(self.layers)
+      return common.TransparentLayerSequence(self.layers)
     else:
-      self.decoder = self._construct_scanned_decoder(lyrf, self.num_layers)
+      return self._construct_scanned_decoder(lyrf, self.num_layers)
 
-    self.decoder_norm = self.layer_norm_factory()
-    self.output_dropout = self.dropout_factory()
-    self.setup_output_logits()
-
-  def _construct_scanned_decoder(self, lyrf: Callable[[], nn.Module],
-                                 num_layers: int) -> nn.Module:
+  def _construct_scanned_decoder(
+      self,
+      lyrf: Callable[[], nn.Module],
+      num_layers: int,
+      num_broadcast_args: int = 10) -> Callable[..., Array]:
     """Constructs decoder from layer factory using scan."""
+
     initializing = self.is_mutable_collection('params')
     # We scan the parameters along scan_axis (default =1) as
     # an XLA layout optimization.
@@ -976,9 +1012,7 @@ class Decoder(nn.Module, param_remapping.ParameterRemappable):
         if self.spmd_annotations is not None else None)
     lyrf = transforms.factory_scan(
         lyrf,
-        in_axes=(nn.broadcast, nn.broadcast, nn.broadcast, nn.broadcast,
-                 nn.broadcast, nn.broadcast, nn.broadcast, nn.broadcast,
-                 nn.broadcast),
+        in_axes=(nn.broadcast,) * num_broadcast_args,
         variable_axes={
             'params': params_spec,
             'cache': cache_spec,
@@ -992,6 +1026,7 @@ class Decoder(nn.Module, param_remapping.ParameterRemappable):
         data_transform=transforms.inner_scan_spmd(scan_annotation,
                                                   self.scan_axis),
         axis_name='layers',
+        axes_collections=('params', 'cache'),
     )
     return lyrf()
 
@@ -1112,7 +1147,8 @@ class Decoder(nn.Module, param_remapping.ParameterRemappable):
                decode: bool = False,
                max_decode_length: Optional[int] = None,
                prefill: bool = False,
-               prefill_lengths: Optional[Array] = None):
+               prefill_lengths: Optional[Array] = None,
+               **kwargs):
     """Applies Transformer model on the inputs.
 
     TODO: For consistency it would be better to flip the order of the
@@ -1135,6 +1171,8 @@ class Decoder(nn.Module, param_remapping.ParameterRemappable):
       prefill: Whether to run a partial sequence to prefill the cache.
       prefill_lengths: The length of each partial sequence we are filling in the
         cache, lengths are inferred from the mask if not provided.
+      **kwargs: Optional keyword arguments to pass to
+        decode_from_continuous_inputs.
 
     Returns:
       The decoder output logits for next token prediction.
@@ -1160,7 +1198,8 @@ class Decoder(nn.Module, param_remapping.ParameterRemappable):
         decode=decode,
         max_decode_length=max_decode_length,
         prefill=prefill,
-        prefill_lengths=prefill_lengths)
+        prefill_lengths=prefill_lengths,
+        **kwargs)
     return logits
 
 
@@ -1280,7 +1319,10 @@ class EncoderDecoder(nn.Module, param_remapping.ParameterRemappable):
       *,
       enable_dropout: bool = True,
       decode: bool = False,
-      max_decode_length: Optional[int] = None):
+      # Args below were ported from decoder only code.
+      max_decode_length: Optional[int] = None,
+      prefill: bool = False,
+      prefill_lengths: Optional[Array] = None):
     """Applies Transformer decoder-branch on encoded-input and target.
 
     Args:
@@ -1296,6 +1338,9 @@ class EncoderDecoder(nn.Module, param_remapping.ParameterRemappable):
       max_decode_length: An optional integer specifying the maximum decoding
         length. Note that this is only used for defining the relative position
         embedding parameters.
+      prefill: Whether to run a partial sequence to prefill the cache.
+      prefill_lengths: The length of each partial sequence we are filling in the
+        cache, lengths are inferred from the mask if not provided.
 
     Returns:
       logits array from transformer decoder.
@@ -1343,7 +1388,9 @@ class EncoderDecoder(nn.Module, param_remapping.ParameterRemappable):
         segment_ids=decoder_segment_ids,
         enable_dropout=enable_dropout,
         decode=decode,
-        max_decode_length=max_decode_length)
+        max_decode_length=max_decode_length,
+        prefill=prefill,
+        prefill_lengths=prefill_lengths)
 
   @property
   def encoder_embedder(self) -> embedding.MultiEmbed:
@@ -1445,7 +1492,8 @@ class DecoderOnly(nn.Module, param_remapping.ParameterRemappable):
                decode: bool = False,
                max_decode_length: Optional[int] = None,
                prefill: bool = False,
-               prefill_lengths: Optional[Array] = None):
+               prefill_lengths: Optional[Array] = None,
+               **kwargs):
     """Applies LanguageModel on the inputs.
 
     This method requires both decoder_target_tokens and decoder_input_tokens,
@@ -1469,6 +1517,7 @@ class DecoderOnly(nn.Module, param_remapping.ParameterRemappable):
       prefill: Whether to run a partial sequence to prefill the cache.
       prefill_lengths: The length of each partial sequence we are filling in the
         cache, lengths are inferred from the mask if not provided.
+      **kwargs: Additional keyword arguments to pass on to the decoder.
 
     Returns:
       logits array from LanguageModel.
@@ -1501,4 +1550,5 @@ class DecoderOnly(nn.Module, param_remapping.ParameterRemappable):
         decode=decode,
         max_decode_length=max_decode_length,
         prefill=prefill,
-        prefill_lengths=prefill_lengths)
+        prefill_lengths=prefill_lengths,
+        **kwargs)

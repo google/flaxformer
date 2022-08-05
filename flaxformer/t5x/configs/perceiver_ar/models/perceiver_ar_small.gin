@@ -1,0 +1,11 @@
+# Based on original T5 (1.0) Small model.
+# Provides MODEL
+
+include 'flaxformer/t5x/configs/perceiver_ar/models/perceiver_ar_base.gin'  # imports vocab, optimizer and model.
+
+# Architecture overrides
+NUM_DECODER_LAYERS = 6
+NUM_HEADS = 8
+HEAD_DIM = 64
+EMBED_DIM = 512
+MLP_DIM = 2048

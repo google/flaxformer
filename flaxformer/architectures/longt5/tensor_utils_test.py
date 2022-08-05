@@ -441,6 +441,59 @@ class TensorUtilsTest(parameterized.TestCase):
             [-5, -4, -3, -2, -1, 0, 1, 2, 3],  #
         ])
 
+  def test_make_custom_3block_relative_position_simple_input(self):
+    positions = np.arange(3, dtype=np.int32)[np.newaxis, :]
+
+    # Unlike `make_3block_relative_position`, the "position" for all
+    # padding tokens is set to -1, but this shouldn't matter since attention
+    # to padding tokens should be masked out.
+    np.testing.assert_array_equal(
+        tensor_utils.make_custom_3block_relative_position(3, positions),
+        [[[
+            [-1, -1, -1, 0, 1, 2, -1, -1, -1],  #
+            [-2, -2, -2, -1, 0, 1, -2, -2, -2],  #
+            [-3, -3, -3, -2, -1, 0, -3, -3, -3],  #
+        ]]])
+
+  def test_make_custom_3block_relative_position_customized_input(self):
+    positions = [
+        [5, 4, 3, 2, 1, 0],  #
+        [3, 4, 0, 1, 2, 5],  #
+    ]
+
+    np.testing.assert_array_equal(
+        tensor_utils.make_custom_3block_relative_position(2, positions),
+        [
+            [
+                [
+                    [-6, -6, 0, -1, -2, -3],  #
+                    [-5, -5, 1, 0, -1, -2],  #
+                ],
+                [
+                    [2, 1, 0, -1, -2, -3],  #
+                    [3, 2, 1, 0, -1, -2],  #
+                ],
+                [
+                    [2, 1, 0, -1, -2, -2],  #
+                    [3, 2, 1, 0, -1, -1],  #
+                ],
+            ],
+            [
+                [
+                    [-4, -4, 0, 1, -3, -2],  #
+                    [-5, -5, -1, 0, -4, -3],  #
+                ],
+                [
+                    [3, 4, 0, 1, 2, 5],  #
+                    [2, 3, -1, 0, 1, 4],  #
+                ],
+                [
+                    [-2, -1, 0, 3, -3, -3],  #
+                    [-5, -4, -3, 0, -6, -6],  #
+                ],
+            ],
+        ])
+
   def test_positions_from_segment_ids(self):
     segment_ids = [
         [1, 1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 2, 2, 3, 3, 3],  #
