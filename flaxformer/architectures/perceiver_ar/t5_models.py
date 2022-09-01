@@ -22,6 +22,7 @@ from absl import logging
 import flax
 from flax import linen as nn
 from flax import traverse_util
+from flax.training import common_utils
 import jax
 from jax import lax
 import jax.numpy as jnp
@@ -30,6 +31,19 @@ from t5x import decoding
 from t5x import losses
 from t5x import models
 from t5x import optimizers
+
+
+def _get_sequence_lengths(batch: Mapping[str, jnp.ndarray]) -> jnp.ndarray:
+  """Return non-padding lengths of sequences in the batch."""
+  return (batch['decoder_target_tokens'] > 0).astype(jnp.int32).sum(axis=-1)
+
+
+def _crop_sequences(sequences: jnp.ndarray,
+                    lengths: jnp.ndarray) -> jnp.ndarray:
+  """Crop sequences by replacing positions beyond length with padding."""
+  return jnp.where(
+      jnp.arange(sequences.shape[-1])[jnp.newaxis, :] < lengths[:, jnp.newaxis],
+      sequences, 0)
 
 
 class CroppingMethod(enum.Enum):
@@ -107,12 +121,8 @@ def crop_train_batch(
                              last_loss_idx + 1)
   seq_crop_start = jnp.maximum(seq_crop_first_idx, 0)
 
-  def crop_seq(x):
-    return jnp.where(
-        jnp.arange(x.shape[-1])[jnp.newaxis, :] < seq_crop_end[:, jnp.newaxis],
-        x, 0)
-
-  batch = jax.tree_map(crop_seq, batch)
+  batch = jax.tree_map(
+      functools.partial(_crop_sequences, lengths=seq_crop_end), batch)
 
   # Handle the loss weights specifically to ensure that loss isn't
   # calculated for positions before seq_crop_start. This ensures that all
@@ -154,7 +164,13 @@ class PerceiverARModel(models.DecoderOnlyModel):
       train_cropping_method: CroppingMethod = CroppingMethod.FULL_LATENTS,
   ):
     self._num_latents = num_latents
-    self._decoding_latent_reset_fill = decoding_latent_reset_fill
+
+    if decoding_latent_reset_fill:
+      self._decoding_latent_reset_fill = decoding_latent_reset_fill
+    else:
+      self._decoding_latent_reset_fill = max(num_latents - 128,
+                                             num_latents // 2)
+
     self._train_cropping_method = train_cropping_method
     super().__init__(
         module=module,
@@ -197,8 +213,7 @@ class PerceiverARModel(models.DecoderOnlyModel):
      weights) = losses.get_loss_normalizing_factor_and_weights(
          self._loss_normalizing_factor, batch)
 
-    sequence_lengths = (batch['decoder_target_tokens'] > 0).astype(
-        jnp.int32).sum(axis=-1)
+    sequence_lengths = _get_sequence_lengths(batch)
     assert self._num_latents == logits.shape[-2]
     q_end = jnp.maximum(self._num_latents, sequence_lengths)
     q_start = q_end - self._num_latents
@@ -234,14 +249,8 @@ class PerceiverARModel(models.DecoderOnlyModel):
     """Token slice to logits from decoder model."""
     # Implement a cache reset step as described in Appendix E.3 of the Perceiver
     # AR paper (https://arxiv.org/pdf/2202.07765.pdf)
-    if self._decoding_latent_reset_fill:
-      decoding_latent_reset_fill = self._decoding_latent_reset_fill
-    else:
-      decoding_latent_reset_fill = max(self._num_latents - 128,
-                                       self._num_latents // 2)
-
     logging.info('Using a reset step latent fill of %d positions',
-                 decoding_latent_reset_fill)
+                 self._decoding_latent_reset_fill)
 
     def get_cache_by_layers(cache):
       return traverse_util.flatten_dict(
@@ -259,7 +268,7 @@ class PerceiverARModel(models.DecoderOnlyModel):
       return flax.core.freeze(traverse_util.unflatten_dict(new_cache_by_layers))
 
     def reset_step():
-      assert self._num_latents > decoding_latent_reset_fill
+      assert self._num_latents > self._decoding_latent_reset_fill
 
       # Create a version of the kv cache that has
       # decoding_latent_reset_fill positions instead of self._num_latents
@@ -267,7 +276,7 @@ class PerceiverARModel(models.DecoderOnlyModel):
       def prepare_reset_cache(x):
         # Modify key and value, but not index.
         if x.ndim > 1 and x.shape[-1] == self._num_latents:
-          return x[..., :decoding_latent_reset_fill] * 0
+          return x[..., :self._decoding_latent_reset_fill] * 0
         else:
           return x
 
@@ -301,14 +310,15 @@ class PerceiverARModel(models.DecoderOnlyModel):
           prefill=True,
           prefill_lengths=decoding_state.cur_index + 1,
           mutable=['cache'],
-          num_latents=decoding_latent_reset_fill)
+          num_latents=self._decoding_latent_reset_fill)
 
       # Now expand the kv cache size back to self._num_latents.
       def expand_reset_cache(x):
         # Modify key and value, but not index.
-        if x.ndim > 1 and x.shape[-1] == decoding_latent_reset_fill:
+        if x.ndim > 1 and x.shape[-1] == self._decoding_latent_reset_fill:
           padding = [(0, 0)] * x.ndim
-          padding[-1] = (0, self._num_latents - decoding_latent_reset_fill)
+          padding[-1] = (0,
+                         self._num_latents - self._decoding_latent_reset_fill)
           return jnp.pad(x, padding)
         else:
           return x
@@ -522,3 +532,102 @@ class PerceiverARModel(models.DecoderOnlyModel):
       aux = {'scores': scores}
 
     return models.remove_prefix(decoded_sequences, inputs_lengths), aux
+
+  def score_batch(self,
+                  params: models.PyTreeDef,
+                  batch: Mapping[str, jnp.ndarray],
+                  return_intermediates: bool = False) -> jnp.ndarray:
+    """Compute log likelihood score on a batch.
+
+    Perceiver AR will return only num_latents outputs for a given forward pass,
+    but we want scores for all inputs positions. This method does multiple
+    forward passes, striding over the input as determined by
+    decoding_latent_reset_fill. The results are combined into a single logits
+    array and summed for the final score.
+
+    Args:
+      params: Model params.
+      batch: Batch to score.
+      return_intermediates: Whether to return model intermediates. Not currently
+        supported for Perceiver AR.
+
+    Returns:
+      Sequence scores with shape [batch].
+    """
+    if return_intermediates:
+      raise NotImplementedError('return_intermediates is not yet supported.')
+
+    decoder_target_tokens = batch['decoder_target_tokens']
+    weights = batch['decoder_loss_weights']
+    input_length = decoder_target_tokens.shape[-1]
+    sequence_lengths = _get_sequence_lengths(batch)
+
+    def get_token_scores(logits):
+      return -losses.cross_entropy_with_logits(
+          logits,
+          common_utils.onehot(
+              decoder_target_tokens, logits.shape[-1], on_value=1, off_value=0),
+          z_loss=0.0)[0] * weights
+
+    stride = self._num_latents - self._decoding_latent_reset_fill
+    logging.info(
+        'decoding_latent_reset_fill is %d and num_latents is %d, so using a '
+        'stride of %d for scoring.', self._decoding_latent_reset_fill,
+        self._num_latents, stride)
+
+    # Loop forward using strides.
+    def body(state):
+      slice_end = jnp.maximum(state['slice_end'] + stride, self._num_latents)
+      slice_end = jnp.minimum(slice_end, sequence_lengths)
+
+      loop_batch = jax.tree_map(
+          functools.partial(_crop_sequences, lengths=slice_end), batch)
+      loop_logits = self._compute_logits(
+          params=params, batch=loop_batch, dropout_rng=None)
+      loop_logits = jnp.pad(loop_logits, [(0, 0),
+                                          (0, input_length - self._num_latents),
+                                          (0, 0)])
+      loop_logits_shift = slice_end - self._num_latents
+      loop_logits = jax.vmap(functools.partial(jnp.roll,
+                                               axis=0))(loop_logits,
+                                                        loop_logits_shift)
+
+      if 'logits' not in state:
+        # Should happen only during the initialization pass so we can get the
+        # dtype and vocabulary dimension from the actual model outputs.
+        # During the lax.while_loop, we can't modify this.
+        state['logits'] = jnp.zeros_like(loop_logits)
+
+      logits = jnp.where(
+          jnp.arange(input_length)[jnp.newaxis, :, jnp.newaxis] >=
+          state['slice_end'][:, jnp.newaxis, jnp.newaxis], loop_logits,
+          state['logits'])
+
+      new_state = {
+          'logits': logits,
+          'slice_end': slice_end,
+      }
+      return new_state
+
+    def cond(state):
+      done = state['slice_end'] >= sequence_lengths
+      return jnp.any(~done)
+
+    # Start where loss starts to be calculated.
+    slice_end = jnp.argmax(weights > 0, axis=1)
+    init_state = {
+        'slice_end': slice_end,
+    }
+
+    # Run the first iteration outside the while_loop to initialize state dict
+    # with logits that match the shape/dtype of the actual model outputs.
+    init_state = body(init_state)
+
+    final_state = lax.while_loop(
+        cond_fun=cond, body_fun=body, init_val=init_state)
+    logits = final_state['logits']
+
+    token_scores = get_token_scores(logits)
+    sequence_scores = token_scores.sum(-1)
+
+    return sequence_scores

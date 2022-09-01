@@ -334,7 +334,7 @@ class RoutingTest(parameterized.TestCase):
       self.assertEqual(router_mask.router_z_loss, 0.48541257)
 
     with self.subTest(name='tokens_choose_scatter_router'):
-      router_mask, _ = routing.TokensChooseScatterRouter(
+      router_indices, _ = routing.TokensChooseScatterRouter(
           router_weights=router_weights,
           num_selected_experts=num_selected_experts,
           jitter_noise=0.,
@@ -342,9 +342,6 @@ class RoutingTest(parameterized.TestCase):
           ignore_padding_tokens=True,
           dtype=jnp.float32).init_with_output(
               jax.random.PRNGKey(0), token_inputs, num_experts, expert_capacity)
-
-      print('tokens choose scatter')
-      print(router_mask)
 
       expected_indices = jnp.array([
           [
@@ -366,7 +363,8 @@ class RoutingTest(parameterized.TestCase):
       ],
                                    dtype=jnp.int32)
 
-      np.testing.assert_allclose(router_mask.dispatch_indices, expected_indices)
+      np.testing.assert_allclose(router_indices.dispatch_indices,
+                                 expected_indices)
 
       expected_weights = jnp.array([
           [
@@ -387,10 +385,11 @@ class RoutingTest(parameterized.TestCase):
           ],
       ],
                                    dtype=jnp.float32)
-      np.testing.assert_allclose(router_mask.combine_weights, expected_weights)
+      np.testing.assert_allclose(router_indices.combine_weights,
+                                 expected_weights)
 
-      self.assertEqual(router_mask.auxiliary_loss, 1.1676432)
-      self.assertEqual(router_mask.router_z_loss, 0.48541257)
+      self.assertEqual(router_indices.auxiliary_loss, 1.1676432)
+      self.assertEqual(router_indices.router_z_loss, 0.48541257)
 
     with self.subTest(name='experts_choose_masked_router'):
       router_mask, _ = routing.ExpertsChooseMaskedRouter(
@@ -688,6 +687,7 @@ class RoutingTest(parameterized.TestCase):
         rng, (num_groups, num_tokens, num_experts), minval=-5, maxval=5)
 
     self.assertEqual(routing._router_z_loss(router_logits), 13.786719)
+
 
 if __name__ == '__main__':
   absltest.main()

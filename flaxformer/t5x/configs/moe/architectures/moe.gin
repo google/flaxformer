@@ -228,8 +228,6 @@ moe_layers.MoeLayer:
   expert = @expert/dense.MlpBlock()
   num_model_partitions = @partitioning.compute_num_model_partitions()
   dtype = %MOE_TRUNCATED_DTYPE
-  # *May* be helpful for large model parallel models. See MoeLayer docstring.
-  optimize_model_parallel_communications = False
 sparse_encoder/moe_layers.MoeLayer:
   router = @sparse_encoder/routing.TokensChooseMaskedRouter()
 sparse_decoder/moe_layers.MoeLayer:

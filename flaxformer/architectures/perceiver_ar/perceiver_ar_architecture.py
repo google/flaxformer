@@ -25,6 +25,7 @@ from typing import List, Optional, Tuple
 from flax import linen as nn
 import jax.numpy as jnp
 
+from flaxformer.architectures.perceiver_ar import attention
 from flaxformer.architectures.perceiver_ar import slicing
 from flaxformer.architectures.t5 import parallel_fused_decoder
 from flaxformer.architectures.t5 import t5_architecture
@@ -88,29 +89,26 @@ class PerceiverARTransparentLayerSequence:
     Returns:
       The encoded inputs <float>[..., seq_len, hidden_size].
     """
+    if num_latents and num_latents > self.num_latents:
+      raise ValueError(
+          f'Overridden num_latents ({num_latents}) must be <= self.num_latents '
+          f'({self.num_latents}).')
+    num_latents = num_latents or self.num_latents
 
     current_activations = inputs
     for layer in self.layers:
       layer_decoder_mask = decoder_mask
 
-      num_latents = num_latents or self.num_latents
-
-      if layer_decoder_mask is not None:
-        if layer_decoder_mask.shape[-2] != num_latents:
-          # Slice queries to match number of latents.
-          layer_decoder_mask = slicing.slice_sequences_vmap(
-              layer_decoder_mask,
-              sequence_lengths,
-              num_latents,
-              axis_within_vmap=-2)
-
-        if layer_decoder_mask.shape[-1] != current_activations.shape[-2]:
-          # If we're in the self-attention stack, then kv should also be sliced.
-          layer_decoder_mask = slicing.slice_sequences_vmap(
-              layer_decoder_mask,
-              sequence_lengths,
-              num_latents,
-              axis_within_vmap=-1)
+      if (layer_decoder_mask is not None and
+          layer_decoder_mask.shape[-1] != current_activations.shape[-2]):
+        # If we're in the self-attention stack, then kv should also be sliced.
+        # From: [batch, 1, num_latents, input_length]
+        # To: [batch, 1, num_latents, num_latents]
+        layer_decoder_mask = slicing.slice_sequences_vmap(
+            layer_decoder_mask,
+            sequence_lengths,
+            num_latents,
+            axis_within_vmap=-1)
 
       layer_prefill_lengths = prefill_lengths
       if prefill:
@@ -178,7 +176,7 @@ class Decoder(t5_architecture.Decoder):
       return PerceiverARTransparentLayerSequence(self.layers, self.num_latents)
     else:
       # Create a non-scanned version of lyrf to use for the first layer.
-      lyrf_notscanned = lambda: self.layer_factory(  # pylint: disable=g-long-lambda
+      lyrf_notscanned = lambda: self.layer_factory(  # pylint: disable=g-long-lambda  # pytype: disable=wrong-keyword-args
           shared_relative_position_bias=self.relpos_bias,
           scanned=False)
       lyrf_notscanned = t5_architecture.maybe_remat(
@@ -218,6 +216,10 @@ class Decoder(t5_architecture.Decoder):
     if sequence_lengths is None:
       raise ValueError('sequence_lengths must be supplied fo Perceiver AR.')
 
+    if num_latents and num_latents > self.num_latents:
+      raise ValueError(
+          f'Overridden num_latents ({num_latents}) must be <= self.num_latents '
+          f'({self.num_latents}).')
     num_latents = num_latents or self.num_latents
 
     # If encoded is not given, this block is decoder only and does not contain
@@ -283,6 +285,15 @@ class Decoder(t5_architecture.Decoder):
 
 class DecoderOnly(t5_architecture.DecoderOnly):
   """Perceiver AR Decoder-only model."""
+  # num_latents is actually required, but has to be marked as optional because
+  # we don't yet require Python 3.10, which provides keyword-only dataclasses.
+  num_latents: Optional[int] = None
+
+  def setup(self):
+    if self.num_latents is None:
+      raise ValueError('num_latents must be specified.')
+
+    super().setup()
 
   def __call__(self,
                decoder_input_tokens,
@@ -290,8 +301,48 @@ class DecoderOnly(t5_architecture.DecoderOnly):
                decoder_segment_ids=None,
                decoder_positions=None,
                decoder_causal_attention=None,
+               *,
+               enable_dropout: bool = True,
+               decode: bool = False,
+               max_decode_length: Optional[int] = None,
+               prefill: bool = False,
+               prefill_lengths: Optional[Array] = None,
+               num_latents: Optional[int] = None,
                **kwargs):
-    """Applies Perceiver AR Decoder-only model on the inputs."""
+    """Applies Perceiver AR Decoder-only model on the inputs.
+
+    This method requires both decoder_target_tokens and decoder_input_tokens,
+    which is typically a shifted version of the former. For a packed dataset, it
+
+    Packing is not currently supported for Perceiver AR.
+
+    Args:
+      decoder_input_tokens: input token to the decoder.
+      decoder_target_tokens: target token to the decoder.
+      decoder_segment_ids: decoder segmentation info for packed examples.
+      decoder_positions: decoder subsequence positions for packed examples.
+      decoder_causal_attention: a binary mask indicating the "inputs" portion of
+        the concatenated sequence for a prefix LM.
+      enable_dropout: Enables dropout if set to True.
+      decode: Whether to prepare and use an autoregressive cache.
+      max_decode_length: An optional integer specifying the maximum decoding
+        length. Note that this is only used for defining the relative position
+        embedding parameters.
+      prefill: Whether to run a partial sequence to prefill the cache.
+      prefill_lengths: The length of each partial sequence we are filling in the
+        cache, lengths are inferred from the mask if not provided.
+      num_latents: Used to override the number of output Perceiver AR latents
+        during decoding.
+      **kwargs: Additional keyword arguments to pass on to the decoder.
+
+    Returns:
+      logits array from LanguageModel.
+    """
+    if decode and prefill:
+      raise ValueError('Only one of `decode` and `prefill` can be set. Use '
+                       '`prefill` to pre-populate the cache for Prefix LMs '
+                       'before using `decode`')
+
     # Perceiver AR operation does not support packing.
     if decoder_positions is not None:
       raise NotImplementedError(
@@ -302,16 +353,43 @@ class DecoderOnly(t5_architecture.DecoderOnly):
           'decoder_segment_ids is provided, but Perceiver AR does not yet '
           'support packing.')
 
-    # Calculate sequence lengths based on target tokens.
-    sequence_lengths = (decoder_target_tokens > 0).sum(axis=-1).astype(
-        jnp.int32)
+    if num_latents and num_latents > self.num_latents:
+      raise ValueError(
+          f'Overridden num_latents ({num_latents}) must be <= self.num_latents '
+          f'({self.num_latents}).')
+    num_latents = num_latents or self.num_latents
 
-    return super().__call__(
-        decoder_input_tokens,
-        decoder_target_tokens,
-        decoder_segment_ids,
-        decoder_positions,
-        decoder_causal_attention,
+    # Calculate sequence lengths based on target tokens.
+    sequence_lengths = (decoder_target_tokens > 0).astype(
+        jnp.int32).sum(axis=-1)
+
+    if decode:
+      decoder_mask = None
+    else:
+      decoder_mask = attention.make_decoder_mask(
+          decoder_target_tokens=decoder_target_tokens,
+          sequence_lengths=sequence_lengths,
+          num_latents=num_latents,
+          dtype=self.dtype,
+          decoder_causal_attention=decoder_causal_attention)
+
+    # We reuse Decoder class, which can optionally takes in encoded and
+    # encoder_decoder_mask. These are used when Decoder is used in the context
+    # of encoder-decoder model. For LM, we don't have an encoder. So set these
+    # to None.
+    return self.decoder(  # pytype: disable=attribute-error
+        encoder_outputs=None,
+        decoder_input_tokens=decoder_input_tokens,
+        decoder_positions=decoder_positions,
+        decoder_mask=decoder_mask,
+        encoder_decoder_mask=None,
+        segment_ids=decoder_segment_ids,
+        enable_dropout=enable_dropout,
+        decode=decode,
+        max_decode_length=max_decode_length,
+        prefill=prefill,
+        prefill_lengths=prefill_lengths,
+        num_latents=num_latents,
         sequence_lengths=sequence_lengths,
         **kwargs)
 
@@ -360,6 +438,10 @@ class ParallelFusedDecoderLayer(parallel_fused_decoder.ParallelFusedDecoderLayer
       self, layer_input: Array, x: Array, logit_mask: Array, *,
       num_latents: Optional[Array],
       sequence_lengths: Array) -> Tuple[Array, Array, Array]:
+    if num_latents and num_latents > self.num_latents:
+      raise ValueError(
+          f'Overridden num_latents ({num_latents}) must be <= self.num_latents '
+          f'({self.num_latents}).')
     num_latents = num_latents or self.num_latents
 
     return _create_residuals_and_queries(
@@ -452,6 +534,10 @@ class DecoderLayer(t5_architecture.DecoderLayer):
       self, layer_input: Array, x: Array, logit_mask: Array, *,
       num_latents: Optional[Array],
       sequence_lengths: Array) -> Tuple[Array, Array, Array]:
+    if num_latents and num_latents > self.num_latents:
+      raise ValueError(
+          f'Overridden num_latents ({num_latents}) must be <= self.num_latents '
+          f'({self.num_latents}).')
     num_latents = num_latents or self.num_latents
 
     return _create_residuals_and_queries(

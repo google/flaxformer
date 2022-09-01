@@ -346,8 +346,6 @@ class MoeDecoderScanBlock(nn.Module, param_remapping.ParameterRemappable):
 class SparseEncoder(t5_architecture.Encoder):
   """A stack of encoder layers with configurable dense and sparse MLP modules.
 
-  This module does NOT support scanned layers.
-
   Although some attributes below default to None, they MUST be specified by the
   user. We are forced to use defaults here as the parent Encoder class contains
   attributes with default values.
@@ -436,8 +434,6 @@ class SparseEncoder(t5_architecture.Encoder):
 
 class SparseDecoder(t5_architecture.Decoder):
   """A stack of decoder layers with configurable dense and sparse MLP modules.
-
-  This module does NOT support scanned layers.
 
   Although some attributes below default to None, they MUST be specified by the
   user. We are forced to use defaults here as the parent Decoder class contains

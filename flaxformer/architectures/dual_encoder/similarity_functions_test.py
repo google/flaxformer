@@ -73,6 +73,18 @@ class SimilarityFunctionsTest(absltest.TestCase):
     # where both num_positive and num_negative equals BATCH_SIZE.
     self.assertEqual(logits.shape, (BATCH_SIZE, BATCH_SIZE + BATCH_SIZE))
 
+  def test_pointwise_ffnn_with_multiple_layers(self):
+    """Test the Multi-layer PointwiseFFNN has correct shapes."""
+    model = similarity_functions.PointwiseFFNN(
+        OUTPUT_DIM, dropout_factory=None, intermediate_features=[1024, 512, 55])
+
+    rng = random.PRNGKey(0)
+    key1, key2, key3 = random.split(rng, 3)
+    x = random.normal(key1, (BATCH_SIZE, 8))
+    y = random.normal(key2, (BATCH_SIZE, 8))
+    z, _ = model.init_with_output(key3, x, y, enable_dropout=False)
+    self.assertEqual(z.shape, (BATCH_SIZE, OUTPUT_DIM))
+
 
 if __name__ == "__main__":
   absltest.main()

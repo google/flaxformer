@@ -37,7 +37,3 @@ expert/dense.MlpBlock.activations = ('gelu', 'linear')
 
 # Switch Transformer XXL uses a separate output logits layer.
 moe_architecture.SparseDecoder.output_logits_factory = @output_logits/dense.DenseGeneral
-
-# For model parallelism for large models, we can reduce all-to-all
-# communication by partitioning inputs before transferring data.
-moe_layers.MoeLayer.optimize_model_parallel_communications = True

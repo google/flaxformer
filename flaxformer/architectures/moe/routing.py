@@ -14,7 +14,7 @@
 
 """Mixture of Experts routing mechanisms."""
 
-from typing import Any, Optional, Tuple
+from typing import Any, Iterable, Optional, Sequence, Tuple, Union
 
 import flax
 from flax import linen as nn
@@ -182,12 +182,19 @@ class RouterWeights(nn.Module):
     kernel_init: Initialization scheme for kernel.
     bias_init: Initialization scheme for bias.
     precision: XLA precision for array computations.
+    axis: Axes along which to apply the dense router weights transformation.
+      Defaults to final axis (typically the "hidden dimension").
+    kernel_axis_names: Logical axis names to use for kernel sharding.
+    reshape_kernel: Whether to reshape the kernel parameter to 2D for Adafactor.
   """
   use_bias: bool = True
   dtype: DType = jnp.bfloat16
   kernel_init: Initializer = default_kernel_init
   bias_init: Initializer = default_bias_init
   precision: jax.lax.Precision = jax.lax.Precision.DEFAULT
+  axis: Union[Iterable[int], int] = -1
+  kernel_axis_names: Sequence[str] = ('embed', 'unmodeled')
+  reshape_kernel: bool = True
 
   @nn.compact
   def __call__(self, token_inputs: Array, num_experts: int) -> Array:
@@ -202,13 +209,15 @@ class RouterWeights(nn.Module):
       Router logits with shape <float>[num_groups, group_size, num_experts].
     """
     return dense.DenseGeneral(
-        num_experts,
+        features=num_experts,
+        axis=self.axis,
         use_bias=self.use_bias,
         dtype=self.dtype,
         kernel_init=self.kernel_init,
         bias_init=self.bias_init,
         precision=self.precision,
-        kernel_axis_names=('embed', 'unmodeled'),  # Router weights replicated
+        kernel_axis_names=self.kernel_axis_names,
+        reshape_kernel=self.reshape_kernel,
         name='w')(
             token_inputs)
 

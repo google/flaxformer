@@ -881,6 +881,75 @@ class LongAttentionTest(parameterized.TestCase):
         side_relative_positions[positions_to_compare],
         expected_relative_positions[positions_to_compare])
 
+  def test_validate_long_att_call_params_positions_without_segment_ids(self):
+    # This test ensures the `allow_positions_without_segment_ids` option
+    # relaxes the default convention that requires both `positions` and
+    # `segment_ids` to be given together.
+    inputs = jnp.array([
+        [[.1, .2], [.3, .4], [.5, .6], [.7, .8], [0., 0.]],  #
+        [[.1, .2], [.3, .4], [.5, .6], [.7, .8], [.9, 0.]],  #
+    ])
+    inputs_mask = jnp.array([
+        [1, 1, 1, 1, 0],  #
+        [1, 1, 1, 1, 1],  #
+    ])
+    segment_ids = inputs_mask
+    positions = jnp.array([
+        [0, 1, 2, 3, 0],  #
+        [0, 1, 2, 3, 4],  #
+    ])
+
+    # allow_positions_without_segment_ids=False (default)
+    long_attention.validate_long_attention_call_parameter_shapes(
+        inputs=inputs,
+        inputs_mask=inputs_mask,
+        positions=positions,
+        segment_ids=segment_ids)
+    long_attention.validate_long_attention_call_parameter_shapes(
+        inputs=inputs,
+        inputs_mask=inputs_mask,
+        positions=None,
+        segment_ids=None)
+    with self.assertRaises(ValueError):
+      long_attention.validate_long_attention_call_parameter_shapes(
+          inputs=inputs,
+          inputs_mask=inputs_mask,
+          positions=positions,
+          segment_ids=None)
+    with self.assertRaises(ValueError):
+      long_attention.validate_long_attention_call_parameter_shapes(
+          inputs=inputs,
+          inputs_mask=inputs_mask,
+          positions=None,
+          segment_ids=segment_ids)
+
+    # allow_positions_without_segment_ids=True
+    long_attention.validate_long_attention_call_parameter_shapes(
+        inputs=inputs,
+        inputs_mask=inputs_mask,
+        positions=positions,
+        segment_ids=segment_ids,
+        allow_positions_without_segment_ids=True)
+    long_attention.validate_long_attention_call_parameter_shapes(
+        inputs=inputs,
+        inputs_mask=inputs_mask,
+        positions=None,
+        segment_ids=None,
+        allow_positions_without_segment_ids=True)
+    long_attention.validate_long_attention_call_parameter_shapes(
+        inputs=inputs,
+        inputs_mask=inputs_mask,
+        positions=positions,
+        segment_ids=None,
+        allow_positions_without_segment_ids=True)
+    with self.assertRaises(ValueError):
+      long_attention.validate_long_attention_call_parameter_shapes(
+          inputs=inputs,
+          inputs_mask=inputs_mask,
+          positions=None,
+          segment_ids=segment_ids,
+          allow_positions_without_segment_ids=True)
+
 
 if __name__ == '__main__':
   absltest.main()

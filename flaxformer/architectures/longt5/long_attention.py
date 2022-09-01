@@ -1240,8 +1240,12 @@ def _make_side_relpos(tokens_per_block: int,
 
 
 def validate_long_attention_call_parameter_shapes(
-    inputs: Array, inputs_mask: Array, segment_ids: Optional[Array],
-    positions: Optional[Array]) -> None:
+    inputs: Array,
+    inputs_mask: Array,
+    segment_ids: Optional[Array],
+    positions: Optional[Array],
+    *,
+    allow_positions_without_segment_ids: bool = False) -> None:
   """Validates the shapes of parameters to LongSelfAttention call methods.
 
   Args:
@@ -1253,6 +1257,9 @@ def validate_long_attention_call_parameter_shapes(
         info for packed examples.
       positions: Optional <int32>[batch, length] encoder input subsequence
         positions for packed examples.
+      allow_positions_without_segment_ids: If True, `segment_ids` can be None
+        while `positions` is given.  This will be the case for example if
+        packing is off but tokens appear in a non-sequential order.
 
   Raises:
     ValueError if any arrays fail validation.
@@ -1272,7 +1279,11 @@ def validate_long_attention_call_parameter_shapes(
                      f'inputs.shape[-2] ({inputs.shape[-2]}) == '
                      f'inputs_mask.shape[-1] ({inputs_mask[-1]})')
 
-  if (segment_ids is None) != (positions is None):
+  if allow_positions_without_segment_ids:
+    if positions is None and segment_ids is not None:
+      raise ValueError(
+          '`positions` must not be None when `segment_ids` is given')
+  elif (segment_ids is None) != (positions is None):
     raise ValueError(
         f'segment_ids and positions must either be both given or both None '
         f'but got `segment_ids is None`: {segment_ids is None}, '

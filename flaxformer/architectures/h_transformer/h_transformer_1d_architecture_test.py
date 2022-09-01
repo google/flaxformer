@@ -169,7 +169,8 @@ class DecoderOnlyTest(parameterized.TestCase):
       outputs.append(output)
 
     for other_output in outputs[1:]:
-      np.testing.assert_allclose(outputs[0], other_output, rtol=1.5e-5)
+      np.testing.assert_allclose(
+          outputs[0], other_output, atol=1e-5, rtol=1.5e-5)
 
   def test_decoder_shapes_per_layer(self):
     decoder = h_transformer_test_utils.config_decoder_only(
@@ -260,7 +261,8 @@ class DecoderTest(parameterized.TestCase):
       outputs.append(output)
 
     for other_output in outputs[1:]:
-      np.testing.assert_allclose(outputs[0], other_output, rtol=1.5e-5)
+      np.testing.assert_allclose(
+          outputs[0], other_output, atol=1e-5, rtol=1.5e-5)
 
   def test_decoder_shapes_per_layer(self):
     decoder = h_transformer_test_utils.config_decoder(
@@ -357,7 +359,8 @@ class EncoderDecoderTest(parameterized.TestCase):
       outputs.append(output)
 
     for other_output in outputs[1:]:
-      np.testing.assert_allclose(outputs[0], other_output, rtol=1.5e-5)
+      np.testing.assert_allclose(
+          outputs[0], other_output, atol=1e-5, rtol=1.5e-5)
 
   def test_encoder_decoder_shapes_per_layer(self):
     encoder_decoder = h_transformer_test_utils.config_encoder_decoder(

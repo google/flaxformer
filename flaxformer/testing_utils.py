@@ -14,17 +14,22 @@
 
 """Test-only library."""
 
+import functools
 import json
 import pathlib
 import re
-from typing import Any, Dict, Mapping
+import types
+from typing import Any, Dict, Mapping, Optional, Union
 
 from absl.testing import absltest
+from flax import linen as nn
 from flax import traverse_util
 from flax.core import frozen_dict
 import jax
+import jax.tree_util
 
 from flaxformer.architectures.common import param_remapping
+from flaxformer.types import PRNGKey
 
 
 def param_shapes(params: Mapping[str, Any]) -> Dict[str, Any]:
@@ -107,6 +112,31 @@ def format_params_shapes(params_shapes: Dict[str, Any]) -> str:
 
   json_formatted = json.dumps(params_shapes, indent=2)
   return re.sub(r'\[[^\[\]]+\]', re_compact_arrays, json_formatted)
+
+
+def abstract_init(
+    module: nn.Module,
+    *,
+    inputs: Mapping[str, Any],
+    static_kwargs: Mapping[str, Any] = types.MappingProxyType({}),
+    rngs: Optional[Union[PRNGKey, Dict[str, PRNGKey]]] = None,
+) -> jax.tree_util.PyTreeDef:
+  """Runs abstract initialization for a Flax module.
+
+  Args:
+    module: Flax module.
+    inputs: Runtime inputs.
+    static_kwargs: Static arguments to `module.init`, often `enable_dropout`
+      currently.
+    rngs: Optional override random number generators.
+
+  Returns:
+    Pytree with placeholder arrays that have shape and dtype information.
+  """
+  init_fn = functools.partial(module.init, **static_kwargs)
+  if rngs is None:
+    rngs = jax.random.PRNGKey(0)
+  return jax.eval_shape(init_fn, rngs, **inputs)
 
 
 class ExpectedJsonFiles:

@@ -190,7 +190,7 @@ class LongEncoderLayer(nn.Module, param_remapping.ParameterRemappable):
     attention_factory_kwargs = dict(relpos_bias=self.relpos_bias)
     if self.side_relpos_bias is not None:
       attention_factory_kwargs['side_relpos_bias'] = self.side_relpos_bias
-    self.attention = self.attention_factory(**attention_factory_kwargs)
+    self.attention = self.attention_factory(**attention_factory_kwargs)  # pytype: disable=wrong-keyword-args  # dict-kwargs
 
     if self.parallel:
       self.layer_norm = self.layer_norm_factory()
@@ -384,7 +384,7 @@ class LongEncoder(nn.Module, param_remapping.ParameterRemappable):
     if self.side_relpos_bias is not None:
       layer_kwargs['shared_side_relpos_bias'] = self.side_relpos_bias
 
-    lyrf = lambda: self.layer_factory(**layer_kwargs)
+    lyrf = lambda: self.layer_factory(**layer_kwargs)  # pytype: disable=wrong-keyword-args  # dict-kwargs
     lyrf = t5_architecture.maybe_remat(
         lyrf, self.layer_remat, self.scan_layers, static_argnums=(4,))
 

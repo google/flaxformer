@@ -34,8 +34,3 @@ moe_layers.MoeLayer.min_expert_capacity = 2
 moe_architecture.SparseDecoder.output_logits_factory = @output_logits/dense.DenseGeneral
 
 # As in the Base config, Switch Transformer C uses relu activations.
-
-# Experimental.
-# For model parallelism for large models, we can reduce all-to-all
-# communication by partitioning inputs before transferring data.
-# moe_layers.MoeLayer.optimize_model_parallel_communications = True

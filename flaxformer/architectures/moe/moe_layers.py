@@ -17,7 +17,7 @@
 """
 
 import functools
-from typing import Optional
+from typing import Optional, Tuple, Union
 
 from absl import logging
 from flax import linen as nn
@@ -61,13 +61,18 @@ class MoeLayer(nn.Module):
         an expert will process AND will indirectly increase the number of
         experts that a given token is routed to.
     eval_capacity_factor: As above, but used during evaluation.
-    expert: The actual expert, currently constrained to be an MlpBlock.
+    expert: The actual expert. Only MlpBlock and DenseGeneral are currently
+      supported.
     router: Token dispatch router. The router determines which tokens are
       dispatched to which expert, and how the expert outputs are combined.
     num_model_partitions: Size of the model parallel submesh. Model parallelism
       is used if num_model_partitions > 1.
     min_expert_capacity: Minimum token processing capacity for each expert.
     dropout_rate: Dropout rate for each expert.
+    input_hidden_dims_axes: Logical axis names to use for sharding constraints
+      applied to hidden dimensions of inputs (before experts are called).
+    output_hidden_dims_axes: Logical axis names to use for sharding constraints
+      applied to hidden dimensions of outputs (after experts are called).
     dtype: The numeric type (default: bfloat16). We recommend a truncated float
       type (e.g. bfloat16) to reduce all-to-all communication overhead. This
       numeric type is used for all computations, except the router, which always
@@ -82,11 +87,11 @@ class MoeLayer(nn.Module):
       the model/hidden dimension along the model-parallel axis for the experts.
       This same partition is used in Mesh Tensorflow:
       https://github.com/tensorflow/mesh/blob/6b31c0fc/mesh_tensorflow/transformer/moe.py#L487-L496
-      This flag is experimental because, depending on model size and hardware
-      topology, the reduction in all-to-all communication costs may be
-      outweighed by the increased costs from the new reshape and all-gather.
-      Current recommendation, roughly following Mesh Tensorflow, is only to use
-      this flag for large models.
+      However, depending on model size and hardware topology, the reduction in
+      all-to-all communication costs may be outweighed by the increased costs
+      from the new all-gather introduced to collect the partitioned inputs.
+      Current recommendation is to only use this flag if it clearly demonstrates
+      speed-ups; if in doubt, leave off.
     strict_group_size: If True, fail if unable to set the token group size equal
       to max_group_size. If False (default), the actual group size may be
       smaller than max_group_size for consistency with the number of experts
@@ -98,11 +103,13 @@ class MoeLayer(nn.Module):
   #  Fiddle to build different train vs eval model variants.
   train_capacity_factor: float
   eval_capacity_factor: float
-  expert: dense.MlpBlock
+  expert: Union[dense.MlpBlock, dense.DenseGeneral]
   router: routing.Router
   num_model_partitions: int
   min_expert_capacity: int = 4
   dropout_rate: float = 0.1
+  input_hidden_dims_axes: Tuple[str, ...] = ('embed',)
+  output_hidden_dims_axes: Tuple[str, ...] = ('embed',)
   dtype: DType = jnp.bfloat16
   split_params: bool = True
   precision: jax.lax.Precision = jax.lax.Precision.DEFAULT
@@ -111,11 +118,18 @@ class MoeLayer(nn.Module):
 
   def setup(self):
     """Verifies that the MoeLayer is correctly configured."""
-    if self.optimize_model_parallel_communications and self.num_model_partitions <= 1:
-      raise ValueError(
-          'optimize_model_parallel_communications=True with '
-          f'num_model_partitions={self.num_model_partitions} has no effect; '
-          f'please set optimize_model_parallel_communications=False.')
+    if self.optimize_model_parallel_communications:
+      if self.num_model_partitions <= 1:
+        raise ValueError(
+            'optimize_model_parallel_communications=True with '
+            f'num_model_partitions={self.num_model_partitions} has no effect; '
+            f'please set optimize_model_parallel_communications=False.')
+      if len(self.input_hidden_dims_axes) > 1 or len(
+          self.output_hidden_dims_axes) > 1:
+        raise ValueError(
+            'optimize_model_parallel_communications=True is not yet supported '
+            'for inputs or outputs with multiple hidden dimensions; '
+            'please set optimize_model_parallel_communications=False.')
 
     self.num_expert_replicas = _num_expert_replicas(self.num_experts,
                                                     self.num_model_partitions)
@@ -135,7 +149,7 @@ class MoeLayer(nn.Module):
 
     Args:
       inputs: Batch of input embeddings of shape <float>[batch_size, seq_length,
-        hidden_dim].
+        hidden_dims].
       decode: Whether to prepare and use an autoregressive cache.
       prefill: Whether to run a partial sequence to prefill the cache.
       prefill_lengths: The length of each partial sequence we are filling in the
@@ -144,12 +158,12 @@ class MoeLayer(nn.Module):
 
     Returns:
       Transformed inputs with same shape as inputs:
-      <float>[batch_size, seq_length, hidden_dim].
+      <float>[batch_size, seq_length, hidden_dims].
 
     Raises:
       ValueError if an unrecognized dispatch algorithm is given.
     """
-    batch_size, seq_length, hidden_dim = inputs.shape
+    batch_size, seq_length, *hidden_dims = inputs.shape
     num_tokens = batch_size * seq_length
 
     num_groups = _num_groups(num_tokens, self.max_group_size, self.num_experts,
@@ -167,7 +181,9 @@ class MoeLayer(nn.Module):
 
     # Reshape batch and sequence/token dimensions for expert routing.
     token_inputs = jnp.reshape(inputs,
-                               (num_groups, tokens_per_group, hidden_dim))
+                               (num_groups, tokens_per_group, *hidden_dims))
+    token_inputs = flax_partitioning.with_sharding_constraint(
+        token_inputs, ('batch', 'length', *self.input_hidden_dims_axes))
 
     if isinstance(self.router, routing.ScatterRouter):
       outputs = self._scatter_to_experts(
@@ -188,8 +204,10 @@ class MoeLayer(nn.Module):
     else:
       raise ValueError(f'Unrecognized router type: {self.router}')
 
-    # Return to original input shape.
-    result = outputs.reshape((batch_size, seq_length, hidden_dim))
+    # Return to batched shape.
+    result = outputs.reshape((batch_size, seq_length, *outputs.shape[2:]))
+    result = flax_partitioning.with_sharding_constraint(
+        result, ('batch', 'length', *self.output_hidden_dims_axes))
     return result
 
   def _scatter_to_experts(self, token_inputs: Array, enable_dropout: bool,
@@ -202,7 +220,7 @@ class MoeLayer(nn.Module):
     (3) Recombine individual expert outputs using combine weights.
 
     Args:
-      token_inputs: <float>[num_groups, tokens_per_group, hidden_dim] inputs to
+      token_inputs: <float>[num_groups, tokens_per_group, hidden_dims] inputs to
         send to experts.
       enable_dropout: If true, apply jitter noise during routing and dropout
         during expert computation.
@@ -210,9 +228,9 @@ class MoeLayer(nn.Module):
       **kwargs: Optional keyword arguments to pass to experts.
 
     Returns:
-      <float>[num_groups, tokens_per_group, hidden_dim] outputs from experts.
+      <float>[num_groups, tokens_per_group, hidden_dims] outputs from experts.
     """
-    num_groups, tokens_per_group, hidden_dim = token_inputs.shape
+    num_groups, tokens_per_group, *hidden_dims = token_inputs.shape
 
     router_indices = self.router(
         token_inputs,
@@ -231,9 +249,9 @@ class MoeLayer(nn.Module):
         router_indices.dispatch_indices[..., 0] < self.num_experts,
         router_indices.dispatch_indices[..., 1] < expert_capacity)
     successfully_routed = successfully_routed.reshape((num_groups, -1))
-    # Shape: [num_groups, tokens_per_group * num_selected_experts, hidden_dim].
+    # Shape: [num_groups, tokens_per_group * num_selected_experts, hidden_dims].
     masked_inputs = jnp.einsum(
-        '...th,...t->...th',
+        'gt...,gt->gt...',
         token_inputs,
         successfully_routed,
         precision=self.precision)
@@ -243,11 +261,11 @@ class MoeLayer(nn.Module):
         num_groups, -1, 2)
 
     # Scatter masked inputs.
-    shape = (self.num_experts, expert_capacity, hidden_dim)
+    shape = (self.num_experts, expert_capacity, *hidden_dims)
     # Note: scatter_nd can be slow under pjit on TPUs, presumably due to
     # suboptimal SPMD compilations. On TPUs, the recommendation is to use
     # MaskedRouter(s) instead.
-    # Shape: [num_groups, num_experts, expert_capacity, hidden_dim].
+    # Shape: [num_groups, num_experts, expert_capacity, hidden_dims].
     expert_inputs = jax.vmap(
         lambda i, x: scatter_utils.scatter_nd(i, x, shape))(
             flattened_dispatch_indices, masked_inputs)
@@ -255,18 +273,18 @@ class MoeLayer(nn.Module):
     expert_outputs = self._call_experts(expert_inputs, enable_dropout, **kwargs)
 
     # Gather outputs.
-    # Shape: [num_groups, tokens_per_group * num_selected_experts, hidden_dim].
+    # Shape: [num_groups, tokens_per_group * num_selected_experts, hidden_dims].
     expert_outputs = jax.vmap(lambda i, x: x[i[:, 0], i[:, 1]])(
         flattened_dispatch_indices, expert_outputs)
     # Separate out num_selected_experts dimension.
-    # Shape: [num_groups, tokens_per_group, num_selected_experts, hidden_dim].
+    # Shape: [num_groups, tokens_per_group, num_selected_experts, hidden_dims].
     expert_outputs = expert_outputs.reshape(
-        (num_groups, tokens_per_group, num_selected_experts, hidden_dim))
+        (num_groups, tokens_per_group, num_selected_experts, *hidden_dims))
 
-    # Shape: [num_groups, tokens_per_group, num_selected_experts, hidden_dim].
+    # Shape: [num_groups, tokens_per_group, num_selected_experts, hidden_dims].
     # Weighted sum of the outputs from the different experts.
     combined_outputs = jnp.einsum(
-        '...tkh,...tk->...th',
+        'gtk...,gtk->gt...',
         expert_outputs,
         router_indices.combine_weights,
         precision=self.precision)
@@ -318,7 +336,7 @@ class MoeLayer(nn.Module):
     (3) Recombine individual expert outputs using combine array.
 
     Args:
-      token_inputs: <float>[num_groups, tokens_per_group, hidden_dim] inputs to
+      token_inputs: <float>[num_groups, tokens_per_group, hidden_dims] inputs to
         send to experts.
       enable_dropout: If true, apply jitter noise during routing and dropout
         during expert computation.
@@ -326,9 +344,9 @@ class MoeLayer(nn.Module):
       **kwargs: Optional keyword arguments to pass to experts.
 
     Returns:
-      <float>[num_groups, tokens_per_group, hidden_dim] outputs from experts.
+      <float>[num_groups, tokens_per_group, hidden_dims] outputs from experts.
     """
-    num_groups, tokens_per_group, _ = token_inputs.shape
+    num_groups, tokens_per_group = token_inputs.shape[:2]
 
     router_mask = self.router(
         token_inputs,
@@ -336,18 +354,18 @@ class MoeLayer(nn.Module):
         expert_capacity,
         apply_jitter=enable_dropout)
 
-    # Shape: [num_groups, num_experts, expert_capacity, hidden_dim].
+    # Shape: [num_groups, num_experts, expert_capacity, hidden_dims].
     expert_inputs = jnp.einsum(
-        '...th,...tec->...ech',
+        'gt...,gtec->gec...',
         token_inputs,
         router_mask.dispatch_mask,
         precision=self.precision)
 
     expert_outputs = self._call_experts(expert_inputs, enable_dropout, **kwargs)
 
-    # Shape: [num_groups, tokens_per_group, hidden_dim]
+    # Shape: [num_groups, tokens_per_group, hidden_dims]
     combined_outputs = jnp.einsum(
-        '...ech,...tec->...th',
+        'gec...,gtec->gt...',
         expert_outputs,
         router_mask.combine_array,
         precision=self.precision)
@@ -402,43 +420,48 @@ class MoeLayer(nn.Module):
     overhead.
 
     Args:
-      inputs: <float>[num_groups, num_experts, expert_capacity, hidden_dim]
+      inputs: <float>[num_groups, num_experts, expert_capacity, hidden_dims]
         inputs to be dispatched to experts. Each slice across the first
         dimension is passed to a different expert.
       enable_dropout: Whether or not experts should apply dropout.
       **kwargs: Optional keyword arguments to pass to experts.
 
     Returns:
-      <float>[num_groups, num_experts, expert_capacity, hidden_dim] outputs from
-      expert computation.
+      <float>[num_groups, num_experts, expert_capacity, hidden_dims] outputs
+      from expert computation.
     """
-    num_groups, num_experts, capacity, hidden_dim = inputs.shape
+    num_groups, num_experts, capacity, *hidden_dims = inputs.shape
     inputs_dtype = inputs.dtype
     inputs = jax.lax.convert_element_type(inputs, self.dtype)
 
     # Send examples to their target devices.
+    # Note that the ordering of the logical mesh axes in these sharding
+    # constraints should map consistently to the same underlying mesh axes; i.e.
+    # 'batch' --> ('expert', 'data') and
+    # ('expert', 'expert_replica') --> ('expert', 'data').
     inputs = flax_partitioning.with_sharding_constraint(
-        inputs, ('batch', 'unmodeled', 'length', 'embed'))
+        inputs, ('batch', 'unmodeled', 'length', *self.input_hidden_dims_axes))
     inputs = inputs.reshape(num_experts, num_groups // num_experts, num_experts,
-                            capacity, hidden_dim)
+                            capacity, *hidden_dims)
     inputs = flax_partitioning.with_sharding_constraint(
-        inputs, ('expert', 'expert_replicas', 'unmodeled', 'length', 'embed'))
+        inputs, ('expert', 'expert_replicas', 'unmodeled', 'length',
+                 *self.input_hidden_dims_axes))
 
     if self.optimize_model_parallel_communications:
       # Partition inputs along model parallel submesh axis to reduce duplicate
       # all-to-all communications in model parallelism cases.
       # Shape: [num_experts, num_groups // num_experts, num_experts, capacity,
-      # hidden_dim, self.num_model_partitions]
+      # hidden_dims, self.num_model_partitions]
       inputs = self._swapaxes_with_sharding_constraint(inputs, 0, 2, capacity,
-                                                       hidden_dim)
+                                                       *hidden_dims)
     else:
       # Shape: [num_experts, num_groups // num_experts, num_experts, capacity,
-      # hidden_dim]
+      # hidden_dims]
       inputs = jnp.swapaxes(inputs, 0, 2)
 
-    inputs = inputs.reshape(num_experts, num_groups * capacity, hidden_dim)
+    inputs = inputs.reshape(num_experts, num_groups * capacity, *hidden_dims)
     inputs = flax_partitioning.with_sharding_constraint(
-        inputs, ('expert', 'expert_replicas', 'embed'))
+        inputs, ('expert', 'expert_replicas', *self.input_hidden_dims_axes))
 
     # Apply expert transformation.
 
@@ -448,66 +471,109 @@ class MoeLayer(nn.Module):
         flax_partitioning.vmap_with_axes,
         in_axes=(0,),
         variable_axes={'params': 0},  # Each expert has its own parameters
+        # Any mapped sharding constraints should be applied along 'expert' axis.
+        spmd_axis_name='expert',
         split_rngs={
-            # Whether or not to initialize each expert's params independently.
+            # Whether to initialize each expert's params independently.
             'params': self.split_params,
             'dropout': True  # Always use different dropout key for each expert
         },
         partitioning_axis_names={'params': 'expert'})
-    def layer_fn(mapped_expert, expert_inputs):
-      return mapped_expert(
-          expert_inputs, enable_dropout=enable_dropout, **kwargs)
+    def layer_fn(mapped_expert: nn.Module, expert_inputs: Array) -> Array:
+      return self._filter_inputs(
+          mapped_expert, expert_inputs, enable_dropout=enable_dropout, **kwargs)
 
     outputs = layer_fn(self.expert, inputs)
 
     # Send examples back to their original devices.
-    outputs = outputs.reshape(num_experts, num_groups, capacity, hidden_dim)
+    output_dims = outputs.shape[2:]
+    outputs = outputs.reshape(num_experts, num_groups, capacity, *output_dims)
     outputs = flax_partitioning.with_sharding_constraint(
-        outputs, ('expert', 'expert_replicas', 'length', 'embed'))
+        outputs,
+        ('expert', 'expert_replicas', 'length', *self.output_hidden_dims_axes))
     outputs = outputs.reshape(num_experts, num_groups // num_experts,
-                              num_experts, capacity, hidden_dim)
+                              num_experts, capacity, *output_dims)
 
     if self.optimize_model_parallel_communications:
       # Shape: [num_experts, num_groups // num_experts, num_experts, capacity,
-      # hidden_dim, self.num_model_partitions]
+      # *output_dims, self.num_model_partitions]
       outputs = self._swapaxes_with_sharding_constraint(outputs, 0, 2, capacity,
-                                                        hidden_dim)
+                                                        *output_dims)
     else:
       # Shape: [num_experts, num_groups // num_experts, num_experts, capacity,
-      # hidden_dim]
+      # *output_dims]
       outputs = jnp.swapaxes(outputs, 0, 2)
 
-    outputs = outputs.reshape(num_groups, num_experts, capacity, hidden_dim)
+    outputs = outputs.reshape(num_groups, num_experts, capacity, *output_dims)
     outputs = flax_partitioning.with_sharding_constraint(
-        outputs, ('batch', 'unmodeled', 'length', 'embed'))
+        outputs,
+        ('batch', 'unmodeled', 'length', *self.output_hidden_dims_axes))
 
     return jax.lax.convert_element_type(outputs, inputs_dtype)
 
+  def _filter_inputs(self,
+                     mapped_expert: nn.Module,
+                     expert_inputs: Array,
+                     enable_dropout: bool = True,
+                     **kwargs) -> Array:
+    """Forwards relevant inputs to `mapped_expert`.
+
+    We support MLP (dense.MlpBlock) and regular dense layers
+    (dense.DenseGeneral).
+
+    Args:
+      mapped_expert: Expert function that is vmapped.
+      expert_inputs: Prepared inputs that are mapped over. Shape:
+        <float>[num_experts, num_groups // num_experts, num_experts, capacity,
+        hidden_dims]
+      enable_dropout: Enables dropout if set to True. Only use for MLP experts.
+      **kwargs: Optional keyword arguments to pass to experts. Only passed to
+        MLP experts.
+
+    Returns:
+      Outputs from expert computation.
+
+    Raises:
+      ValueError for unsupported expert classes.
+    """
+    # TODO: Cleaner way of handling different expert call APIs?
+    if isinstance(self.expert, dense.DenseGeneral):
+      return mapped_expert(expert_inputs)
+    elif isinstance(self.expert, dense.MlpBlock):
+      return mapped_expert(
+          expert_inputs, enable_dropout=enable_dropout, **kwargs)
+    else:
+      raise ValueError(f'Unsupported expert class: {self.expert}.')
+
   def _sow_expert_metrics(self, auxiliary_loss: float, router_z_loss: float,
                           fraction_tokens_left_behind: float,
-                          router_confidence: float, expert_usage: float):
-    """Sows metrics to analyze expert routing."""
+                          router_confidence: float,
+                          expert_usage: float) -> None:
+    """Sows metrics to analyze expert routing.
 
-    def wrap_in_trivial_dimensions(metric: float) -> Array:
-      """Adds trivial dims for compatibility with other sown intermediates."""
-      return jnp.asarray(metric).reshape((1, 1))
+    Args:
+      auxiliary_loss: Load balancing loss.
+      router_z_loss: Loss to encourage smaller router logits.
+      fraction_tokens_left_behind: Fraction of tokens NOT routed to any expert.
+      router_confidence: Normalized sum of combine weights of those tokens which
+        were routed to experts.
+      expert_usage: Fraction of total expert capacity used to process tokens.
 
-    def reduce_metrics(a: Array, b: Array) -> Array:
-      """Sums diversity metrics with trivial dimensions."""
-      return wrap_in_trivial_dimensions(jnp.squeeze(a) + jnp.squeeze(b))
+    NOTE: We wrap scalar metric values in into a 2D array to play nicely with
+    the Flaxformer T5 architecture's scan invocation; see
+    https://github.com/google/flaxformer/blob/9712a16/flaxformer/architectures/t5/t5_architecture.py#L742
+    and
+    https://github.com/google/flaxformer/blob/9712a16/flaxformer/architectures/t5/t5_architecture.py#L973.
 
+    """
     for metric, value in [('auxiliary_loss', auxiliary_loss),
                           ('router_z_loss', router_z_loss),
                           ('fraction_tokens_left_behind',
                            fraction_tokens_left_behind),
                           ('router_confidence', router_confidence),
                           ('expert_usage', expert_usage)]:
-      self.sow(
-          'intermediates',
-          metric,
-          wrap_in_trivial_dimensions(value),
-          init_fn=lambda: wrap_in_trivial_dimensions(0.),
-          reduce_fn=reduce_metrics)
+      wrapped_metric_value = jnp.asarray(value).reshape((1, 1))
+      self.sow('intermediates', metric, wrapped_metric_value)
 
   def _swapaxes_with_sharding_constraint(self, array: Array, axis1: int,
                                          axis2: int, expert_capacity: int,
@@ -542,11 +608,11 @@ class MoeLayer(nn.Module):
                           hidden_dim // self.num_model_partitions,
                           self.num_model_partitions)
     array = flax_partitioning.with_sharding_constraint(
-        array, ('expert', 'expert_group', 'unmodeled', 'length', 'embed',
+        array, ('expert', 'expert_replicas', 'unmodeled', 'length', 'embed',
                 'expert_mlp'))
     array = jnp.swapaxes(array, axis1, axis2)
     return flax_partitioning.with_sharding_constraint(
-        array, ('expert', 'expert_group', 'unmodeled', 'length', 'embed',
+        array, ('expert', 'expert_replicas', 'unmodeled', 'length', 'embed',
                 'expert_mlp'))
 
 

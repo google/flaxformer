@@ -64,6 +64,9 @@ class PointwiseFFNN(nn.Module):
     use_product_feature: Whether add the product of two encodings.
     dropout_factory: A callable that returns a new dropout instance. This is
       applied after the feature concatenation.
+    intermediate_features: An iterable containing dimensions for intermediate
+      layers. These are the hidden layers before the last hidden layer.
+    intermediate_act_fn: An activation function for the hidden layers.
   """
   features: Union[Iterable[int], int]
   use_bias: bool = False
@@ -76,24 +79,47 @@ class PointwiseFFNN(nn.Module):
   use_difference_feature: bool = True
   use_product_feature: bool = True
   dropout_factory: Optional[Callable[[], nn.Module]] = None
+  intermediate_features: Optional[Union[Iterable[int], int]] = None
+  intermediate_act_fn: str = 'relu'
+
+  def _build_layer(self, f):
+    return dense.DenseGeneral(
+        axis=-1,
+        features=f,
+        bias_init=self.bias_init,
+        use_bias=self.use_bias,
+        dtype=self.dtype,
+        kernel_init=self.kernel_init,
+        kernel_axis_names=['embed', 'affinity'],
+        precision=self.precision)
 
   def setup(self):
-    # TODO: Support multple layers of feed-forward networks.
-    self.ffnn_layers = [
-        dense.DenseGeneral(
-            axis=-1,
-            features=self.features,
-            bias_init=self.bias_init,
-            use_bias=self.use_bias,
-            dtype=self.dtype,
-            kernel_init=self.kernel_init,
-            kernel_axis_names=['embed', 'affinity'],
-            precision=self.precision)
-    ]
-    self.activation = getattr(nn,
-                              self.act_fn) if self.act_fn != 'linear' else None
+    layer_features = self.intermediate_features or []
+    ffnn_layers = []
+
+    # Build the layers
+    for f in layer_features:
+      ffnn_layers.append(self._build_layer(f))
+    ffnn_layers.append(self._build_layer(self.features))
+    self.ffnn_layers = ffnn_layers
+
+    # dropout
     if self.dropout_factory:
       self.dropout = self.dropout_factory()  # pylint: disable=not-callable
+    else:
+      self.dropout = None
+
+    # intermediate activations
+    if self.intermediate_act_fn != 'linear':
+      self.intermediate_activation = getattr(nn, self.intermediate_act_fn)
+    else:
+      self.intermediate_activation = None
+
+    # final activation
+    if self.act_fn != 'linear':
+      self.final_activation = getattr(nn, self.act_fn)
+    else:
+      self.final_activation = None
 
   def __call__(self,
                encodings1: Array,
@@ -112,7 +138,6 @@ class PointwiseFFNN(nn.Module):
     Returns:
       A 1-D tensor of similarities with shape [batch size].
     """
-    # TODO: Extend to multiple fully-connected layers.
     inputs = []
     encodings1_dim = encodings1.shape[-1]
     encodings2_dim = encodings2.shape[-1]
@@ -141,9 +166,19 @@ class PointwiseFFNN(nn.Module):
     if self.dropout_factory:
       inputs = self.dropout(inputs, deterministic=not enable_dropout)
 
+    # Pass through the hidden layers
+    for layer in self.ffnn_layers[:-1]:
+      inputs = layer(inputs)
+      if self.intermediate_activation:
+        inputs = self.intermediate_activation(inputs)
+      if self.dropout:
+        inputs = self.dropout(inputs, deterministic=not enable_dropout)
+
+    # Pass through the final layer
     logits = self.ffnn_layers[-1](inputs)
-    if self.activation:
-      logits = self.activation(logits)
+    if self.final_activation:
+      logits = self.final_activation(logits)
+
     return logits
 
 
@@ -201,3 +236,37 @@ class BatchDotProduct(nn.Module):
     logits = jnp.dot(left_encodings, right_encodings.transpose())
 
     return logits
+
+
+class DoNothing(nn.Module):
+  """A do-nothing similarity function.
+
+  This is useful if we want to just take the embeddings and compute the losses
+  outside the forward module.
+  """
+
+  @nn.compact
+  def __call__(self,
+               left_encodings: Array,
+               right_encodings: Array,
+               right_additional_encodings: Optional[Array] = None,
+               **params) -> Tuple[Array, ...]:
+    """Compute the batch dot product similarity from two encodings.
+
+    Args:
+      left_encodings: Unused. A 2-D tensor of (left) encodings with shape [batch
+        size, encoding dim].
+      right_encodings: Unused. A 2-D tensor of (right) encodings with shape
+        [batch size, encoding dim].
+      right_additional_encodings: Unused. An optional 2-D tensor of (right)
+        additional encodings with shape [batch size, encoding dim].
+      **params: Unused. Hyperparameters dict.
+
+    Returns:
+      A single 0.
+    """
+    del left_encodings
+    del right_encodings
+    del right_additional_encodings
+    del params
+    return jnp.zeros((), dtype=jnp.int32)

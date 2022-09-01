@@ -25,7 +25,3 @@ NUM_DECODER_SPARSE_LAYERS = 6
 # Larger capacity factors.
 TRAIN_EXPERT_CAPACITY_FACTOR = 2.
 EVAL_EXPERT_CAPACITY_FACTOR = 4.
-
-# For model parallelism for large models, we can reduce all-to-all
-# communication by partitioning inputs before transferring data.
-moe_layers.MoeLayer.optimize_model_parallel_communications = True

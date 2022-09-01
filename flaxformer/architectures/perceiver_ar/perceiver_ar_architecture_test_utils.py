@@ -66,7 +66,8 @@ def test_make_decoder_only1(
         num_latents=num_latents,
     )
 
-  return perceiver_ar_architecture.DecoderOnly(decoder_factory=_make_decoder)
+  return perceiver_ar_architecture.DecoderOnly(
+      decoder_factory=_make_decoder, num_latents=num_latents)
 
 
 def make_parallel_fused_transformer_config(
@@ -143,4 +144,5 @@ def make_parallel_fused_transformer_config(
         dtype=dtype,
         num_latents=num_latents)
 
-  return perceiver_ar_architecture.DecoderOnly(decoder_factory=_make_decoder,)
+  return perceiver_ar_architecture.DecoderOnly(
+      decoder_factory=_make_decoder, num_latents=num_latents)

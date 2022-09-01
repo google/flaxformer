@@ -123,6 +123,65 @@ class MoeLayerTest(parameterized.TestCase):
     ]:
       self.assertIn(metric, state['intermediates'])
 
+  def test_dense_general_expert(self):
+    batch_size = 3
+    max_seq_length = 8
+    num_tokens = batch_size * max_seq_length
+    hidden_dims = (2, 3)  # 2D hidden_dims
+    num_experts = 4
+    rng = jax.random.PRNGKey(0)
+    output_features = (3, 12)
+
+    expert = dense.DenseGeneral(
+        axis=(-2, -1),  # Expects 2D hidden_dims
+        features=output_features,
+        use_bias=False,
+        reshape_kernel=False,
+        kernel_axis_names=('heads', 'or', 'tails', '?'))
+    router = routing.TokensChooseMaskedRouter(
+        # Specialized router weights for 2D hidden/output features of expert.
+        router_weights=routing.RouterWeights(
+            axis=(-2, -1),
+            kernel_axis_names=('heads', 'fused', 'unmodeled'),
+            reshape_kernel=False),
+        num_selected_experts=1,
+        dtype=jnp.float32,
+        jitter_noise=0.,
+        batch_prioritized_routing=False,
+        ignore_padding_tokens=False)
+
+    moe_layer = moe_layers.MoeLayer(
+        num_experts=num_experts,
+        max_group_size=num_tokens,
+        router=router,
+        train_capacity_factor=1.,
+        eval_capacity_factor=1.,
+        expert=expert,
+        num_model_partitions=1,
+        split_params=False)  # Ensures all experts start with same params
+    init_batch = {
+        'inputs':
+            jnp.ones((batch_size, max_seq_length, *hidden_dims), jnp.float32)
+    }
+    params = init_layer_variables(rng, moe_layer, init_batch)['params']
+
+    expected_keys = {'router', 'expert'}
+    self.assertEqual(params.keys(), expected_keys)
+
+    dropout_rng, jitter_rng, init_rng = jax.random.split(rng, num=3)
+    inputs = jax.random.uniform(
+        init_rng, (batch_size, max_seq_length, *hidden_dims),
+        minval=-10,
+        maxval=10)
+    actual_outputs = moe_layer.apply({'params': params},
+                                     rngs={
+                                         'dropout': dropout_rng,
+                                         'jitter': jitter_rng
+                                     },
+                                     inputs=inputs)
+    self.assertEqual(actual_outputs.shape,
+                     (batch_size, max_seq_length, *output_features))
+
   def test_scatter_mask_dispatch_equal(self):
     batch_size = 4
     max_seq_length = 4

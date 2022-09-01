@@ -238,7 +238,7 @@ class EncoderDecoderTest(absltest.TestCase):
 
     # Check scan_layers=False results
     np.testing.assert_allclose(output1, output2, rtol=2e-4)
-    np.testing.assert_allclose(output1, output3, rtol=1.5e-5)
+    np.testing.assert_allclose(output1, output3, atol=1e-5, rtol=1.5e-5)
     # Check scan_layers=True results
     np.testing.assert_allclose(output4, output5, rtol=1.5e-5)
 

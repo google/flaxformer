@@ -37,12 +37,10 @@ ScanIn = partitioning.ScanIn  # used in t5_architecture.py
 def core_remat_static(fn,
                       variables=True,
                       rngs=True,
-                      concrete=False,
                       prevent_cse=True,
                       static_argnums=(),
                       policy=None):
   """Flax functional core remat version with static_argnums."""
-
   static_argnums = tuple(sorted(static_argnums))
 
   def _repack_remat_args(dyn_args, static_args):
@@ -62,8 +60,7 @@ def core_remat_static(fn,
     static_args = tuple(x for i, x in enumerate(args) if i in static_argnums)
     dyn_args = tuple(x for i, x in enumerate(args) if i not in static_argnums)
 
-    @functools.partial(
-        jax.remat, concrete=concrete, prevent_cse=prevent_cse, policy=policy)
+    @functools.partial(jax.remat, prevent_cse=prevent_cse, policy=policy)
     @functools.wraps(fn)
     def rematted(variable_groups, rng_groups, *dyn_args):
       args = _repack_remat_args(dyn_args, static_args)
@@ -80,7 +77,6 @@ def core_remat_static(fn,
 def remat(target,
           variables=True,
           rngs=True,
-          concrete=False,
           prevent_cse=True,
           static_argnums=(),
           policy=None,
@@ -91,7 +87,6 @@ def remat(target,
       target,
       variables=variables,
       rngs=rngs,
-      concrete=concrete,
       prevent_cse=prevent_cse,
       static_argnums=static_argnums,
       policy=policy,

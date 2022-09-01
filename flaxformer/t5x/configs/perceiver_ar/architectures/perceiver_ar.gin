@@ -37,6 +37,7 @@ NUM_ENCODER_LAYERS = 0
 # Architecture
 ARCHITECTURE = @perceiver_ar_architecture.DecoderOnly()
 perceiver_ar_architecture.DecoderOnly:
+  num_latents = %NUM_LATENTS
   decoder_factory = @perceiver_ar_architecture.Decoder
   dtype = %ACTIVATION_DTYPE
 
