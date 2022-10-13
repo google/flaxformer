@@ -143,9 +143,10 @@ def with_sharding_migration(
   """
   if activation_partitioning_dims is not None:
     last_tb = traceback.extract_stack()[-2]
-    logging.warning(
+    logging.log_first_n(
+        logging.WARNING,
         'In %s:%d, activation_partitioning_dims was set, but it '
-        'is deprecated and will be removed soon.', last_tb.filename,
+        'is deprecated and will be removed soon.', 10, last_tb.filename,
         last_tb.lineno)
     if not flax_partitioning.get_axis_rules():
       # If logical axis rules are not present, fall back to old behavior.

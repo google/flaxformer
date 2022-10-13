@@ -37,6 +37,10 @@ from t5x.contrib.moe import partitioning
 NUM_MODEL_PARTITIONS = None
 MODEL_PARALLEL_SUBMESH = None
 
+# Override to decrease the number of expert partitions. This is only an upper
+# bound. Must be <= NUM_EXPERTS.
+NUM_EXPERT_PARTITIONS = %NUM_EXPERTS
+
 # Must be overridden.
 NUM_ENCODER_LAYERS = %gin.REQUIRED
 NUM_DECODER_LAYERS = %gin.REQUIRED
@@ -227,6 +231,7 @@ moe_layers.MoeLayer:
   eval_capacity_factor = %EVAL_EXPERT_CAPACITY_FACTOR
   expert = @expert/dense.MlpBlock()
   num_model_partitions = @partitioning.compute_num_model_partitions()
+  num_expert_partitions = %NUM_EXPERT_PARTITIONS
   dtype = %MOE_TRUNCATED_DTYPE
 sparse_encoder/moe_layers.MoeLayer:
   router = @sparse_encoder/routing.TokensChooseMaskedRouter()

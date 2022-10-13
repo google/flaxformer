@@ -65,6 +65,8 @@ class MoeLayer(nn.Module):
       supported.
     router: Token dispatch router. The router determines which tokens are
       dispatched to which expert, and how the expert outputs are combined.
+    num_expert_partitions: Specifies the upper bound for size of the expert
+      parallel submesh. This must be <= the number of experts.
     num_model_partitions: Size of the model parallel submesh. Model parallelism
       is used if num_model_partitions > 1.
     min_expert_capacity: Minimum token processing capacity for each expert.
@@ -105,6 +107,7 @@ class MoeLayer(nn.Module):
   eval_capacity_factor: float
   expert: Union[dense.MlpBlock, dense.DenseGeneral]
   router: routing.Router
+  num_expert_partitions: int
   num_model_partitions: int
   min_expert_capacity: int = 4
   dropout_rate: float = 0.1
@@ -131,7 +134,12 @@ class MoeLayer(nn.Module):
             'for inputs or outputs with multiple hidden dimensions; '
             'please set optimize_model_parallel_communications=False.')
 
-    self.num_expert_replicas = _num_expert_replicas(self.num_experts,
+    if self.num_expert_partitions > self.num_experts:
+      raise ValueError(
+          f'The number of expert partitions ({self.num_expert_partitions}) '
+          f'cannot be greater than the number of experts ({self.num_experts}).')
+
+    self.num_expert_replicas = _num_expert_replicas(self.num_expert_partitions,
                                                     self.num_model_partitions)
 
   @nn.compact
@@ -435,12 +443,23 @@ class MoeLayer(nn.Module):
     inputs = jax.lax.convert_element_type(inputs, self.dtype)
 
     # Send examples to their target devices.
+
     # Note that the ordering of the logical mesh axes in these sharding
     # constraints should map consistently to the same underlying mesh axes; i.e.
     # 'batch' --> ('expert', 'data') and
     # ('expert', 'expert_replica') --> ('expert', 'data').
     inputs = flax_partitioning.with_sharding_constraint(
         inputs, ('batch', 'unmodeled', 'length', *self.input_hidden_dims_axes))
+
+    if self.num_expert_partitions != num_experts:
+      # Explicitly extract dimension of size self.num_expert_partitions, along
+      # which to partition experts.
+      inputs = inputs.reshape(self.num_expert_partitions,
+                              num_groups // num_experts,
+                              num_experts // self.num_expert_partitions,
+                              num_experts, capacity, *hidden_dims)
+      inputs = jnp.swapaxes(inputs, 1, 2)
+
     inputs = inputs.reshape(num_experts, num_groups // num_experts, num_experts,
                             capacity, *hidden_dims)
     inputs = flax_partitioning.with_sharding_constraint(
@@ -503,6 +522,19 @@ class MoeLayer(nn.Module):
       # Shape: [num_experts, num_groups // num_experts, num_experts, capacity,
       # *output_dims]
       outputs = jnp.swapaxes(outputs, 0, 2)
+
+    outputs = flax_partitioning.with_sharding_constraint(
+        outputs, ('expert', 'expert_replicas', 'unmodeled', 'length',
+                  *self.output_hidden_dims_axes))
+
+    if self.num_expert_partitions != num_experts:
+      # Explicitly extract dimension of size self.num_expert_partitions, along
+      # which to partition experts.
+      outputs = outputs.reshape(self.num_expert_partitions,
+                                num_experts // self.num_expert_partitions,
+                                num_groups // num_experts, num_experts,
+                                capacity, *output_dims)
+      outputs = jnp.swapaxes(outputs, 1, 2)
 
     outputs = outputs.reshape(num_groups, num_experts, capacity, *output_dims)
     outputs = flax_partitioning.with_sharding_constraint(
@@ -687,20 +719,22 @@ def _num_groups(num_tokens: int,
   return num_groups
 
 
-def _num_expert_replicas(num_experts: int, num_model_partitions: int) -> int:
+def _num_expert_replicas(num_expert_partitions: int,
+                         num_model_partitions: int) -> int:
   """Infer the number of expert replicas.
 
-  This computation assumes that we are using the T5X MoePjitPartitioner. In
-  particular, we assume that experts are replicated along the 'data' axis, whose
-  dimension is inversely proportional to the number of experts and number of
-  model parallel dimensions. See also
-  https://github.com/google-research/t5x/blob/main/t5x/contrib/moe/partitioning.py.
+  This computation assumes that the underlying mesh has shape ['data', 'expert',
+  'model']. We assume that experts are replicated along the 'data' axis, whose
+  dimension is inversely proportional to the size of the expert and model
+  parallel submeshes.
 
   Args:
-    num_experts: Total number of experts, across all devices.
+    num_expert_partitions: Size of expert parallel submesh.
     num_model_partitions: Size of model parallel submesh.
 
   Returns:
     Number of replicas per expert.
   """
-  return max(1, jax.device_count() // (num_experts * num_model_partitions))
+  return max(
+      1,
+      jax.device_count() // (num_expert_partitions * num_model_partitions))

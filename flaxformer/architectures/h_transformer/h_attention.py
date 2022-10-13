@@ -83,9 +83,11 @@ class HierarchicalAttention(nn.Module, metaclass=abc.ABCMeta):
       Setting this to False when the number of heads is not divisible your
       activation num_partitions.
     use_rpb: Whether the hierarchical relative position bias is used.
+      Default to True because this setting delivers better results.
     use_multihead_rpb: Whether the hierarchical relative position bias is
       different among multihead. If False, the same relative position bias is
-      shared among all heads.
+      shared among all heads. Default to True so the bias array is stored in 2D
+      shape for the compatibility with Adafactor optimizer.
     conv_kernel_size: Convolution kernel size used for coarsening and
       interpolation. This is not used during coarsening if the attribute
       coarsening_kernel_type=ConvKernelType.LINEAR since the kernel size is
@@ -111,7 +113,7 @@ class HierarchicalAttention(nn.Module, metaclass=abc.ABCMeta):
   rescale_logits: bool = False
   sharding_over_head_dimension: bool = True
   use_rpb: bool = True
-  use_multihead_rpb: bool = False
+  use_multihead_rpb: bool = True
   conv_kernel_size: int = 2
   coarsening_kernel_type: th.ConvKernelType = th.ConvKernelType.CONST
   interpolation_kernel_type: th.ConvKernelType = th.ConvKernelType.CONST
@@ -217,7 +219,7 @@ class HierarchicalAttention(nn.Module, metaclass=abc.ABCMeta):
 
     if self.output_projection:
       # The updated_value no longer has multihead shape due to interpolation.
-      # So this is simply a 2D dense projection.
+      # So it is a simple 2D projection. This means reshape_kernel=False.
       return dense.DenseGeneral(
           features=self.out_features or inputs_q.shape[-1],
           axis=-1,
@@ -226,7 +228,7 @@ class HierarchicalAttention(nn.Module, metaclass=abc.ABCMeta):
           use_bias=self.use_bias,
           dtype=self.dtype,
           precision=self.precision,
-          reshape_kernel=not self.split_head_kernel,
+          reshape_kernel=False,
           kernel_axis_names=['kv', 'embed'],
           name='out')(  # pytype: disable=wrong-arg-types
               updated_value)

@@ -2,7 +2,7 @@
     "layers_0": {
       "attention": {
         "1d_relative_position_bias": {
-          "1d_relative_position_bias": [7, 1]
+          "1d_relative_position_bias": [7, 4]
         },
         "key_multihead_projection": {
           "bias": [512],
@@ -39,7 +39,7 @@
     "layers_1": {
       "attention": {
         "1d_relative_position_bias": {
-          "1d_relative_position_bias": [7, 1]
+          "1d_relative_position_bias": [7, 4]
         },
         "key_multihead_projection": {
           "bias": [512],
@@ -76,7 +76,7 @@
     "layers_2": {
       "attention": {
         "1d_relative_position_bias": {
-          "1d_relative_position_bias": [7, 1]
+          "1d_relative_position_bias": [7, 4]
         },
         "key_multihead_projection": {
           "bias": [512],

@@ -27,7 +27,6 @@ import jax.numpy as jnp
 
 from flaxformer.architectures.perceiver_ar import attention
 from flaxformer.architectures.perceiver_ar import slicing
-from flaxformer.architectures.t5 import parallel_fused_decoder
 from flaxformer.architectures.t5 import t5_architecture
 from flaxformer.types import Array
 
@@ -96,14 +95,16 @@ class PerceiverARTransparentLayerSequence:
     num_latents = num_latents or self.num_latents
 
     current_activations = inputs
-    for layer in self.layers:
+    for i, layer in enumerate(self.layers):
       layer_decoder_mask = decoder_mask
 
       if (layer_decoder_mask is not None and
           layer_decoder_mask.shape[-1] != current_activations.shape[-2]):
+        assert i > 0
         # If we're in the self-attention stack, then kv should also be sliced.
         # From: [batch, 1, num_latents, input_length]
         # To: [batch, 1, num_latents, num_latents]
+        assert layer_decoder_mask.shape[-1] >= current_activations.shape[-2]
         layer_decoder_mask = slicing.slice_sequences_vmap(
             layer_decoder_mask,
             sequence_lengths,
@@ -124,6 +125,7 @@ class PerceiverARTransparentLayerSequence:
       layer_logit_mask = logit_mask
       if (layer_logit_mask is not None and
           layer_logit_mask.shape[-2] != current_activations.shape[-2]):
+        assert layer_logit_mask.shape[-2] >= current_activations.shape[-2]
         layer_logit_mask = slicing.slice_sequences_vmap(
             layer_logit_mask,
             sequence_lengths,
@@ -259,6 +261,7 @@ class Decoder(t5_architecture.Decoder):
     # Slice logit_mask to match output positions.
     if logit_mask is not None:
       if logit_mask.shape[-2] != decoder_outputs.shape[-2]:
+        assert logit_mask.shape[-2] >= decoder_outputs.shape[-2]
         logit_mask = slicing.slice_sequences_vmap(
             logit_mask,
             sequence_lengths,
@@ -360,8 +363,8 @@ class DecoderOnly(t5_architecture.DecoderOnly):
     num_latents = num_latents or self.num_latents
 
     # Calculate sequence lengths based on target tokens.
-    sequence_lengths = (decoder_target_tokens > 0).astype(
-        jnp.int32).sum(axis=-1)
+    sequence_lengths = slicing.get_sequence_lengths(
+        decoder_target_tokens=decoder_target_tokens)
 
     if decode:
       decoder_mask = None
@@ -394,18 +397,20 @@ class DecoderOnly(t5_architecture.DecoderOnly):
         **kwargs)
 
 
-def _create_residuals_and_queries(
+def create_residuals_and_queries(
     layer_input: Array, x: Array, logit_mask, *, num_latents: Optional[Array],
-    sequence_lengths: Array) -> Tuple[Array, Array, Array]:
+    sequence_lengths: Array) -> Tuple[Array, Array, Optional[Array], Array]:
   """Slice layer inputs to get versions to use as queries."""
   if x.shape[-2] > num_latents:
     layer_input_residuals = slicing.slice_sequences_xmap(
         layer_input, sequence_lengths, num_latents, axis_within_xmap=0)
     x_queries = slicing.slice_sequences_xmap(
         x, sequence_lengths, num_latents, axis_within_xmap=0)
+    query_offset = slicing.sequence_slice_start(sequence_lengths, num_latents)
   else:
     layer_input_residuals = layer_input
     x_queries = x
+    query_offset = None
 
   if logit_mask.shape[-2] > num_latents:
     logit_mask_queries = slicing.slice_sequences_vmap(
@@ -413,198 +418,4 @@ def _create_residuals_and_queries(
   else:
     logit_mask_queries = logit_mask
 
-  return layer_input_residuals, x_queries, logit_mask_queries
-
-
-class ParallelFusedDecoderLayer(parallel_fused_decoder.ParallelFusedDecoderLayer
-                               ):
-  """Decoder layer subclass that includes Perceiver AR slicing."""
-  # num_latents is actually required, but has to be marked as optional because
-  # we don't yet require Python 3.10, which provides keyword-only dataclasses.
-  num_latents: Optional[int] = None
-
-  def setup(self):
-    if self.num_latents is None:
-      raise ValueError('num_latents must be specified.')
-
-    super().setup()
-
-    if self.relpos_bias is not None:
-      raise NotImplementedError(
-          'Relative position bias support not yet implemented for Perceiver AR.'
-      )
-
-  def _create_residuals_and_queries(
-      self, layer_input: Array, x: Array, logit_mask: Array, *,
-      num_latents: Optional[Array],
-      sequence_lengths: Array) -> Tuple[Array, Array, Array]:
-    if num_latents and num_latents > self.num_latents:
-      raise ValueError(
-          f'Overridden num_latents ({num_latents}) must be <= self.num_latents '
-          f'({self.num_latents}).')
-    num_latents = num_latents or self.num_latents
-
-    return _create_residuals_and_queries(
-        layer_input=layer_input,
-        x=x,
-        logit_mask=logit_mask,
-        num_latents=num_latents,
-        sequence_lengths=sequence_lengths)
-
-  @nn.nowrap
-  def __call__(self,
-               targets,
-               encoded,
-               decoder_mask=None,
-               encoder_decoder_mask=None,
-               *,
-               logit_mask=None,
-               enable_dropout: bool = True,
-               decode: bool = False,
-               max_decode_length: Optional[int] = None,
-               prefill: bool = False,
-               prefill_lengths: Optional[Array] = None,
-               num_latents: Optional[int] = None,
-               sequence_lengths: Optional[Array] = None) -> Array:
-    """Applies ParallelFusedDecoder1DBlock module.
-
-    Redefined here to spell out the arguments that will be passed as **kwargs
-    to the superclass. This allows flaxformer to know the order of arguments
-    for static_argnums.
-
-    Args:
-      targets: Input data for decoder with shape [batch_size,
-        decoder_seq_length, decoder_hidden_size].
-      encoded: required to be None, block is Decoder only, only kept for
-        __call__ signature uniformity.
-      decoder_mask: decoder self-attention mask.
-      encoder_decoder_mask: required to be None, block is Decoder only, only
-        kept for __call__ signature uniformity.
-      logit_mask: a mask (e.g., padding logit mask) to be applied to the
-        attention logits.
-      enable_dropout: Enables dropout if set to True.
-      decode: Whether to prepare and use an autoregressive cache.
-      max_decode_length: An optional integer specifying the maximum decoding
-        length. Note that this is only used for defining the relative position
-        embedding parameters.
-      prefill: Whether to run a partial sequence to prefill the cache.
-      prefill_lengths: The length of each partial sequence we are filling in the
-        cache, lengths are inferred from the mask if not provided.
-      num_latents: Used to override the number of output Perceiver AR latents
-        during decoding.
-      sequence_lengths: Lengths of all target sequences. Required for Perceiver
-        AR operation.
-
-    Returns:
-      Output after transformer encoder-decoder block.
-    """
-    return super().__call__(
-        targets,
-        encoded,
-        decoder_mask,
-        encoder_decoder_mask,
-        logit_mask=logit_mask,
-        enable_dropout=enable_dropout,
-        decode=decode,
-        max_decode_length=max_decode_length,
-        prefill=prefill,
-        prefill_lengths=prefill_lengths,
-        num_latents=num_latents,
-        sequence_lengths=sequence_lengths)
-
-
-class DecoderLayer(t5_architecture.DecoderLayer):
-  """Decoder layer subclass that includes Perceiver AR slicing."""
-  # num_latents is actually required, but has to be marked as optional because
-  # we don't yet require Python 3.10, which provides keyword-only dataclasses.
-  num_latents: Optional[int] = None
-
-  def setup(self):
-    if self.num_latents is None:
-      raise ValueError('num_latents must be specified.')
-
-    super().setup()
-
-    if self.relpos_bias is not None:
-      raise NotImplementedError(
-          'Relative position bias support not yet implemented for Perceiver AR.'
-      )
-
-  def _create_residuals_and_queries(
-      self, layer_input: Array, x: Array, logit_mask: Array, *,
-      num_latents: Optional[Array],
-      sequence_lengths: Array) -> Tuple[Array, Array, Array]:
-    if num_latents and num_latents > self.num_latents:
-      raise ValueError(
-          f'Overridden num_latents ({num_latents}) must be <= self.num_latents '
-          f'({self.num_latents}).')
-    num_latents = num_latents or self.num_latents
-
-    return _create_residuals_and_queries(
-        layer_input=layer_input,
-        x=x,
-        logit_mask=logit_mask,
-        num_latents=num_latents,
-        sequence_lengths=sequence_lengths)
-
-  @nn.nowrap
-  def __call__(self,
-               targets,
-               encoded,
-               decoder_mask=None,
-               encoder_decoder_mask=None,
-               *,
-               logit_mask=None,
-               enable_dropout: bool = True,
-               decode: bool = False,
-               max_decode_length: Optional[int] = None,
-               prefill: bool = False,
-               prefill_lengths: Optional[Array] = None,
-               num_latents: Optional[int] = None,
-               sequence_lengths: Optional[Array] = None) -> Array:
-    """Applies EncoderDecoder1DBlock module.
-
-    Redefined here to spell out the arguments that will be passed as **kwargs
-    to the superclass. This allows flaxformer to know the order of arguments
-    for static_argnums.
-
-    Args:
-      targets: Input data for decoder with shape [batch_size,
-        decoder_seq_length, decoder_hidden_size].
-      encoded: Input data from encoder with shape [batch_size,
-        encoder_seq_length, decoder_hidden_size]. If None, block is Decoder
-        only.
-      decoder_mask: decoder self-attention mask.
-      encoder_decoder_mask: encoder-decoder attention mask with shape [
-        batch_size, 1, decoder_seq_length, encoder_seq_length].
-      logit_mask: a mask (e.g., padding logit mask) to be applied to the
-        attention logits.
-      enable_dropout: Enables dropout if set to True.
-      decode: Whether to prepare and use an autoregressive cache.
-      max_decode_length: An optional integer specifying the maximum decoding
-        length. Note that this is only used for defining the relative position
-        embedding parameters.
-      prefill: Whether to run a partial sequence to prefill the cache.
-      prefill_lengths: The length of each partial sequence we are filling in the
-        cache, lengths are inferred from the mask if not provided.
-      num_latents: Used to override the number of output Perceiver AR latents
-        during decoding.
-      sequence_lengths: Lengths of all target sequences. Required for Perceiver
-        AR operation.
-
-    Returns:
-      Output after transformer encoder-decoder block.
-    """
-    return super().__call__(
-        targets,
-        encoded,
-        decoder_mask,
-        encoder_decoder_mask,
-        logit_mask=logit_mask,
-        enable_dropout=enable_dropout,
-        decode=decode,
-        max_decode_length=max_decode_length,
-        prefill=prefill,
-        prefill_lengths=prefill_lengths,
-        num_latents=num_latents,
-        sequence_lengths=sequence_lengths)
+  return layer_input_residuals, x_queries, query_offset, logit_mask_queries

@@ -367,6 +367,14 @@ class EncoderDecoderTest(absltest.TestCase):
     # Check the shape of tracked intermediates.
     intermediates = modified_variables['intermediates']
 
+    encoder_input_tokens = intermediates['encoder']['input_tokens_ids']
+    self.assertLen(encoder_input_tokens, 1)
+    self.assertEqual(encoder_input_tokens[0].shape, (16, 8))
+
+    final_encoder_outputs = intermediates['encoder']['final_encoder_outputs']
+    self.assertLen(final_encoder_outputs, 1)
+    self.assertEqual(final_encoder_outputs[0].shape, (16, 8, 13))
+
     pre_logits = intermediates['decoder']['pre_logits_layer']
     self.assertLen(pre_logits, 1)
     self.assertEqual(pre_logits[0].shape, (16, 8, 13))

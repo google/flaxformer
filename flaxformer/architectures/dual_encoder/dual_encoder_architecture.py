@@ -105,6 +105,56 @@ def _call_optional(
   return fn() if fn else None
 
 
+class PassThroughMultimodalEncoder(nn.Module,
+                                   param_remapping.ParameterRemappable):
+  """An multimodal encoder that passes through the inputs."""
+  shared_token_embedder: Optional[embedding.Embed] = None
+
+  def __call__(self,
+               batch: Mapping[str, Array],
+               enable_dropout: bool = True) ->...:
+    """Passes through the inputs.
+
+    The features are embedded separately and concatenated to form the input
+    sequence to pass to the Transformer.
+
+    Zero-valued inputs are considered padding when populating the
+    self-attention mask.
+
+    Args:
+      batch: feature name to values
+      enable_dropout: whether dropout is disabled
+
+    Returns:
+      triple of (encoded values, encoder mask, encoder segment ids)
+    """
+    # The passthrough multimodal encoder is supposed to only take in embedding
+    # features and ignores the text token inputs.
+    batch_encoder = {
+        k: v for (k, v) in batch.items() if not k.startswith('targets') and
+        not k.endswith('_loss_weights') and not k.endswith('text_tokens')
+    }
+
+    # Concatenate embedding features without linearization.
+    # TODO: Support optional linearization for input embeddings.
+    batch_encoder_embeddings = list(batch_encoder.values())
+    # Each encoder_embedding has the shape (num_embeddings, embedding_size).
+    batch_encoder_embeddings_lengths = set([
+        encoder_embedding.shape[-1]
+        for encoder_embedding in batch_encoder_embeddings
+    ])
+    if len(batch_encoder_embeddings_lengths) != 1:
+      raise ValueError(
+          'Input embeddings for PassThroughMultimodalEncoder should have the same embedding dimensions!'
+      )
+    # After concatenation, it becomes (all_num_embeddings, embedding_size).
+    encoder_outputs = jnp.concatenate(batch_encoder_embeddings, axis=0)
+    encoder_mask = multimodal_feature.attention_mask_for_zeros(
+        list(batch_encoder.values()))
+
+    return (encoder_outputs, encoder_mask, None)
+
+
 class DualEncoder(nn.Module, param_remapping.ParameterRemappable):
   """Dual encoder model.
 
@@ -217,6 +267,26 @@ class DualEncoder(nn.Module, param_remapping.ParameterRemappable):
   def encoder_embedder(self) -> embedding.MultiEmbed:
     return self.encoder.embedder
 
+  def compute_similarity(self,
+                         left_encoded: Array,
+                         right_encoded: Array,
+                         right_negative_encoded: Optional[Array] = None,
+                         enable_dropout: bool = True) -> Array:
+    if right_negative_encoded is not None:
+      if self.similarity_layer.name != 'batch_dot_product':
+        raise ValueError(
+            f'"{self.similarity_layer.name}" does not support negative inputs. '
+            'Only batch_dot_product similarity function supports negative inputs.'
+        )
+      return self.similarity_layer(
+          left_encoded,
+          right_encoded,
+          right_negative_encoded,
+          enable_dropout=enable_dropout)
+
+    return self.similarity_layer(
+        left_encoded, right_encoded, enable_dropout=enable_dropout)
+
   def __call__(self,
                left_encoder_input_tokens,
                right_encoder_input_tokens,
@@ -278,19 +348,11 @@ class DualEncoder(nn.Module, param_remapping.ParameterRemappable):
           'DualEncoder instances without a similarity layer may only be used for encoding inputs, not comparing them.'
       )
 
-    if right_negative_encoder_input_tokens is not None:
-      if self.similarity_layer.name not in ['batch_dot_product']:
-        raise ValueError(
-            'Only the batch dot product similarity function supports negative inputs.'
-        )
-      logits = self.similarity_layer(
-          left_encoded,
-          right_encoded,
-          right_negative_encoded,
-          enable_dropout=enable_dropout)
-    else:
-      logits = self.similarity_layer(
-          left_encoded, right_encoded, enable_dropout=enable_dropout)
+    logits = self.compute_similarity(
+        left_encoded,
+        right_encoded,
+        right_negative_encoded,
+        enable_dropout=enable_dropout)
 
     return DualEncoderOutput(left_encoded, right_encoded, logits)
 

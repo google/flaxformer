@@ -202,5 +202,6 @@ class RelativePositionBiasesTest(absltest.TestCase):
     np.testing.assert_array_equal(cached_bias, state['cache']['cached_bias'])
 
 
+
 if __name__ == '__main__':
   absltest.main()

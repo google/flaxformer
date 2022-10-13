@@ -16,14 +16,12 @@
 
 # pylint: disable=attribute-defined-outside-init,g-bare-generic
 
-import abc
 import functools
-from typing import Callable, Optional, Tuple, Union
+from typing import Callable, Optional, Tuple
 
 from aqt.jax_legacy.jax import flax_layers as aqt_flax_layers
 from aqt.jax_legacy.jax import quant_config as aqt_config
 from aqt.jax_legacy.jax import quantization as aqt
-import chex
 from flax import linen as nn
 from flax.core import variables
 from flax.linen import initializers
@@ -32,413 +30,61 @@ from flax.linen.linear import default_kernel_init
 from flax.training import common_utils
 import jax
 from jax import lax
-from jax import random
 import jax.numpy as jnp
 
 from flaxformer import activation_partitioning
+from flaxformer.architectures.perceiver_ar import rotary_embedding
 from flaxformer.components import dense
 from flaxformer.components import embedding
+from flaxformer.components.attention import dense_attention
 from flaxformer.types import Array
 from flaxformer.types import DType
 from flaxformer.types import Initializer
-from flaxformer.types import PRNGKey
 
 
 RulesFallback = flax_partitioning.RulesFallback
 
 
-def _softmax_with_extra_logit(
-    x: Array,
-    axis: Optional[Union[int, Tuple[int, ...]]] = -1,
-) -> Array:
-  """Softmax function with an additional virtual logit equal to zero.
-
-  For compatibility with some previously trained models.
-
-  This is equivalent to adding one to the denominator.
-  In the context of attention, it allows you to attend to nothing.
-
-  Args:
-    x: input to softmax
-    axis: the axis or axes along which the softmax should be computed. Either an
-      integer or a tuple of integers.
-
-  Returns:
-    A tensor with the same shape as x.
-  """
-  m = jnp.maximum(lax.stop_gradient(x.max(axis, keepdims=True)), 0)
-  unnormalized = jnp.exp(x - m)
-  # After shift, extra logit is -m. Add exp(-m) to denominator
-  denom = unnormalized.sum(axis, keepdims=True) + jnp.exp(-m)
-  return unnormalized / denom
-
-
-#------------------------------------------------------------------------------
-# Fast attention layers.
-#------------------------------------------------------------------------------
-
-
-def dot_product_attention_weights(query: Array,
-                                  key: Array,
-                                  bias: Optional[Array] = None,
-                                  broadcast_dropout: bool = True,
-                                  rescale_logits: bool = False,
-                                  dropout_rng: Optional[PRNGKey] = None,
-                                  dropout_rate: float = 0.,
-                                  enable_dropout: bool = True,
-                                  dtype: DType = jnp.float32,
-                                  precision: Optional[lax.Precision] = None,
-                                  use_extra_logit: bool = False,
-                                  float32_logits: bool = False) -> Array:
-  """Computes dot-product attention weights given query and key.
-
-  This is the core function for applying attention based on
-  https://arxiv.org/abs/1706.03762. It calculates the attention weights given
-  query and key.
-
-  Note: query and key needn't have any batch dimensions.
-
-  Args:
-    query: queries for calculating attention with shape of `[batch..., q_length,
-      num_heads, qk_depth_per_head]`.
-    key: keys for calculating attention with shape of `[batch..., kv_length,
-      num_heads, qk_depth_per_head]`.
-    bias: bias for the attention weights. This should be broadcastable to the
-      shape `[batch..., num_heads, q_length, kv_length]` This can be used for
-      incorporating causal masks, padding masks, proximity bias, etc.
-    broadcast_dropout: bool: use a broadcasted dropout along batch dims.
-    rescale_logits: bool. Whether to rescale `query` logits by 1/sqrt(depth_kq).
-    dropout_rng: JAX PRNGKey: to be used for dropout
-    dropout_rate: dropout rate
-    enable_dropout: bool, whether to apply dropout
-    dtype: the dtype of the computation (default: float32)
-    precision: numerical precision of the computation see `jax.lax.Precision`
-      for details.
-    use_extra_logit: whether to include a virtual extra logit equal to zero.
-    float32_logits: bool, if True then compute logits in float32 to avoid
-      numerical issues with bfloat16.
-
-  Returns:
-    Attention weights of shape `[batch..., num_heads, q_length, kv_length]`.
-  """
-  assert query.ndim == key.ndim, 'q, k must have same rank.'
-  assert query.shape[:-3] == key.shape[:-3], ('q, k batch dims must match.')
-  assert query.shape[-2] == key.shape[-2], ('q, k num_heads must match.')
-  assert query.shape[-1] == key.shape[-1], 'q, k depths must match.'
-
-  # Calculate attention matrix.
-  # NOTE: T5 does not explicitly rescale the attention logits by
-  #       1/sqrt(depth_kq)!  This is folded into the initializers of the
-  #       linear transformations, which is equivalent under Adafactor.
-  if rescale_logits:
-    depth = query.shape[-1]
-    query = query / jnp.sqrt(depth).astype(dtype)
-
-  # Casting logits and softmax computation for float32 for model stability.
-  if float32_logits:
-    query = query.astype(jnp.float32)
-    key = key.astype(jnp.float32)
-
-  # `attn_weights` shape is (batch..., num_heads, q_length, kv_length)
-  attn_weights = jnp.einsum(
-      '...qhd,...khd->...hqk', query, key, precision=precision)
-
-  # Apply attention bias: masking, dropout, proximity bias, etc.
-  if bias is not None:
-    attn_weights = attn_weights + bias.astype(attn_weights.dtype)
-
-  # Normalize the attention weights.
-  attn_weights = (_softmax_with_extra_logit if use_extra_logit else
-                  jax.nn.softmax)(attn_weights).astype(dtype)
-
-  # Apply attention dropout.
-  if enable_dropout and dropout_rate > 0.:
-    keep_prob = 1.0 - dropout_rate
-    if broadcast_dropout:
-      # T5 broadcasts along the "length" dim, but unclear which one that
-      # corresponds to in positional dimensions here, assuming query dim.
-      dropout_shape = list(attn_weights.shape)
-      dropout_shape[-2] = 1
-      keep = random.bernoulli(dropout_rng, keep_prob, dropout_shape)
-      keep = jnp.broadcast_to(keep, attn_weights.shape)
-    else:
-      keep = random.bernoulli(dropout_rng, keep_prob, attn_weights.shape)
-    multiplier = (
-        keep.astype(attn_weights.dtype) / jnp.asarray(keep_prob, dtype=dtype))
-    attn_weights = attn_weights * multiplier
-
-  return attn_weights
-
-
-def apply_dot_product_attention_weights_to_values(
-    attention_weights: Array,
-    value: Array,
-    precision: Optional[lax.Precision] = None) -> Array:
-  """Applies the attention weights to the values.
-
-  Args:
-    attention_weights: The attention weights, e.g., computed by
-      dot_product_attention_weights.
-    value: The values to apply the attention to.
-    precision: numerical precision of the computation see `jax.lax.Precision`
-      for details.
-
-  Returns:
-    The weighted sum over values for each query position.
-  """
-  return jnp.einsum(
-      '...hqk,...khd->...qhd', attention_weights, value, precision=precision)
-
-
-def dot_product_attention(query: Array,
-                          key: Array,
-                          value: Array,
-                          bias: Optional[Array] = None,
-                          broadcast_dropout: bool = True,
-                          rescale_logits: bool = False,
-                          dropout_rng: Optional[PRNGKey] = None,
-                          dropout_rate: float = 0.,
-                          enable_dropout: bool = True,
-                          dtype: DType = jnp.float32,
-                          precision: Optional[lax.Precision] = None,
-                          use_extra_logit: bool = False,
-                          float32_logits: bool = False):
-  """Computes dot-product attention given query, key, and value.
-
-  This is the core function for applying attention based on
-  https://arxiv.org/abs/1706.03762. It calculates the attention weights given
-  query and key and combines the values using the attention weights.
-
-  Note: query, key, value needn't have any batch dimensions.
-
-  Args:
-    query: queries for calculating attention with shape of `[batch..., q_length,
-      num_heads, qk_depth_per_head]`.
-    key: keys for calculating attention with shape of `[batch..., kv_length,
-      num_heads, qk_depth_per_head]`.
-    value: values to be used in attention with shape of `[batch..., kv_length,
-      num_heads, v_depth_per_head]`.
-    bias: bias for the attention weights. This should be broadcastable to the
-      shape `[batch..., num_heads, q_length, kv_length]` This can be used for
-      incorporating causal masks, padding masks, proximity bias, etc.
-    broadcast_dropout: bool: use a broadcasted dropout along batch dims.
-    rescale_logits: bool. Whether to rescale `query` logits by 1/sqrt(depth_kq).
-    dropout_rng: JAX PRNGKey: to be used for dropout
-    dropout_rate: dropout rate
-    enable_dropout: bool, whether to apply dropout
-    dtype: the dtype of the computation (default: float32)
-    precision: numerical precision of the computation see `jax.lax.Precision`
-      for details.
-    use_extra_logit: whether to include a virtual extra logit equal to zero.
-    float32_logits: bool, if True then compute logits in float32 to avoid
-      numerical issues with bfloat16.
-
-  Returns:
-    Output of shape `[batch..., length, num_heads, v_depth_per_head]`.
-  """
-  assert key.ndim == query.ndim == value.ndim, 'q, k, v must have same rank.'
-  assert query.shape[:-3] == key.shape[:-3] == value.shape[:-3], (
-      'q, k, v batch dims must match.')
-  assert query.shape[-2] == key.shape[-2] == value.shape[-2], (
-      'q, k, v num_heads must match.')
-  assert key.shape[-3] == value.shape[-3], 'k, v lengths must match.'
-  assert query.shape[-1] == key.shape[-1], 'q, k depths must match.'
-
-  attn_weights = dot_product_attention_weights(
-      query,
-      key,
-      bias=bias,
-      broadcast_dropout=broadcast_dropout,
-      rescale_logits=rescale_logits,
-      dropout_rng=dropout_rng,
-      dropout_rate=dropout_rate,
-      enable_dropout=enable_dropout,
-      dtype=dtype,
-      precision=precision,
-      use_extra_logit=use_extra_logit,
-      float32_logits=float32_logits)
-
-  return apply_dot_product_attention_weights_to_values(
-      attn_weights, value, precision=precision)
-
-
-def dot_product_attention_multiquery(query: Array,
-                                     key: Array,
-                                     value: Array,
-                                     bias: Optional[Array] = None,
-                                     broadcast_dropout: bool = True,
-                                     rescale_logits: bool = False,
-                                     dropout_rng: Optional[PRNGKey] = None,
-                                     dropout_rate: float = 0.,
-                                     enable_dropout: bool = True,
-                                     dtype: DType = jnp.float32,
-                                     precision: Optional[lax.Precision] = None,
-                                     use_extra_logit: bool = False,
-                                     float32_logits: bool = False) -> Array:
-  """Computes dot-product mutiquery-attention given query, key, and value.
-
-  This is a variant of the multi-head dot product attention introduced in
-  https://arxiv.org/abs/1706.03762 and implemented in `dot_product_attention`.
-  In this function, the key and the value have 1 head whereas query has 1 or
-  more heads. This variant is called "multi-query" attention.
-
-  It calculates the attention weights given query and key and combines the
-  values using the attention weights.
-
-  Note: query, key, value needn't have any batch dimensions.
-
-  Args:
-    query: queries for calculating attention with shape of `[batch..., q_length,
-      num_heads, qk_depth_per_head]`.
-    key: keys for calculating attention with shape of `[batch..., kv_length,
-      qk_depth_per_head]`.
-    value: values to be used in attention with shape of `[batch..., kv_length,
-      v_depth_per_head]`.
-    bias: bias for the attention weights. This should be broadcastable to the
-      shape `[batch..., num_heads, q_length, kv_length]` This can be used for
-      incorporating causal masks, padding masks, proximity bias, etc.
-    broadcast_dropout: bool: use a broadcasted dropout along batch dims.
-    rescale_logits: bool. Whether to rescale `query` logits by 1/sqrt(depth_kq).
-    dropout_rng: JAX PRNGKey: to be used for dropout
-    dropout_rate: dropout rate
-    enable_dropout: bool, whether to apply dropout
-    dtype: the dtype of the computation (default: float32)
-    precision: numerical precision of the computation see `jax.lax.Precision`
-      for details.
-    use_extra_logit: whether to include a virtual extra logit equal to zero.
-    float32_logits: bool, if True then compute logits in float32 to avoid
-      numerical issues with bfloat16.
-
-  Returns:
-    Output of shape `[batch..., length, num_heads, v_depth_per_head]`.
-  """
-  assert key.ndim == value.ndim, (
-      f'k, v must have same rank. key: {key.shape}, value: {value.shape}')
-  assert query.shape[:-3] == key.shape[:-2] == value.shape[:-2], (
-      f'q, k, v batch dims must match. query: {query.shape}')
-
-  assert key.shape[-2] == value.shape[-2], 'k, v lengths must match.'
-  assert query.shape[-1] == key.shape[-1], 'q, k depths must match.'
-
-  # calculate attention matrix
-  # NOTE: T5 does not explicitly rescale the attention logits by
-  #       1/sqrt(depth_kq)!  This is folded into the initializers of the
-  #       linear transformations, which is equivalent under Adafactor.
-  if rescale_logits:
-    depth = query.shape[-1]
-    query = query / jnp.sqrt(depth).astype(dtype)
-
-  # Casting logits and softmax computation for float32 for model stability.
-  if float32_logits:
-    query = query.astype(jnp.float32)
-    key = key.astype(jnp.float32)
-
-  # attn weight shape is (batch..., num_heads, q_length, kv_length)
-  attn_weights = jnp.einsum(
-      '...qhd,...kd->...hqk', query, key, precision=precision)
-
-  # apply attention bias: masking, dropout, proximity bias, etc.
-  if bias is not None:
-    attn_weights = attn_weights + bias.astype(attn_weights.dtype)
-
-  # normalize the attention weights
-  attn_weights = (_softmax_with_extra_logit if use_extra_logit else
-                  jax.nn.softmax)(attn_weights).astype(dtype)
-
-  # apply attention dropout
-  if enable_dropout and dropout_rate > 0.:
-    keep_prob = 1.0 - dropout_rate
-    if broadcast_dropout:
-      # T5 broadcasts along the "length" dim, but unclear which one that
-      # corresponds to in positional dimensions here, assuming query dim.
-      dropout_shape = list(attn_weights.shape)
-      dropout_shape[-2] = 1
-      keep = random.bernoulli(dropout_rng, keep_prob, dropout_shape)
-      keep = jnp.broadcast_to(keep, attn_weights.shape)
-    else:
-      keep = random.bernoulli(dropout_rng, keep_prob, attn_weights.shape)
-    multiplier = (
-        keep.astype(attn_weights.dtype) / jnp.asarray(keep_prob, dtype=dtype))
-    attn_weights = attn_weights * multiplier
-
-  # return weighted sum over values for each query position
-  return jnp.einsum(
-      '...hqk,...kd->...qhd', attn_weights, value, precision=precision)
-
-
-class DenseAttention(metaclass=abc.ABCMeta):
-  """API for attention classes that compute a full key-query attention matrix.
-
-  This allows for 2D matrices masking or re-weighting the attention between
-  specific key/query pairs.
-  """
-
-  @abc.abstractmethod
-  def __call__(self,
-               inputs_q: Array,
-               inputs_kv: Array,
-               mask: Optional[Array] = None,
-               bias: Optional[Array] = None,
-               *,
-               precomputed_qkv: Optional[Array] = None,
-               decode: bool = False,
-               enable_dropout: bool = True) -> Array:
-    """Applies attention on the input data.
-
-    Args:
-      inputs_q: input queries of shape `[batch_sizes..., q_length, q_features]`.
-      inputs_kv: key/values of shape `[batch_sizes..., kv_length, kv_features]`.
-      mask: attention mask of shape `[batch_sizes..., num_heads, q_length,
-        kv_length]`.
-      bias: attention bias of shape `[batch_sizes..., num_heads, q_length,
-        kv_length]`.
-      precomputed_qkv: when using fused implementations QKVO are defined outside
-        this module and we only use the module to run computations.
-      decode: Whether to prepare and use an autoregressive cache.
-      enable_dropout: Enables dropout if set to True.
-
-    Returns:
-      output of shape `[batch_sizes..., length, features]`.
-    """
-
-
-class MultiHeadDotProductAttention(nn.Module, DenseAttention):
+class MultiHeadDotProductAttention(nn.Module, dense_attention.DenseAttention):
   """Multi-head dot-product attention.
 
-    Attributes:
-      num_heads: number of attention heads. Features (i.e. inputs_q.shape[-1])
-        should be divisible by the number of heads.
-      use_bias: bool: whether pointwise QKVO dense transforms use bias.
-      dtype: the dtype of the computation (default: float32)
-      qkv_features: dimension of the key, query, and value.
-      head_dim: dimension of each head. If unspecified, it defaults to
-        qkv_features // num_heads.
-      out_features: dimension of the last projection
-      broadcast_dropout: bool: use a broadcasted dropout along batch dims.
-      dropout_rate: dropout rate
-      precision: numerical precision of the computation see `jax.lax.Precision`
-        for details.
-      kernel_init: initializer for the kernel of the Dense layers.
-      qkv_kernel_init: optional initializer for the fused qkv kernel. If None,
-        kernel_init will be used instead.
-      kv_kernel_init: optional initializer for the fused kv kernel. If None,
-        kernel_init will be used instead.
-      q_kernel_init: optional initializer for the query (q) kernel. If None,
-        kernel_init will be used instead.
-      bias_init: initializer for the bias of the Dense layers.
-      attention_fn: dot_product_attention or compatible function. Accepts query,
-        key, value, and returns output of shape `[bs, dim1, dim2, ..., dimN,,
-        num_heads, value_channels]``
-      use_extra_logit: whether to include a virtual extra logit equal to zero.
-      float32_logits: bool, if True then compute logits in float32 to avoid
-        numerical issues with bfloat16.
-      output_projection: Project the output of `attention_fn` to `out_features`.
-        If False, returns the output of `attention_fn` without a projection.
-      sow_intermediates: whether to track intermediates using Module.sow.
-      split_head_kernel: whether to store QKVO variables with a split head
-        dimension.
-      kernels_to_fuse: Which kernels to fuse, if any.
-      use_rotary_embedding: whether to use rotary embeddings.
+  Forked from the main Flaxformer implementation to allow passing in query
+  position offset information.
+
+  Attributes:
+    num_heads: number of attention heads. Features (i.e. inputs_q.shape[-1])
+      should be divisible by the number of heads.
+    use_bias: bool: whether pointwise QKVO dense transforms use bias.
+    dtype: the dtype of the computation (default: float32)
+    qkv_features: dimension of the key, query, and value.
+    head_dim: dimension of each head. If unspecified, it defaults to
+      qkv_features // num_heads.
+    out_features: dimension of the last projection
+    broadcast_dropout: bool: use a broadcasted dropout along batch dims.
+    dropout_rate: dropout rate
+    precision: numerical precision of the computation see `jax.lax.Precision`
+      for details.
+    kernel_init: initializer for the kernel of the Dense layers.
+    qkv_kernel_init: optional initializer for the fused qkv kernel. If None,
+      kernel_init will be used instead.
+    kv_kernel_init: optional initializer for the fused kv kernel. If None,
+      kernel_init will be used instead.
+    q_kernel_init: optional initializer for the query (q) kernel. If None,
+      kernel_init will be used instead.
+    bias_init: initializer for the bias of the Dense layers.
+    attention_fn: dot_product_attention or compatible function. Accepts query,
+      key, value, and returns output of shape `[bs, dim1, dim2, ..., dimN,,
+      num_heads, value_channels]``
+    use_extra_logit: whether to include a virtual extra logit equal to zero.
+    float32_logits: bool, if True then compute logits in float32 to avoid
+      numerical issues with bfloat16.
+    output_projection: Project the output of `attention_fn` to `out_features`.
+      If False, returns the output of `attention_fn` without a projection.
+    sow_intermediates: whether to track intermediates using Module.sow.
+    split_head_kernel: whether to store QKVO variables with a split head
+      dimension.
+    kernels_to_fuse: Which kernels to fuse, if any.
+    use_rotary_embedding: whether to use rotary embeddings.
   """
   num_heads: int
   use_bias: bool
@@ -456,9 +102,9 @@ class MultiHeadDotProductAttention(nn.Module, DenseAttention):
   bias_init: Initializer = initializers.zeros
   rescale_logits: bool = False
   compute_attention_fn: Callable[..., Array] = staticmethod(
-      dot_product_attention_weights)
+      dense_attention.dot_product_attention_weights)
   apply_attention_fn: Callable[..., Array] = staticmethod(
-      apply_dot_product_attention_weights_to_values)
+      dense_attention.apply_dot_product_attention_weights_to_values)
   use_extra_logit: bool = False
   float32_logits: bool = False
   output_projection: bool = True
@@ -616,7 +262,8 @@ class MultiHeadDotProductAttention(nn.Module, DenseAttention):
                decode: bool = False,
                enable_dropout: bool = True,
                prefill: bool = False,
-               prefill_lengths: Optional[Array] = None) -> Array:
+               prefill_lengths: Optional[Array] = None,
+               query_position_offset: Optional[Array] = None) -> Array:
     """Applies multi-head dot product attention on the input data.
 
     Projects the inputs into multi-headed query, key, and value vectors,
@@ -652,6 +299,10 @@ class MultiHeadDotProductAttention(nn.Module, DenseAttention):
       prefill: Whether to run a partial sequence to prefill the cache.
       prefill_lengths: The length of each partial sequence we are filling in the
         cache, lengths are inferred from the mask if not provided.
+      query_position_offset: Optional query position offset to use when
+        calculating rotary encoding. Useful when the length of the queries is
+        different than the length of the keys and the query position does not
+        start at 0.
 
     Returns:
       If output_projection is True, then output of shape
@@ -659,8 +310,8 @@ class MultiHeadDotProductAttention(nn.Module, DenseAttention):
       features if not provided. If output_projection is False, then output of
       shape `[batch_sizes..., length, num_heads, head_dim]`.
     """
-    validate_dense_attention_call_parameter_shapes(inputs_q, inputs_kv, mask,
-                                                   bias, self.num_heads)
+    dense_attention.validate_dense_attention_call_parameter_shapes(
+        inputs_q, inputs_kv, mask, bias, self.num_heads)
 
     qkv_kernel_init = (
         self.qkv_kernel_init
@@ -872,7 +523,7 @@ class MultiHeadDotProductAttention(nn.Module, DenseAttention):
           #
           # Add trailing dims to the current index so it can either
           # broadcast over the batch dim or it can just be batch size.
-          mask = combine_masks(
+          mask = dense_attention.combine_masks(
               mask,
               jnp.broadcast_to(
                   jnp.arange(length),
@@ -918,7 +569,7 @@ class MultiHeadDotProductAttention(nn.Module, DenseAttention):
 
     # Add provided bias term (e.g. relative position embedding).
     if bias is not None:
-      attention_bias = combine_biases(attention_bias, bias)
+      attention_bias = dense_attention.combine_biases(attention_bias, bias)
 
     dropout_rng = None
     if enable_dropout and self.dropout_rate > 0.:
@@ -932,8 +583,14 @@ class MultiHeadDotProductAttention(nn.Module, DenseAttention):
       max_length = max(query.shape[1], key.shape[1])
       sin, cos = embedding.generate_fixed_pos_embedding(
           dim, max_length, max_timescale=self.rotary_embedding_max_timescale)
-      query, key = embedding.apply_rotary_embedding(
-          query, key, cos, sin, decode=decode, rotary_index=rotary_index)
+      query, key = rotary_embedding.apply_rotary_embedding(
+          query,
+          key,
+          cos,
+          sin,
+          decode=decode,
+          rotary_index=rotary_index,
+          q_position_offset=query_position_offset)
 
     # Compute attention.
     attn_weights = self.compute_attention_fn(
@@ -976,8 +633,11 @@ class MultiHeadDotProductAttention(nn.Module, DenseAttention):
     return out
 
 
-class MultiQueryDotProductAttention(nn.Module, DenseAttention):
+class MultiQueryDotProductAttention(nn.Module, dense_attention.DenseAttention):
   """Multi-query dot-product attention.
+
+  Forked from the main Flaxformer implementation to allow passing in query
+  position offset information.
 
   This is a variant of the MultiHeadDotProductAttention. The key and the value
   have 1 head whereas query has 1 or more heads. This variant, called
@@ -1025,8 +685,8 @@ class MultiQueryDotProductAttention(nn.Module, DenseAttention):
   q_kernel_init: Optional[Initializer] = None
   bias_init: Initializer = initializers.zeros
   rescale_logits: bool = False
-  attention_fn: Callable[[Array, Array, Array],
-                         Array] = staticmethod(dot_product_attention_multiquery)
+  attention_fn: Callable[[Array, Array, Array], Array] = staticmethod(
+      dense_attention.dot_product_attention_multiquery)
   use_extra_logit: bool = False
   float32_logits: bool = False
   use_rotary_embedding: bool = False
@@ -1164,11 +824,12 @@ class MultiQueryDotProductAttention(nn.Module, DenseAttention):
                mask: Optional[Array] = None,
                bias: Optional[Array] = None,
                *,
-               precomputed_qkv=None,
+               precomputed_qkv: Optional[Array] = None,
                decode: bool = False,
                enable_dropout: bool = True,
                prefill: bool = False,
-               prefill_lengths: Optional[Array] = None) -> Array:
+               prefill_lengths: Optional[Array] = None,
+               query_position_offset: Optional[Array] = None) -> Array:
     """Applies multi-query dot product attention on the input data.
 
     Projects the inputs into multi-headed query and single-headed key and value
@@ -1189,12 +850,16 @@ class MultiQueryDotProductAttention(nn.Module, DenseAttention):
       prefill: Whether to run a partial sequence to prefill the cache.
       prefill_lengths: The length of each partial sequence we are filling in the
         cache, lengths are inferred from the mask if not provided.
+      query_position_offset: Optional query position offset to use when
+        calculating rotary encoding. Useful when the length of the queries is
+        different than the length of the keys and the query position does not
+        start at 0.
 
     Returns:
       output of shape `[batch_sizes..., length, features]`.
     """
-    validate_dense_attention_call_parameter_shapes(inputs_q, inputs_kv, mask,
-                                                   bias, self.num_heads)
+    dense_attention.validate_dense_attention_call_parameter_shapes(
+        inputs_q, inputs_kv, mask, bias, self.num_heads)
     q_kernel_init = (
         self.q_kernel_init
         if self.q_kernel_init is not None else self.kernel_init)
@@ -1449,7 +1114,7 @@ class MultiQueryDotProductAttention(nn.Module, DenseAttention):
           #
           # Add trailing dims to the current index so it can either
           # broadcast over the batch dim or it can just be batch size.
-          mask = combine_masks(
+          mask = dense_attention.combine_masks(
               mask,
               jnp.broadcast_to(
                   jnp.arange(length),
@@ -1503,7 +1168,7 @@ class MultiQueryDotProductAttention(nn.Module, DenseAttention):
 
     # Add provided bias term (e.g. relative position embedding).
     if bias is not None:
-      attention_bias = combine_biases(attention_bias, bias)
+      attention_bias = dense_attention.combine_biases(attention_bias, bias)
       attention_bias = flax_partitioning.with_sharding_constraint(
           attention_bias, bias_sharding, fallback=RulesFallback.NO_CONSTRAINT)
 
@@ -1534,8 +1199,14 @@ class MultiQueryDotProductAttention(nn.Module, DenseAttention):
       max_length = max(query.shape[1], key.shape[1])
       sin, cos = embedding.generate_fixed_pos_embedding(
           dim, max_length, max_timescale=self.rotary_embedding_max_timescale)
-      query, key = embedding.apply_rotary_embedding(
-          query, key, cos, sin, decode=decode, rotary_index=rotary_index)
+      query, key = rotary_embedding.apply_rotary_embedding(
+          query,
+          key,
+          cos,
+          sin,
+          decode=decode,
+          rotary_index=rotary_index,
+          q_position_offset=query_position_offset)
 
     # Apply attention.
     x = self.attention_fn(
@@ -1611,489 +1282,3 @@ class MultiQueryDotProductAttention(nn.Module, DenseAttention):
       out = x
 
     return out
-
-
-class LocalAttentionLayer(nn.Module, DenseAttention):
-  """Performs attention on separate chunks and concatenates the results.
-
-  This attention is local in that attention happens only within each chunk
-  (as defined by the length of the strides).
-
-  For example usage, see CANINE, that uses this to attend over character chunks.
-
-  Attributes:
-    localized_attention: The attention layer that will be applied to each chunk.
-      Typically this is a `MultiHeadDotProductAttention`.
-    q_chunk_width: The width of each chunk in `inputs_q`. A value of 128 is
-      optimal for TPUs.
-    q_chunk_stride: The number of elements to skip when moving to the next chunk
-      in `inputs_q`. Typically this is equal to `q_chunk_width`.
-    kv_chunk_width: The width of each chunk in `inputs_kv`. A value of 128 is
-      optimal for TPUs.
-    kv_chunk_stride: The number of elements to skip when moving to the next
-      chunk in `inputs_kv`. Typically this is equal to `kv_chunk_width`.
-    always_attend_to_first_position: Should all chunks be able to attend to the
-      `inputs_kv`'s first position (e.g. a [CLS] position)?
-    first_position_attends_to_all: Should the `inputs_q`'s first position be
-      able to attend to all positions within the `inputs_q`?
-  """
-  localized_attention: DenseAttention
-  q_chunk_width: int
-  q_chunk_stride: int
-  kv_chunk_width: int
-  kv_chunk_stride: int
-  always_attend_to_first_position: bool = False
-  first_position_attends_to_all: bool = False
-
-  def setup(self) -> None:
-    if self.q_chunk_stride > self.q_chunk_width:
-      raise ValueError('`q_chunk_stride` < `q_chunk_width` '
-                       'would cause `inputs_q` positions to get skipped.')
-    if self.kv_chunk_stride > self.kv_chunk_width:
-      raise ValueError('`kv_chunk_stride` > `kv_chunk_width` '
-                       'would cause `inputs_kv` positions to get skipped.')
-
-  def __call__(
-      self,
-      inputs_q: Array,
-      inputs_kv: Array,
-      mask: Optional[Array] = None,
-      bias: Optional[Array] = None,
-      *,
-      decode: bool = False,
-      enable_dropout: bool = True,
-      precomputed_qkv: Optional[Array] = None,
-  ) -> Array:
-    """Applies local attention.
-
-    Args:
-      inputs_q: <float>[batch_sizes..., q_len, q_features].
-      inputs_kv: <float>[batch_sizes..., kv_len, kv_features].
-      mask: <int32>[batch_sizes..., num_heads, q_len, kv_len]. The values should
-        be 1 or 0. The attention scores will effectively be set to -∞ for any
-        positions in the mask that are 0, and will be unchanged for positions
-        that are 1.
-      bias: Unsupported.
-      decode: Unsupported.
-      enable_dropout: Enables dropout if set to True.
-      precomputed_qkv: Precomputed QKV arrays. Not currently supported.
-
-    Returns:
-      An array with the same shape as would be expected from calling
-      `localized_attention` directly.
-    """
-    chex.assert_shape(inputs_q, (..., None, None))
-    num_batch_dims = inputs_q.ndim - 2
-    batch_sizes = inputs_q.shape[:num_batch_dims]
-    chex.assert_shape(inputs_kv, (*batch_sizes, None, None))
-    q_len, _ = inputs_q.shape[num_batch_dims:]
-    kv_len, _ = inputs_kv.shape[num_batch_dims:]
-    if mask is not None:
-      chex.assert_shape(mask, (*batch_sizes, None, q_len, kv_len))
-    if bias is not None:
-      chex.assert_shape(bias,
-                        (*({b, 1} for b in batch_sizes), None, q_len, kv_len))
-
-    if decode:
-      raise ValueError(f'{type(self).__name__} does not support decoding mode')
-
-    # Determine the chunks that we will attend *from*.
-    q_chunks = []
-    if self.first_position_attends_to_all:
-      q_chunks.append((0, 1))
-      # We must skip this first position so that our output sequence is the
-      # correct length (this matters in the *from* sequence only).
-      q_start = 1
-    else:
-      q_start = 0
-    for chunk_start in range(q_start, q_len, self.q_chunk_stride):
-      chunk_end = min(q_len, chunk_start + self.q_chunk_width)
-      q_chunks.append((chunk_start, chunk_end))
-
-    # Determine the chunks that we will attend *to*.
-    kv_chunks = []
-    if self.first_position_attends_to_all:
-      kv_chunks.append((0, kv_len))
-    for chunk_start in range(0, kv_len, self.kv_chunk_stride):
-      chunk_end = min(kv_len, chunk_start + self.kv_chunk_width)
-      kv_chunks.append((chunk_start, chunk_end))
-
-    if len(q_chunks) != len(kv_chunks):
-      raise ValueError(
-          f'Expected to have same number of `q_chunks` ({q_chunks}) and '
-          f'`kv_chunks` ({kv_chunks}). Check strides.')
-
-    # TODO: Can we save a bit of extra compute by slicing the Q/K/V
-    # projected versions of these instead of recomputing those projections?
-    # This only helps when the Q stride isn't the same as the K/V stride.
-    # Length of `attention_output_chunks` and therefore `attention_output` is
-    # determined by `q_chunks` to ensure correctness. The correspondence with
-    # `kv_chunks` is somewhat best effort. We need to do more to enforce this.
-    attention_output_chunks = []
-    for q_chunk, kv_chunk in zip(q_chunks, kv_chunks):
-      q_start, q_end = q_chunk
-      kv_start, kv_end = kv_chunk
-
-      inputs_q_chunk = inputs_q[..., q_start:q_end, :]
-      inputs_kv_chunk = inputs_kv[..., kv_start:kv_end, :]
-      if mask is not None:
-        mask_chunk = mask[..., q_start:q_end, kv_start:kv_end]
-      if bias is not None:
-        bias_chunk = bias[..., q_start:q_end, kv_start:kv_end]
-
-      if self.always_attend_to_first_position:
-        if mask is not None:
-          cls_mask = mask[..., q_start:q_end, 0:1]
-          mask_chunk = jnp.concatenate([cls_mask, mask_chunk], axis=-1)
-        if bias is not None:
-          cls_bias = bias[..., q_start:q_end, 0:1]
-          bias_chunk = jnp.concatenate([cls_bias, bias_chunk], axis=-1)
-
-        kv_cls = inputs_kv[..., 0:1, :]
-        inputs_kv_chunk = jnp.concatenate([kv_cls, inputs_kv_chunk], axis=-2)
-
-      attention_output_chunk = self.localized_attention(
-          inputs_q=inputs_q_chunk,
-          inputs_kv=inputs_kv_chunk,
-          mask=mask_chunk if mask is not None else None,
-          bias=bias_chunk if bias is not None else None,
-          enable_dropout=enable_dropout)
-      chex.assert_shape(attention_output_chunk,
-                        (*inputs_q_chunk.shape[:-1], ...))
-      attention_output_chunks.append(attention_output_chunk)
-
-    # Concatenate along the length dim (which directly follows the batch dims).
-    return jnp.concatenate(attention_output_chunks, axis=num_batch_dims)
-
-
-#------------------------------------------------------------------------------
-# Mask-making utility functions.
-#------------------------------------------------------------------------------
-def make_attention_mask(query_input: Array,
-                        key_input: Array,
-                        pairwise_fn: Callable = jnp.multiply,
-                        extra_batch_dims: int = 0,
-                        dtype: DType = jnp.float32) -> Array:
-  """Mask-making helper for attention weights.
-
-  In case of 1d inputs (i.e., `[batch..., len_q]`, `[batch..., len_kv]`, the
-  attention weights will be `[batch..., heads, len_q, len_kv]` and this
-  function will produce `[batch..., 1, len_q, len_kv]`.
-
-  Args:
-    query_input: a batched, flat input of query_length size
-    key_input: a batched, flat input of key_length size
-    pairwise_fn: broadcasting elementwise comparison function
-    extra_batch_dims: number of extra batch dims to add singleton axes for, none
-      by default
-    dtype: mask return dtype
-
-  Returns:
-    A `[batch..., 1, len_q, len_kv]` shaped mask for 1d attention.
-  """
-  # [batch..., len_q, len_kv]
-  mask = pairwise_fn(
-      # [batch..., len_q] -> [batch..., len_q, 1]
-      jnp.expand_dims(query_input, axis=-1),
-      # [batch..., len_q] -> [batch..., 1, len_kv]
-      jnp.expand_dims(key_input, axis=-2))
-
-  # [batch..., 1, len_q, len_kv]. This creates the head dim.
-  mask = jnp.expand_dims(mask, axis=-3)
-  mask = jnp.expand_dims(mask, axis=tuple(range(extra_batch_dims)))
-  return mask.astype(dtype)
-
-
-def make_causal_mask(x: Array,
-                     extra_batch_dims: int = 0,
-                     dtype: DType = jnp.float32) -> Array:
-  """Make a causal mask for self-attention.
-
-  In case of 1d inputs (i.e., `[batch..., len]`, the self-attention weights
-  will be `[batch..., heads, len, len]` and this function will produce a
-  causal mask of shape `[batch..., 1, len, len]`.
-
-  Note that a causal mask does not depend on the values of x; it only depends on
-  the shape. If x has padding elements, they will not be treated in a special
-  manner.
-
-  Args:
-    x: input array of shape `[batch..., len]`
-    extra_batch_dims: number of batch dims to add singleton axes for, none by
-      default
-    dtype: mask return dtype
-
-  Returns:
-    A `[batch..., 1, len, len]` shaped causal mask for 1d attention.
-  """
-  idxs = jnp.broadcast_to(jnp.arange(x.shape[-1], dtype=jnp.int32), x.shape)
-  return make_attention_mask(
-      idxs,
-      idxs,
-      jnp.greater_equal,
-      extra_batch_dims=extra_batch_dims,
-      dtype=dtype)
-
-
-def combine_masks(*masks: Optional[Array], dtype: DType = jnp.float32):
-  """Combine attention masks.
-
-  Args:
-    *masks: set of attention mask arguments to combine, some can be None.
-    dtype: final mask dtype
-
-  Returns:
-    Combined mask, reduced by logical and, returns None if no masks given.
-  """
-  masks = [m for m in masks if m is not None]
-  if not masks:
-    return None
-  assert all(map(lambda x: x.ndim == masks[0].ndim, masks)), (
-      f'masks must have same rank: {tuple(map(lambda x: x.ndim, masks))}')
-  mask, *other_masks = masks
-  for other_mask in other_masks:
-    mask = jnp.logical_and(mask, other_mask)
-  return mask.astype(dtype)
-
-
-def combine_biases(*masks: Optional[Array]):
-  """Combine attention biases.
-
-  Args:
-    *masks: set of attention bias arguments to combine, some can be None.
-
-  Returns:
-    Combined mask, reduced by summation, returns None if no masks given.
-  """
-  masks = [m for m in masks if m is not None]
-  if not masks:
-    return None
-  assert all(map(lambda x: x.ndim == masks[0].ndim, masks)), (
-      f'masks must have same rank: {tuple(map(lambda x: x.ndim, masks))}')
-  mask, *other_masks = masks
-  for other_mask in other_masks:
-    mask = mask + other_mask
-  return mask
-
-
-def make_decoder_mask(decoder_target_tokens: Array,
-                      dtype: DType,
-                      decoder_causal_attention: Optional[Array] = None,
-                      decoder_segment_ids: Optional[Array] = None) -> Array:
-  """Compute the self-attention mask for a decoder.
-
-  Decoder mask is formed by combining a causal mask, a padding mask and an
-  optional packing mask. If decoder_causal_attention is passed, it makes the
-  masking non-causal for positions that have value of 1.
-
-  A prefix LM is applied to a dataset which has a notion of "inputs" and
-  "targets", e.g., a machine translation task. The inputs and targets are
-  concatenated to form a new target. `decoder_target_tokens` is the concatenated
-  decoder output tokens.
-
-  The "inputs" portion of the concatenated sequence can attend to other "inputs"
-  tokens even for those at a later time steps. In order to control this
-  behavior, `decoder_causal_attention` is necessary. This is a binary mask with
-  a value of 1 indicating that the position belonged to "inputs" portion of the
-  original dataset.
-
-  Example:
-
-    Suppose we have a dataset with two examples.
-
-    ds = [{"inputs": [6, 7], "targets": [8]},
-          {"inputs": [3, 4], "targets": [5]}]
-
-    After the data preprocessing with packing, the two examples are packed into
-    one example with the following three fields (some fields are skipped for
-    simplicity).
-
-       decoder_target_tokens = [[6, 7, 8, 3, 4, 5, 0]]
-         decoder_segment_ids = [[1, 1, 1, 2, 2, 2, 0]]
-    decoder_causal_attention = [[1, 1, 0, 1, 1, 0, 0]]
-
-    where each array has [batch, length] shape with batch size being 1. Then,
-    this function computes the following mask.
-
-                      mask = [[[[1, 1, 0, 0, 0, 0, 0],
-                                [1, 1, 0, 0, 0, 0, 0],
-                                [1, 1, 1, 0, 0, 0, 0],
-                                [0, 0, 0, 1, 1, 0, 0],
-                                [0, 0, 0, 1, 1, 0, 0],
-                                [0, 0, 0, 1, 1, 1, 0],
-                                [0, 0, 0, 0, 0, 0, 0]]]]
-
-    mask[b, 1, :, :] represents the mask for the example `b` in the batch.
-    Because mask is for a self-attention layer, the mask's shape is a square of
-    shape [query length, key length].
-
-    mask[b, 1, i, j] = 1 means that the query token at position i can attend to
-    the key token at position j.
-
-  Args:
-    decoder_target_tokens: decoder output tokens. [batch..., length]
-    dtype: dtype of the output mask.
-    decoder_causal_attention: a binary mask indicating which position should
-      only attend to earlier positions in the sequence. Others will attend
-      bidirectionally. [batch..., length]
-    decoder_segment_ids: decoder segmentation info for packed examples.
-      [batch..., length]
-
-  Returns:
-    the combined decoder mask.
-  """
-  masks = []
-  # The same mask is applied to all attention heads. So the head dimension is 1,
-  # i.e., the mask will be broadcast along the heads dim.
-  # [batch..., 1, length, length]
-  causal_mask = make_causal_mask(decoder_target_tokens, dtype=dtype)
-
-  # Positions with value 1 in `decoder_causal_attention` can attend
-  # bidirectionally.
-  if decoder_causal_attention is not None:
-    # [batch..., 1, length, length]
-    inputs_mask = make_attention_mask(
-        decoder_causal_attention,
-        decoder_causal_attention,
-        jnp.logical_and,
-        dtype=dtype)
-    masks.append(jnp.logical_or(causal_mask, inputs_mask).astype(dtype))
-  else:
-    masks.append(causal_mask)
-
-  # Padding mask.
-  masks.append(
-      make_attention_mask(
-          decoder_target_tokens > 0, decoder_target_tokens > 0, dtype=dtype))
-
-  # Packing mask
-  if decoder_segment_ids is not None:
-    masks.append(
-        make_attention_mask(
-            decoder_segment_ids, decoder_segment_ids, jnp.equal, dtype=dtype))
-
-  return combine_masks(*masks, dtype=dtype)
-
-
-def validate_dense_attention_call_parameter_shapes(inputs_q: Array,
-                                                   inputs_kv: Array,
-                                                   mask: Optional[Array],
-                                                   bias: Optional[Array],
-                                                   num_heads: Optional[int]):
-  """Validates the shapes of parameters to DenseAttention call methods."""
-  if inputs_q.ndim != inputs_kv.ndim:
-    raise ValueError(f'Mismatched inputs rank: expected '
-                     f'inputs_q.ndim ({inputs_q.ndim}) == '
-                     f'inputs_kv.ndim ({inputs_kv.ndim})')
-  if inputs_q.ndim < 3:
-    raise ValueError(f'Expected rank of inputs >= 3, was {inputs_q.ndim}')
-  if inputs_q.shape[:-3] != inputs_kv.shape[:-3]:
-    raise ValueError(f'Mismatched batch dims: expected '
-                     f'inputs_q.shape[:-3] ({inputs_q.shape[:-3]}) == '
-                     f'inputs_kv.shape[:-3] ({inputs_kv.shape[:-3]})')
-  if mask is not None:
-    if mask.ndim != inputs_q.ndim + 1:
-      raise ValueError(f'Mismatched ranks: expected '
-                       f'mask.ndim ({mask.ndim}) to be one more than '
-                       f'inputs_q.ndim ({inputs_q.ndim})')
-    if num_heads is not None:
-      if mask.shape[-3] not in (1, num_heads):
-        raise ValueError(f'Mismatched num_heads: expected '
-                         f'mask.shape[-3] ({mask.shape[-3]}) == '
-                         f'num_heads ({num_heads}), or 1')
-    else:
-      num_heads = mask.shape[-3]
-    if mask.shape[-2] not in (1, inputs_q.shape[-2]):
-      raise ValueError(f'Mismatched q_length: expected '
-                       f'mask.shape[-2] ({mask.shape[-2]}) == '
-                       f'inputs_q.shape[-2] ({inputs_q.shape[-2]}), or 1')
-    if mask.shape[-1] != inputs_kv.shape[-2]:
-      raise ValueError(f'Mismatched kv_length: expected '
-                       f'mask.shape[-1] ({mask.shape[-1]}) == '
-                       f'inputs_kv.shape[-2] ({inputs_kv.shape[-2]})')
-  if bias is not None:
-    if bias.ndim != inputs_q.ndim + 1:
-      raise ValueError(f'Mismatched ranks: expected '
-                       f'bias.ndim ({bias.ndim}) to be one less than '
-                       f'inputs_q.ndim ({inputs_q.ndim})')
-    if num_heads is not None:
-      if bias.shape[-3] not in (1, num_heads):
-        raise ValueError(f'Mismatched num_heads: expected '
-                         f'bias.shape[-3] ({bias.shape[-3]}) == '
-                         f'num_heads ({num_heads}), or 1')
-    else:
-      num_heads = bias.shape[-3]
-    if bias.shape[-2] != inputs_q.shape[-2]:
-      if inputs_q.shape[-2] != 1:  # TODO: Remove this exception?
-        raise ValueError(f'Mismatched q_length: expected '
-                         f'bias.shape[-2] ({bias.shape[-2]}) == '
-                         f'inputs_q.shape[-2] ({inputs_q.shape[-2]})')
-    if bias.shape[-1] != inputs_kv.shape[-2]:
-      if inputs_kv.shape[-2] != 1:  # TODO: Remove this exception?
-        raise ValueError(f'Mismatched kv_length: expected '
-                         f'bias.shape[-1] ({bias.shape[-1]}) == '
-                         f'inputs_kv.shape[-2] ({inputs_kv.shape[-2]})')
-
-
-def shift_left(x, axis=-1):
-  """Shift the input array to the left by one unit and pad by 0 to the right."""
-  pad_widths = [(0, 0)] * len(x.shape)
-  pad_widths[axis] = (0, 1)
-  padded = jnp.pad(
-      x, pad_widths, mode='constant', constant_values=x.dtype.type(0))
-  return jax.lax.slice_in_dim(padded, 1, x.shape[axis] + 1, axis=axis)
-
-
-def get_decoder_logit_mask(decoder_input_tokens, dtype):
-  """Gets a mask that zeros-out the padding tokens in the attention logits.
-
-  This function creates a mask that can be used to zero out the logits
-  corresponding to the padding tokens. Typically, a large negative number is
-  added to the attention logits so that those tokens are not attended. If the
-  magnitude of the attention logits of the non-padding tokens is on the same
-  order as the large negative number, the attention pattern gets affected and
-  results in an unexpected behavior. Empirically, this can happen for large
-  models and using this mask can help stabilizing the training.
-
-  In T5 models, the token id of 0 serves as the padding id as well as the BOS id
-  in the decoder. This requires a special handling of the BOS token ids.
-  Furthermore, the input sequences can be packed where each sequences.
-
-  TODO: Make T5 models use a separate BOS ID.
-
-  ```
-  Example: Here booleans are represented as 1 and 0 for simplicity and the batch
-           dimension is skipped.
-
-      decoder_input_tokens = [0, 3, 9, 0, 4, 8, 0, 0]
-  ---------------------------------------------------
-    decoder_input_tokens_0 = [1, 0, 0, 0, 0, 0, 0, 0]
-               shifted > 0 = [1, 1, 0, 1, 1, 0, 0, 0]
-  decoder_input_tokens > 0 = [0, 1, 1, 0, 1, 1, 0, 0]
-  ---------------------------------------------------
-                logit_mask = [1, 1, 1, 1, 1, 1, 0, 0]
-  ```
-
-  NB: this function assumes that the each sequence in the packed
-  `decoder_input_tokens` has exactly one 0-BOS token.
-
-  Args:
-    decoder_input_tokens: input_tokens to the decoder with one 0-BOS id per
-      sequence.
-    dtype: output (logit mask) data type.
-
-  Returns:
-    logit mask with zeros and ones with a shape [batch, length, 1]
-  """
-  # We don't want to mask the initial shifted '0-BOS' logit of decoder inputs.
-  decoder_input_tokens_0 = jax.lax.broadcasted_iota(
-      jnp.int32, decoder_input_tokens.shape, decoder_input_tokens.ndim - 1) == 0
-
-  return jnp.expand_dims(
-      jnp.array(
-          (decoder_input_tokens > 0) | (shift_left(decoder_input_tokens) > 0)
-          | decoder_input_tokens_0,
-          dtype=dtype),
-      axis=-1)
-
-

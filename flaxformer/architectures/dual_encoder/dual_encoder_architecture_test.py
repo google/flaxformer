@@ -24,6 +24,7 @@ from jax import random
 import numpy as np
 
 from flaxformer import testing_utils
+from flaxformer.architectures.dual_encoder import components
 from flaxformer.architectures.dual_encoder import dual_encoder_architecture
 from flaxformer.architectures.dual_encoder import l2_norm
 from flaxformer.architectures.dual_encoder import poolings

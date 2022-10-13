@@ -1,0 +1,100 @@
+# CALM T5.1.1 Encoder-Decoder Base model with Early Exit (aka meta) classifier.
+# Provides MODEL
+from __gin__ import dynamic_registration
+
+from flax import optim
+from prompt_tuning.train import optim as adafactor_optim
+from prompt_tuning.train import utils as prompt_utils
+import seqio
+from t5x import adafactor
+from t5x.contrib.calm import decoding as calm_decoding
+from t5x.contrib.calm import models as calm_models
+
+ARCHITECTURE = %gin.REQUIRED
+APPLY_EARLY_INFER = %gin.REQUIRED
+DECODE_FN = @calm_decoding.temperature_sample
+
+include 'flaxformer/t5x/configs/calm/architectures/calm_metacls_t5_1_1_flaxformer.gin'
+
+# Architecture overrides
+NUM_ENCODER_LAYERS = 12
+NUM_DECODER_LAYERS = 12
+NUM_HEADS = 12
+HEAD_DIM = 64
+EMBED_DIM = 768
+MLP_DIM = 2048
+
+## CALM configurations
+FIRST_EXIT = 0
+EXIT_INTERVAL = 1
+LOSS_AGGR_WEIGHT = 1  # For anytime prediction trainnig.
+
+GEOMLIKE_LOSS = False # For meta classifier training.
+
+### CALM inference-time configurations (Doesn't modify training)
+MIN_EXIT = 0  # First layer to consider for exiting.
+CONF_METHOD = "meta"  # Confidence estimation method.
+CONF_THRESHOLD = 0.5  # Confidence threshold.
+
+ORACLE_TOK_CONST = False # Oracle: exits at the first consistent layer.
+ORACLE_TOK_CACHE = False # Oracle: gets logits from last layer, but computes self-attention key-value cache from early layer.
+ORACLE_CACHE = False # Oracle: Computes real self-attention key-value cache of remaining layers (even if exited early).
+
+POS_ADJUSTED = False
+POS_TEMP = 4
+
+# Loss HParam defaults
+Z_LOSS = 0.0001
+LABEL_SMOOTHING = 0.0
+# NOTE: When fine-tuning the public T5 checkpoints (trained in T5 MeshTF)
+# the loss normalizing factor should be set to 2048 * 114 (pretraining
+# batch_size * target_token_length).
+LOSS_NORMALIZING_FACTOR = None
+
+# Vocabulary (shared by encoder and decoder)
+VOCABULARY = @seqio.SentencePieceVocabulary()
+seqio.SentencePieceVocabulary.sentencepiece_model_file = "gs://t5-data/vocabs/cc_all.32000.100extra/sentencepiece.model"
+NUM_EMBEDDINGS = 32128  # vocab size rounded to a multiple of 128 for TPU efficiency
+
+# ===== Optimizer =====
+# Using MultiOptimizer wrapper to freeze backbone parameters
+OPTIMIZER = @adafactor_optim.MultiOptimizer()
+adafactor_optim.MultiOptimizer:
+  traversals_and_optimizers = ((@optim.ModelParamTraversal(),
+                                @adafactor.Adafactor()),)
+
+optim.ModelParamTraversal:
+  filter_fn = @prompt_utils.match_any()
+TRAIN_PARAM_REGEX = [".*/meta_cls/.*"]
+prompt_utils.match_any.regexes = %TRAIN_PARAM_REGEX
+
+# ====================
+
+# Model
+MODEL = @calm_models.EncoderDecoderModel()
+calm_models.EncoderDecoderModel:
+  module = %ARCHITECTURE
+  input_vocabulary = %VOCABULARY
+  output_vocabulary = %VOCABULARY
+  optimizer_def = %OPTIMIZER
+  z_loss = %Z_LOSS
+  label_smoothing = %LABEL_SMOOTHING
+  loss_normalizing_factor = %LOSS_NORMALIZING_FACTOR
+  decode_fn = %DECODE_FN
+
+  decoder_layers = %NUM_DECODER_LAYERS
+  first_exit = %FIRST_EXIT
+  exit_interval = %EXIT_INTERVAL
+  min_exit = %MIN_EXIT
+  conf_threshold = %CONF_THRESHOLD
+  aggregation_weights = %LOSS_AGGR_WEIGHT
+  apply_early_inference = %APPLY_EARLY_INFER
+  oracle_tok_consistency = %ORACLE_TOK_CONST
+  oracle_cache = %ORACLE_CACHE
+  conf_method = %CONF_METHOD
+
+  train_meta_cls = True
+  geomlike_loss = %GEOMLIKE_LOSS
+
+  position_adjusted_threshold = %POS_ADJUSTED
+  position_temp = %POS_TEMP

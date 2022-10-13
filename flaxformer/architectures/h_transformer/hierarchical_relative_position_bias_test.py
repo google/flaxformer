@@ -43,7 +43,7 @@ class RpbTest(parameterized.TestCase):
     expected_shape = (1, 1, self.num_cluster, self.num_cluster, self.num_head)
     self.assertEqual(result.shape, expected_shape)
 
-    expected_positions = f'positions={self.num_cluster*4-1}'
+    expected_positions = f'relpos_buckets={self.num_cluster*4-1}'
     expected_heads = f'heads={self.num_head}'
     expected_1d_rpb = {
         '1d_relative_position_bias': [

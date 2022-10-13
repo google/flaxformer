@@ -118,8 +118,8 @@ class DecoderOnlyTest(parameterized.TestCase):
   def setUp(self):
     super().setUp()
     self.inputs = np.array([
-        [101, 183, 20, 75],
-        [101, 392, 19, 7],
+        [101, 183, 20, 75, 76, 78, 91, 102, 122, 187, 23, 76, 76, 87, 94, 121],
+        [101, 392, 19, 7, 76, 78, 91, 102, 122, 187, 23, 76, 76, 87, 94, 121],
     ],
                            dtype=np.int32)
     self.embed_size = 13

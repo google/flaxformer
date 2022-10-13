@@ -17,16 +17,33 @@
 from flax import linen as nn
 from jax import numpy as jnp
 
+from flaxformer.architectures.perceiver_ar import decoder_layer
+from flaxformer.architectures.perceiver_ar import dense_attention
+from flaxformer.architectures.perceiver_ar import parallel_fused_decoder
 from flaxformer.architectures.perceiver_ar import perceiver_ar_architecture
 from flaxformer.architectures.t5 import t5_architecture_test_utils
 from flaxformer.components import dense
 from flaxformer.components import layer_norm
-from flaxformer.components.attention import dense_attention
+
+
+def make_attention1(num_attn_heads, dtype, use_rotary_embedding=False):
+  """First test configuration for attention."""
+  return dense_attention.MultiHeadDotProductAttention(
+      num_heads=num_attn_heads,
+      dtype=dtype,
+      qkv_features=512,
+      head_dim=None,
+      kernel_init=t5_architecture_test_utils.ATTENTION_KERNEL_INIT,
+      bias_init=t5_architecture_test_utils.BIAS_INIT,
+      use_bias=False,
+      broadcast_dropout=True,
+      dropout_rate=0.1,
+      use_rotary_embedding=use_rotary_embedding)
 
 
 def test_make_decoder_only1(
     num_latents: int) -> perceiver_ar_architecture.DecoderOnly:
-  """Returns an DecoderOnly."""
+  """Returns a DecoderOnly."""
   dtype = jnp.float32
   num_attn_heads = 8
   make_dropout = lambda: nn.Dropout(rate=0.1, broadcast_dims=(-2,))
@@ -34,8 +51,8 @@ def test_make_decoder_only1(
 
   def _make_decoder_layer(shared_relative_position_bias):
     assert shared_relative_position_bias is None
-    return perceiver_ar_architecture.DecoderLayer(
-        self_attention=t5_architecture_test_utils.make_attention1(
+    return decoder_layer.DecoderLayer(
+        self_attention=make_attention1(
             num_attn_heads, dtype, use_rotary_embedding=True),
         encoder_decoder_attention=None,
         mlp=t5_architecture_test_utils.make_mlp1(dtype),
@@ -72,7 +89,7 @@ def test_make_decoder_only1(
 
 def make_parallel_fused_transformer_config(
     num_latents: int) -> perceiver_ar_architecture.DecoderOnly:
-  """Returns an EncoderDecoder with parallel=True."""
+  """Returns a DecoderOnly with parallel=True."""
   dtype = jnp.bfloat16
   num_attn_heads = 8
   num_features = 13
@@ -112,7 +129,7 @@ def make_parallel_fused_transformer_config(
 
   def _make_decoder_layer(shared_relative_position_bias):
     assert shared_relative_position_bias is None
-    return perceiver_ar_architecture.ParallelFusedDecoderLayer(
+    return parallel_fused_decoder.ParallelFusedDecoderLayer(
         self_attention=_make_mq_attention(num_attn_heads, dtype),
         mlp=_make_fusion_mlp(dtype),
         dropout_factory=make_dropout,

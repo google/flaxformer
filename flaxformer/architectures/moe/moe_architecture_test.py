@@ -118,6 +118,7 @@ def _make_sparse_mlp(ignore_padding_tokens: bool = False) -> MoeLayer:
       ignore_padding_tokens=ignore_padding_tokens)
   return MoeLayer(
       num_experts=4,
+      num_expert_partitions=4,
       router=router,
       max_group_size=2,
       train_capacity_factor=1.,

@@ -119,6 +119,7 @@ def _make_q_wi_fused_projection(
       ignore_padding_tokens=False)
   return MoeLayer(
       num_experts=4,
+      num_expert_partitions=4,
       router=router,
       max_group_size=2,
       train_capacity_factor=1.,
@@ -159,6 +160,7 @@ def _make_o_wo_fused_projection(
       ignore_padding_tokens=False)
   return MoeLayer(
       num_experts=4,
+      num_expert_partitions=4,
       router=router,
       max_group_size=2,
       train_capacity_factor=1.,

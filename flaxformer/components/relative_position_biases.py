@@ -24,7 +24,8 @@ et al. and new proposals. However, this will rely on XLA to recover efficiency
 for this class (especially when, as in the original T5, the same bias matrix
 is shared for all layers).
 """
-from typing import Any, Callable
+import abc
+from typing import Any, Callable, Sequence
 
 from flax import linen as nn
 from flax.linen import partitioning
@@ -35,7 +36,28 @@ import numpy as np
 from flaxformer.types import Array
 
 
-class RelativePositionBiases(nn.Module):
+class RelativeAttentionAPI(metaclass=abc.ABCMeta):
+  """Interface for relative attention APIs."""
+
+  @abc.abstractmethod
+  def __call__(self, qlen: int, klen: int, bidirectional: bool, decode: bool):
+    """Produces relative position embedding attention biases.
+
+    This method should return position biases of shape `(1, num_heads, q_len,
+    k_len)`.
+
+    Args:
+      qlen: Attention query length.
+      klen: Attention key length.
+      bidirectional: Whether to allow positive memory-query relative position
+        embeddings.
+      decode: Whether to cache relative position bias during autoregressive
+        decoding.
+    """
+    raise NotImplementedError()
+
+
+class RelativePositionBiases(nn.Module, RelativeAttentionAPI):
   """Adds T5-style relative positional embeddings to the attention logits.
 
   Attributes:
@@ -186,3 +208,5 @@ class RelativePositionBiases(nn.Module):
       _ = self.variable('cache', 'cached_bias', lambda: out)
 
     return out
+
+

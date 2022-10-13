@@ -16,7 +16,7 @@
 
 import enum
 import functools
-from typing import Any, Callable, Mapping, MutableMapping, Optional, Tuple, Union
+from typing import Any, Callable, Mapping, MutableMapping, Optional, Tuple
 
 from absl import logging
 import flax
@@ -31,11 +31,7 @@ from t5x import decoding
 from t5x import losses
 from t5x import models
 from t5x import optimizers
-
-
-def _get_sequence_lengths(batch: Mapping[str, jnp.ndarray]) -> jnp.ndarray:
-  """Return non-padding lengths of sequences in the batch."""
-  return (batch['decoder_target_tokens'] > 0).astype(jnp.int32).sum(axis=-1)
+from flaxformer.architectures.perceiver_ar import slicing
 
 
 def _crop_sequences(sequences: jnp.ndarray,
@@ -53,16 +49,29 @@ class CroppingMethod(enum.Enum):
     is needed.
 
   FULL_LATENTS: Random placement of latents between the beginning and end
-    of the sequence where as many latents as possible are allocated positions.
+    of the sequence where loss is calculated. As many latents as possible are
+    allocated positions.
     Advantage: Loss over as many tokens as possible, better use of compute.
     Disadvantage: May bias against learning to generate positions toward the
       beginning or end of sequences because they will be selected less
-      frequently.
+      frequently. For prefix tasks, does not match latent positions at inference
+      time.
+
+  FULL_LATENTS_WITH_PREFIX: Same as FULL_LATENTS, but allows the beginning
+    of the window to a prefix where loss is not calculated, up to the point
+    where only 1 position has loss. This matches inference behavior for a prefix
+    task because (depending on the decoding_latent_reset_fill setting) the first
+    inferred position can utilize all previous latents allocated to the prefix.
+    Advantage: Loss over as many tokens as possible while still matching
+      inference latent placement.
+    Disadvantage: Prefix positions do not have loss calculated, so there are
+      fewer positions with loss than with FULL_LATENTS. Also still has
+      some of the bias issues fixed with EQUAL_POSITION_LIKELIHOOD.
 
   EQUAL_POSITION_LIKELIHOOD: Random placement of latents such that every
-    sequence position is equally likely to have loss calculated on it. Achieved
-    by letting the latent "window" extend beyond the edges of the sequence and
-    then cropping/masking any invalid positions.
+    sequence position within the loss mask is equally likely to have loss
+    calculated on it. Achieved by letting the latent "window" extend beyond the
+    edges of the sequence and then cropping/masking any invalid positions.
     Advantage: Every position is equally likely to be trained.
     Disadvantage: Loss over fewer positions, wasted compute. For example, with
       a sequence length of 8192 and 2048 latent positions, each training batch
@@ -70,7 +79,8 @@ class CroppingMethod(enum.Enum):
   """
   NONE = 1
   FULL_LATENTS = 2
-  EQUAL_POSITION_LIKELIHOOD = 3
+  FULL_LATENTS_WITH_PREFIX = 3
+  EQUAL_POSITION_LIKELIHOOD = 4
 
 
 def crop_train_batch(
@@ -105,6 +115,11 @@ def crop_train_batch(
   if cropping_method == CroppingMethod.FULL_LATENTS:
     # "naive" crop selection. always results in a full batch.
     min_crop_start = first_loss_idx
+    max_crop_start = last_loss_idx - num_latents + 1
+  elif cropping_method == CroppingMethod.FULL_LATENTS_WITH_PREFIX:
+    # FULL_LATENTS, but allows including all but 1 latent in the prefix portion.
+    min_crop_start = first_loss_idx - num_latents + 1
+    min_crop_start = jnp.maximum(min_crop_start, 0)
     max_crop_start = last_loss_idx - num_latents + 1
   elif cropping_method == CroppingMethod.EQUAL_POSITION_LIKELIHOOD:
     # "fair" crop selection. all positions equally likely.
@@ -154,6 +169,7 @@ class PerceiverARModel(models.DecoderOnlyModel):
       optimizer_def: optimizers.OptimizerDefType,
       num_latents: int,
       decoding_latent_reset_fill: Optional[int] = None,
+      disable_fast_decoding_cache: bool = False,
       decode_fn: models.DecodeFnCallable = decoding.temperature_sample,
       inputs_bidirectional_attention: bool = False,
       feature_converter_cls: Optional[Callable[...,
@@ -164,12 +180,9 @@ class PerceiverARModel(models.DecoderOnlyModel):
       train_cropping_method: CroppingMethod = CroppingMethod.FULL_LATENTS,
   ):
     self._num_latents = num_latents
+    self._disable_fast_decoding_cache = disable_fast_decoding_cache
 
-    if decoding_latent_reset_fill:
-      self._decoding_latent_reset_fill = decoding_latent_reset_fill
-    else:
-      self._decoding_latent_reset_fill = max(num_latents - 128,
-                                             num_latents // 2)
+    self._configured_decoding_latent_reset_fill = decoding_latent_reset_fill
 
     self._train_cropping_method = train_cropping_method
     super().__init__(
@@ -184,19 +197,87 @@ class PerceiverARModel(models.DecoderOnlyModel):
         loss_normalizing_factor=loss_normalizing_factor,
     )
 
-  def loss_fn(
+  def get_decoding_latent_reset_fill(self, input_length: int) -> int:
+    if self._configured_decoding_latent_reset_fill is not None:
+      decoding_latent_reset_fill = self._configured_decoding_latent_reset_fill
+    else:
+      # If not specified, use some reasonable defaults that try to pick a good
+      # balance between using as many latents as possible (more "compute" per
+      # predicted token) and doing as few reset steps as possible (full forward
+      # passes that are more expensive).
+      # For large numbers of latents, fill all but the final 128 positions.
+      # Example: 2048 latents, 1920 reset fill.
+      # For small numbers of latents, just do half.
+      decoding_latent_reset_fill = max(self._num_latents - 128,
+                                       self._num_latents // 2)
+
+    # For shorter sequences, make sure we use the largest fill possible.
+    # For example, if there are 2048 latents, the default reset fill from above
+    # would be 1920. But if the sequence length is 2049, then we'll have to do
+    # 1 reset step, so we might as well use the full 2048 latents and get the
+    # maximum "compute" available.
+    decoding_latent_reset_fill = max(
+        decoding_latent_reset_fill,
+        self._num_latents - max(0, input_length - self._num_latents - 1))
+
+    if decoding_latent_reset_fill <= 0:
+      raise ValueError(f'decoding_latent_reset_fill must be > 0, but got '
+                       f'{decoding_latent_reset_fill}')
+
+    if decoding_latent_reset_fill > self._num_latents:
+      raise ValueError(
+          f'decoding_latent_reset_fill must be <= num_latents '
+          f'({self._num_latents}), but got {decoding_latent_reset_fill}')
+
+    logging.info(
+        'decoding_latent_reset_fill: for configured fill %r, num_latents %d, '
+        'and input length %d, using fill of %d.',
+        self._configured_decoding_latent_reset_fill, self._num_latents,
+        input_length, decoding_latent_reset_fill)
+    return decoding_latent_reset_fill
+
+  def eval_fn(
       self,
       params: models.PyTreeDef,
       batch: Mapping[str, jnp.ndarray],
-      dropout_rng: Optional[jax.random.KeyArray],
   ) -> Tuple[jnp.ndarray, models.MetricsMap]:
+    """Computes loss and metrics during the evaluation.
+
+    Args:
+      params: model parameters.
+      batch: a batch of inputs.
+
+    Returns:
+      loss: the loss computed for the given inputs and parameters.
+      aux:
+        weight_sum: sum of the per-token weights applied to the loss.
+        metrics: a mapping of metrics computed for this batch.
+    """
+    return self.loss_fn(
+        params=params,
+        batch=batch,
+        dropout_rng=None,
+        is_eval=True,
+    )
+
+  def loss_fn(self,
+              params: models.PyTreeDef,
+              batch: Mapping[str, jnp.ndarray],
+              dropout_rng: Optional[jax.random.KeyArray],
+              is_eval: bool = False) -> Tuple[jnp.ndarray, models.MetricsMap]:
     """Loss function used for training with a cross-entropy loss."""
     if dropout_rng is None:
-      # TODO: Either find a way to verify that this happens only in
-      # eval mode or add RNG ability to T5X during eval.
-      logging.info(
-          'No RNG key present, so cropping method of "%s" will not occur. '
-          'Should happen only during eval.', self._train_cropping_method)
+      # TODO: Add RNG ability to T5X during eval.
+      # TODO: In addition to random crops during eval, perhaps also take
+      # decoding_latent_reset_fill into account and only report eval loss on
+      # the final positions since this will more closely match what will
+      # happen during inference and scoring.
+      if is_eval:
+        logging.info(
+            'Eval loss_fn: no RNG key present, so cropping method of "%s" '
+            'will not occur.', self._train_cropping_method)
+      else:
+        raise ValueError('Required dropout_rng was not supplied.')
     else:
       crop_train_rng, dropout_rng = jax.random.split(dropout_rng)
       batch = crop_train_batch(
@@ -207,26 +288,27 @@ class PerceiverARModel(models.DecoderOnlyModel):
 
     logits = self._compute_logits(params, batch, dropout_rng)
 
-    loss_normalizing_factor: Optional[Union[
-        float, int, str, losses.SpecialLossNormalizingFactor]]
-    (loss_normalizing_factor,
-     weights) = losses.get_loss_normalizing_factor_and_weights(
-         self._loss_normalizing_factor, batch)
-
-    sequence_lengths = _get_sequence_lengths(batch)
+    sequence_lengths = slicing.get_sequence_lengths(
+        batch['decoder_target_tokens'])
     assert self._num_latents == logits.shape[-2]
-    q_end = jnp.maximum(self._num_latents, sequence_lengths)
-    q_start = q_end - self._num_latents
 
-    targets = jax.vmap(
-        functools.partial(
-            lax.dynamic_slice_in_dim, slice_size=self._num_latents,
-            axis=-1))(batch['decoder_target_tokens'], q_start)
+    targets = slicing.slice_sequences_vmap(
+        batch['decoder_target_tokens'],
+        sequence_lengths=sequence_lengths,
+        num_latents=self._num_latents,
+        axis_within_vmap=-1)
+    weights = slicing.slice_sequences_vmap(
+        batch['decoder_loss_weights'],
+        sequence_lengths=sequence_lengths,
+        num_latents=self._num_latents,
+        axis_within_vmap=-1)
 
-    weights = jax.vmap(
-        functools.partial(
-            lax.dynamic_slice_in_dim, slice_size=self._num_latents,
-            axis=-1))(weights, q_start)
+    loss_normalizing_factor, weights = losses.get_loss_normalizing_factor_and_weights(
+        self._loss_normalizing_factor,
+        batch={
+            'decoder_target_tokens': targets,
+            'decoder_loss_weights': weights
+        })
 
     loss, z_loss, _ = losses.compute_weighted_cross_entropy(
         logits,
@@ -249,8 +331,9 @@ class PerceiverARModel(models.DecoderOnlyModel):
     """Token slice to logits from decoder model."""
     # Implement a cache reset step as described in Appendix E.3 of the Perceiver
     # AR paper (https://arxiv.org/pdf/2202.07765.pdf)
-    logging.info('Using a reset step latent fill of %d positions',
-                 self._decoding_latent_reset_fill)
+
+    decoding_latent_reset_fill = self.get_decoding_latent_reset_fill(
+        decoding_state.sequences.shape[1])
 
     def get_cache_by_layers(cache):
       return traverse_util.flatten_dict(
@@ -261,14 +344,16 @@ class PerceiverARModel(models.DecoderOnlyModel):
       cache_by_layers = get_cache_by_layers(cache)
       new_cache_by_layers = {}
       for layer_name, layer_cache in cache_by_layers.items():
+        # Only modify params that have 'layer' in the name to avoid things like
+        # position encodings.
         # The first layer is cross-attention, so don't modify it.
-        if 'layers_0' not in layer_name:
+        if 'layer' in '/'.join(layer_name) and 'layers_0' not in layer_name:
           layer_cache = jax.tree_map(map_fn, layer_cache)
         new_cache_by_layers[layer_name] = layer_cache
       return flax.core.freeze(traverse_util.unflatten_dict(new_cache_by_layers))
 
     def reset_step():
-      assert self._num_latents > self._decoding_latent_reset_fill
+      assert self._num_latents >= decoding_latent_reset_fill
 
       # Create a version of the kv cache that has
       # decoding_latent_reset_fill positions instead of self._num_latents
@@ -276,7 +361,7 @@ class PerceiverARModel(models.DecoderOnlyModel):
       def prepare_reset_cache(x):
         # Modify key and value, but not index.
         if x.ndim > 1 and x.shape[-1] == self._num_latents:
-          return x[..., :self._decoding_latent_reset_fill] * 0
+          return x[..., :decoding_latent_reset_fill] * 0
         else:
           return x
 
@@ -310,15 +395,14 @@ class PerceiverARModel(models.DecoderOnlyModel):
           prefill=True,
           prefill_lengths=decoding_state.cur_index + 1,
           mutable=['cache'],
-          num_latents=self._decoding_latent_reset_fill)
+          num_latents=decoding_latent_reset_fill)
 
       # Now expand the kv cache size back to self._num_latents.
       def expand_reset_cache(x):
         # Modify key and value, but not index.
-        if x.ndim > 1 and x.shape[-1] == self._decoding_latent_reset_fill:
+        if x.ndim > 1 and x.shape[-1] == decoding_latent_reset_fill:
           padding = [(0, 0)] * x.ndim
-          padding[-1] = (0,
-                         self._num_latents - self._decoding_latent_reset_fill)
+          padding[-1] = (0, self._num_latents - decoding_latent_reset_fill)
           return jnp.pad(x, padding)
         else:
           return x
@@ -350,13 +434,35 @@ class PerceiverARModel(models.DecoderOnlyModel):
     needs_reset = False
     for layer_name, layer_cache in get_cache_by_layers(
         decoding_state.cache).items():
+      # Ignore non-layer parameters like position encodings.
+      if 'layer' not in '/'.join(layer_name):
+        continue
+      # Ignore the cross-attention layer since it never gets "full".
       if 'layers_0' in layer_name:
         continue
       needs_reset |= (layer_cache['cache_index'] >=
                       layer_cache['cached_key'].shape[-1]).any()
 
-    flat_logits, new_flat_cache = lax.cond(needs_reset, reset_step,
-                                           regular_step)
+    if self._disable_fast_decoding_cache:
+      logging.info(
+          'Fast decoding is disabled, always using reset steps with a latent'
+          'fill of %d positions', decoding_latent_reset_fill)
+      flat_logits, new_flat_cache = reset_step()
+    elif decoding_state.sequences.shape[-1] > self._num_latents:
+      logging.info('Using a reset step latent fill of %d positions',
+                   decoding_latent_reset_fill)
+
+      flat_logits, new_flat_cache = lax.cond(needs_reset, reset_step,
+                                             regular_step)
+    elif decoding_state.sequences.shape[-1] == self._num_latents:
+      # If num_latents is the same as sequence length, there's no need to
+      # use or compile reset_setp.
+      logging.info('Using regular decoding without any reset steps.')
+      flat_logits, new_flat_cache = regular_step()
+    else:
+      raise ValueError(
+          f'Sequence length ({decoding_state.sequences.shape[-1]}) < '
+          f'num_latents ({self._num_latents}) is not currently supported.')
 
     # Remove sequence length dimension since it's always 1 during decoding.
     flat_logits = jnp.squeeze(flat_logits, axis=1)
@@ -487,10 +593,14 @@ class PerceiverARModel(models.DecoderOnlyModel):
     target_shape = batch['decoder_input_tokens'].shape
     max_decode_length = target_shape[1]
 
+    # Note that the version of decoder_causal_attention to be passed to the
+    # model during inference needs to be calculated by
+    # _get_decoder_causal_attention, which will correctly set it to None if
+    # inputs_bidirectional_attention is False.
     tokens_ids_to_logits = functools.partial(
         self._compute_logits_from_slice,
         params=params,
-        decoder_causal_attention=batch['decoder_causal_attention'],
+        decoder_causal_attention=self._get_decoder_causal_attention(batch),
         max_decode_length=max_decode_length)
 
     if decoder_params is None:
@@ -560,7 +670,8 @@ class PerceiverARModel(models.DecoderOnlyModel):
     decoder_target_tokens = batch['decoder_target_tokens']
     weights = batch['decoder_loss_weights']
     input_length = decoder_target_tokens.shape[-1]
-    sequence_lengths = _get_sequence_lengths(batch)
+    sequence_lengths = slicing.get_sequence_lengths(
+        decoder_target_tokens=decoder_target_tokens)
 
     def get_token_scores(logits):
       return -losses.cross_entropy_with_logits(
@@ -569,10 +680,16 @@ class PerceiverARModel(models.DecoderOnlyModel):
               decoder_target_tokens, logits.shape[-1], on_value=1, off_value=0),
           z_loss=0.0)[0] * weights
 
-    stride = self._num_latents - self._decoding_latent_reset_fill
+    # Calculate stride given decoding_latent_reset_fill.
+    # For example, if decoding_latent_reset_fill=num_latents, then in decoding
+    # we would use only the final latent position to predict the next token.
+    # The equivalent behavior here is a stride of 1.
+    decoding_latent_reset_fill = self.get_decoding_latent_reset_fill(
+        input_length)
+    stride = self._num_latents - decoding_latent_reset_fill + 1
     logging.info(
         'decoding_latent_reset_fill is %d and num_latents is %d, so using a '
-        'stride of %d for scoring.', self._decoding_latent_reset_fill,
+        'stride of %d for scoring.', decoding_latent_reset_fill,
         self._num_latents, stride)
 
     # Loop forward using strides.
@@ -587,7 +704,7 @@ class PerceiverARModel(models.DecoderOnlyModel):
       loop_logits = jnp.pad(loop_logits, [(0, 0),
                                           (0, input_length - self._num_latents),
                                           (0, 0)])
-      loop_logits_shift = slice_end - self._num_latents
+      loop_logits_shift = jnp.maximum(slice_end - self._num_latents, 0)
       loop_logits = jax.vmap(functools.partial(jnp.roll,
                                                axis=0))(loop_logits,
                                                         loop_logits_shift)

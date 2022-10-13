@@ -58,24 +58,30 @@ def _mlp_factory(dropout_rate: float = 0.1, embed_size: int = 13) -> nn.Module:
       dtype=jnp.float32)
 
 
-def _encoder_self_attention_factory(num_heads, num_clusters, qkv_features):
+def _encoder_self_attention_factory(num_heads, num_clusters, qkv_features,
+                                    use_rpb, use_multihead_rpb) -> nn.Module:
   return h_attention.OneDimEncoderSelfAttention(
       num_heads=num_heads,
       num_clusters=num_clusters,
       qkv_features=qkv_features,
       dtype=jnp.float32,
       kernel_init=_ATTENTION_KERNEL_INIT,
-      bias_init=_BIAS_INIT)
+      bias_init=_BIAS_INIT,
+      use_rpb=use_rpb,
+      use_multihead_rpb=use_multihead_rpb)
 
 
-def _decoder_self_attention_factory(num_heads, num_clusters, qkv_features):
+def _decoder_self_attention_factory(num_heads, num_clusters, qkv_features,
+                                    use_rpb, use_multihead_rpb):
   return h_attention.OneDimDecoderSelfAttention(
       num_heads=num_heads,
       num_clusters=num_clusters,
       qkv_features=qkv_features,
       dtype=jnp.float32,
       kernel_init=_ATTENTION_KERNEL_INIT,
-      bias_init=_BIAS_INIT)
+      bias_init=_BIAS_INIT,
+      use_rpb=use_rpb,
+      use_multihead_rpb=use_multihead_rpb)
 
 
 def _cross_attention_factory(num_heads, qkv_features):
@@ -105,13 +111,16 @@ def config_encoder(
     dropout_rate: float = 0.1,
     num_heads: int = 4,
     num_clusters: int = 2,
+    use_rpb: bool = True,
+    use_multihead_rpb: bool = True,
 ) -> h_transformer_1d_architecture.Encoder:
   """Configures an h-transformer encoder."""
 
   def _encoder_layer_factory():
     return h_transformer_1d_architecture.EncoderLayer(
         attention=_encoder_self_attention_factory(num_heads, num_clusters,
-                                                  qkv_features),
+                                                  qkv_features, use_rpb,
+                                                  use_multihead_rpb),
         mlp=_mlp_factory(dropout_rate=dropout_rate, embed_size=embed_size),
         dropout_factory=dropout_factory,
         layer_norm_factory=layer_norm_factory,
@@ -142,14 +151,17 @@ def config_decoder_only(
     qkv_features: int = 512,
     dropout_rate: float = 0.1,
     num_heads: int = 4,
-    num_clusters: int = 2,
+    num_clusters: int = 4,
+    use_rpb: bool = True,
+    use_multihead_rpb: bool = True,
 ) -> h_transformer_1d_architecture.DecoderOnly:
   """Configures an h-transformer DecoderOnly."""
 
   def _decoder_only_layer_factory():
     return h_transformer_1d_architecture.DecoderOnlyLayer(
         attention=_decoder_self_attention_factory(num_heads, num_clusters,
-                                                  qkv_features),
+                                                  qkv_features, use_rpb,
+                                                  use_multihead_rpb),
         mlp=_mlp_factory(dropout_rate=dropout_rate, embed_size=embed_size),
         dropout_factory=dropout_factory,
         layer_norm_factory=layer_norm_factory,
@@ -182,13 +194,16 @@ def config_decoder(
     dropout_rate: float = 0.1,
     num_heads: int = 4,
     num_clusters: int = 2,
+    use_rpb: bool = True,
+    use_multihead_rpb: bool = True,
 ) -> h_transformer_1d_architecture.Decoder:
   """Configures an h-transformer Decoder."""
 
   def _decoder_layer_factory():
     return h_transformer_1d_architecture.DecoderLayer(
         self_attention=_decoder_self_attention_factory(num_heads, num_clusters,
-                                                       qkv_features),
+                                                       qkv_features, use_rpb,
+                                                       use_multihead_rpb),
         encoder_decoder_attention=None,
         mlp=_mlp_factory(dropout_rate=dropout_rate, embed_size=embed_size),
         dropout_factory=dropout_factory,
@@ -222,13 +237,16 @@ def config_encoder_decoder(
     dropout_rate: float = 0.1,
     num_heads: int = 4,
     num_clusters: int = 2,
+    use_rpb: bool = True,
+    use_multihead_rpb: bool = True,
 ) -> h_transformer_1d_architecture.EncoderDecoder:
   """Configures an h-transformer EncoderDecoder."""
 
   def _encoder_layer_factory():
     return h_transformer_1d_architecture.EncoderLayer(
         attention=_decoder_self_attention_factory(num_heads, num_clusters,
-                                                  qkv_features),
+                                                  qkv_features, use_rpb,
+                                                  use_multihead_rpb),
         mlp=_mlp_factory(dropout_rate=dropout_rate, embed_size=embed_size),
         dropout_factory=dropout_factory,
         layer_norm_factory=layer_norm_factory,
@@ -237,7 +255,8 @@ def config_encoder_decoder(
   def _decoder_layer_factory():
     return h_transformer_1d_architecture.DecoderLayer(
         self_attention=_decoder_self_attention_factory(num_heads, num_clusters,
-                                                       qkv_features),
+                                                       qkv_features, use_rpb,
+                                                       use_multihead_rpb),
         encoder_decoder_attention=_cross_attention_factory(
             num_heads, qkv_features),
         mlp=_mlp_factory(dropout_rate=dropout_rate, embed_size=embed_size),

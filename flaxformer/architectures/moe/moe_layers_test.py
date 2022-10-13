@@ -86,6 +86,7 @@ class MoeLayerTest(parameterized.TestCase):
         intermediate_dropout_rate=0.1)
     moe_layer = moe_layers.MoeLayer(
         num_experts=num_experts,
+        num_expert_partitions=num_experts,
         max_group_size=num_tokens,
         router=router,
         train_capacity_factor=1.5,
@@ -152,6 +153,7 @@ class MoeLayerTest(parameterized.TestCase):
 
     moe_layer = moe_layers.MoeLayer(
         num_experts=num_experts,
+        num_expert_partitions=num_experts,
         max_group_size=num_tokens,
         router=router,
         train_capacity_factor=1.,
@@ -201,6 +203,7 @@ class MoeLayerTest(parameterized.TestCase):
     moe_layer_factory = functools.partial(
         moe_layers.MoeLayer,
         num_experts=num_experts,
+        num_expert_partitions=num_experts,
         dropout_rate=0.,
         max_group_size=tokens_per_group,
         train_capacity_factor=1.,
@@ -343,6 +346,7 @@ class MoeLayerTest(parameterized.TestCase):
         ignore_padding_tokens=True)
     moe_layer = moe_layers.MoeLayer(
         num_experts=2,
+        num_expert_partitions=2,
         router=router,
         max_group_size=16,
         train_capacity_factor=1.,
@@ -358,6 +362,32 @@ class MoeLayerTest(parameterized.TestCase):
         f'please set optimize_model_parallel_communications=False'):
       init_layer_variables(jax.random.PRNGKey(0), moe_layer, init_batch)
 
+  @parameterized.parameters(
+      dict(
+          num_expert_partitions=1,
+          num_model_partitions=1,
+          expected_num_replicas=4),
+      dict(
+          num_expert_partitions=2,
+          num_model_partitions=1,
+          expected_num_replicas=2),
+      dict(
+          num_expert_partitions=2,
+          num_model_partitions=2,
+          expected_num_replicas=1),
+      dict(
+          num_expert_partitions=4,
+          num_model_partitions=1,
+          expected_num_replicas=1))
+  @mock.patch('jax.device_count')
+  def test_num_expert_replicas(self, device_count, num_expert_partitions: int,
+                               num_model_partitions: int,
+                               expected_num_replicas: int):
+    device_count.return_value = 4
+    self.assertEqual(
+        moe_layers._num_expert_replicas(num_expert_partitions,
+                                        num_model_partitions),
+        expected_num_replicas)
 
 if __name__ == '__main__':
   absltest.main()

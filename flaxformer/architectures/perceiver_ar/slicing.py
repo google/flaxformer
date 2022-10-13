@@ -24,10 +24,22 @@ from t5x import partitioning
 from flaxformer.types import Array
 
 
-def _slice_sequences(x: Array, sequence_length: Array, num_latents: int,
-                     axis: int) -> Array:
+def get_sequence_lengths(decoder_target_tokens: Array) -> Array:
+  """Return non-padding lengths of sequences in the batch."""
+  return (decoder_target_tokens > 0).astype(jnp.int32).sum(axis=-1)
+
+
+def sequence_slice_start(sequence_length: Array, num_latents: int) -> Array:
+  """Calculate start index for slicing a sequence."""
   end = jnp.maximum(num_latents, sequence_length)
   start = end - num_latents
+  return start
+
+
+def _slice_sequences(x: Array, sequence_length: Array, num_latents: int,
+                     axis: int) -> Array:
+  start = sequence_slice_start(
+      sequence_length=sequence_length, num_latents=num_latents)
 
   return lax.dynamic_slice_in_dim(x, start, num_latents, axis=axis)
 

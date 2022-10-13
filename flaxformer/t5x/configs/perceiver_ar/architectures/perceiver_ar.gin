@@ -19,15 +19,15 @@ from __gin__ import dynamic_registration
 
 from flax import linen
 
+from flaxformer.architectures.perceiver_ar import decoder_layer
+from flaxformer.architectures.perceiver_ar import dense_attention
 from flaxformer.architectures.perceiver_ar import perceiver_ar_architecture
-from flaxformer.architectures.t5 import t5_architecture
-from flaxformer.components.attention import dense_attention
 from flaxformer.components import dense
 from flaxformer.components import embedding
 from flaxformer.components import layer_norm
 
-# Use most architecture defaults from t5_flaxformer.
-include 'flaxformer/t5x/configs/t5/architectures/t5_flaxformer.gin'
+# Use most architecture defaults from t5_1_1_flaxformer.
+include 'flaxformer/t5x/configs/t5/architectures/t5_1_1_flaxformer.gin'
 
 # Must be overridden.
 NUM_LATENTS = %gin.REQUIRED
@@ -45,17 +45,17 @@ perceiver_ar_architecture.DecoderOnly:
 perceiver_ar_architecture.Decoder:
   num_latents = %NUM_LATENTS
   num_layers = %NUM_DECODER_LAYERS
-  layer_factory = @perceiver_ar_architecture.DecoderLayer
+  layer_factory = @decoder_layer.DecoderLayer
   dropout_factory = %DROPOUT_FACTORY
   layer_norm_factory = @layer_norm.T5LayerNorm
-  output_logits_factory = None
+  output_logits_factory = @output_logits/dense.DenseGeneral
   position_embedder_factory = None
   shared_relative_position_bias_factory = None
   dtype = %ACTIVATION_DTYPE
   token_embedder_factory = @embedding.Embed
 
 # Decoder Layer
-perceiver_ar_architecture.DecoderLayer:
+decoder_layer.DecoderLayer:
   self_attention = @dense_attention.MultiHeadDotProductAttention()
   encoder_decoder_attention = @dense_attention.MultiHeadDotProductAttention()
   mlp = @dense.MlpBlock()
@@ -64,5 +64,21 @@ perceiver_ar_architecture.DecoderLayer:
   activation_partitioning_dims = %ACTIVATION_PARTITIONING_DIMS
   num_latents = %NUM_LATENTS
 
-# Rope
-dense_attention.MultiHeadDotProductAttention.use_rotary_embedding = True
+# Attention
+dense_attention.MultiHeadDotProductAttention:
+  num_heads = %NUM_HEADS
+  dtype = %ACTIVATION_DTYPE
+  head_dim = %HEAD_DIM
+  kernel_init =  @attention_kernel_init/linen.initializers.variance_scaling()
+  bias_init = %BIAS_INIT
+  use_bias = False
+  broadcast_dropout = True
+  dropout_rate = %DROPOUT_RATE
+attention_kernel_init/linen.initializers.variance_scaling:
+  scale = %SCALE
+  mode = 'fan_in'
+  distribution = 'normal'
+
+# Rotary Positional Embedding (RoPE)
+dense_attention.MultiHeadDotProductAttention:
+  use_rotary_embedding = True

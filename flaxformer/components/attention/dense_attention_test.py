@@ -1665,9 +1665,74 @@ class QuantizedAttentionTest(parameterized.TestCase):
         ],
         dtype=np.float32)
 
-    _, params = module.init_with_output(
+    result, params = module.init_with_output(
         random.PRNGKey(0), inputs_q, inputs_kv, enable_dropout=False)
 
+    expected_params = freeze({
+        'params': {
+            'query': {
+                'qkernel':
+                    jnp.array([[[0], [0]], [[0], [0]]], dtype=jnp.int8),
+                'qscale':
+                    jnp.array([[[3.8685133e-07], [-5.7897455e-07]]],
+                              dtype=jnp.float32),
+                'bias':
+                    jnp.array([1.1104368e-06, 2.4920448e-06],
+                              dtype=jnp.float32),
+            },
+            'key': {
+                'qkernel': jnp.array([[0], [0]], dtype=jnp.int8),
+                'qscale': jnp.array([[9.180263e-07]], dtype=jnp.float32),
+                'bias': jnp.array([5.054643e-07], dtype=jnp.float32),
+            },
+            'value': {
+                'qkernel': jnp.array([[0], [0]], dtype=jnp.int8),
+                'qscale': jnp.array([[8.859404e-07]], dtype=jnp.float32),
+                'bias': jnp.array([4.5408714e-07], dtype=jnp.float32),
+            },
+            'out': {
+                'qkernel':
+                    jnp.array([[0, 0], [0, 0]], dtype=jnp.int8),
+                'qscale':
+                    jnp.array([[-9.7886084e-07, 1.3396599e-06]],
+                              dtype=jnp.float32),
+                'bias':
+                    jnp.array([-3.5336794e-07, -3.4736888e-07],
+                              dtype=jnp.float32),
+            },
+        },
+        'params_axes': {
+            'query': {
+                'qkernel_axes':
+                    AxisMetadata(names=('embed', 'heads', 'kv')),
+                'qscale_axes':
+                    AxisMetadata(names=('embed_qscale', 'heads', 'kv')),
+                'bias_axes':
+                    AxisMetadata(names=('kv',)),
+            },
+            'key': {
+                'qkernel_axes': AxisMetadata(names=('embed', 'kv')),
+                'qscale_axes': AxisMetadata(names=('embed_qscale', 'kv')),
+                'bias_axes': AxisMetadata(names=('kv',)),
+            },
+            'value': {
+                'qkernel_axes': AxisMetadata(names=('embed', 'kv')),
+                'qscale_axes': AxisMetadata(names=('embed_qscale', 'kv')),
+                'bias_axes': AxisMetadata(names=('kv',)),
+            },
+            'out': {
+                'qkernel_axes':
+                    AxisMetadata(names=('joined_kv', 'embed')),
+                'qscale_axes':
+                    AxisMetadata(names=('joined_kv_qscale', 'embed')),
+                'bias_axes':
+                    AxisMetadata(names=('embed',)),
+            },
+        },
+    })
+    jax.tree_map(
+        functools.partial(np.testing.assert_allclose, rtol=1e-6), params,
+        expected_params)
     self.assertDictEqual(
         testing_utils.param_dtypes_shapes_axes(params['params'],
                                                params['params_axes']),
@@ -1693,6 +1758,15 @@ class QuantizedAttentionTest(parameterized.TestCase):
                 'qscale': ['float32', 'embed_qscale=1', 'kv=1']
             }
         })
+    np.testing.assert_allclose(
+        result.tolist(),
+        [[[-3.5336794e-07, -3.4736888e-07], [-3.5336794e-07, -3.4736888e-07],
+          [-3.5336794e-07, -3.4736888e-07]],
+         [[-3.5336794e-07, -3.4736888e-07], [-3.5336794e-07, -3.4736888e-07],
+          [-3.5336794e-07, -3.4736888e-07]]],
+        rtol=1e-6,
+    )
+
 
 if __name__ == '__main__':
   absltest.main()

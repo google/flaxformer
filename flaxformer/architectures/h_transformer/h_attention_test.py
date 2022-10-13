@@ -151,14 +151,15 @@ class HAttention1DTest(parameterized.TestCase):
 
   def test_attention_params(self):
     num_block = 16
-    num_clusters = 2
+    num_clusters = 4
     seq_len = num_clusters * num_block
     inputs_q = jnp.ones((self.batch_size, seq_len, self.feature_size))
     rng = {'params': random.PRNGKey(0), 'dropout': random.PRNGKey(1)}
     attention_module = h_attention.OneDimEncoderSelfAttention(
         num_heads=self.num_heads,
         num_clusters=num_clusters,
-        use_rpb=False,
+        use_rpb=True,
+        use_multihead_rpb=True,
         split_head_kernel=True)
     result, variables = attention_module.init_with_output(
         rng, inputs_q, padding_mask=None)
@@ -168,6 +169,7 @@ class HAttention1DTest(parameterized.TestCase):
     expected_embed = f'embed={self.feature_size}'
     expected_heads = f'heads={self.num_heads}'
     expected_kv = f'kv={self.head_dim}'
+    expected_relpos = f'relpos_buckets={4*num_clusters - 1}'
     # The bias term does not have split head shape. The heads are always merged.
     expected_merged_kv = f'kv={self.feature_size}'
     expected_params = {
@@ -186,6 +188,11 @@ class HAttention1DTest(parameterized.TestCase):
         'out': {
             'bias': ['float32', expected_embed],
             'kernel': ['float32', expected_merged_kv, expected_embed],
+        },
+        '1d_relative_position_bias': {
+            '1d_relative_position_bias': [
+                'float32', expected_relpos, expected_heads
+            ],
         },
     }
     self.assertDictEqual(

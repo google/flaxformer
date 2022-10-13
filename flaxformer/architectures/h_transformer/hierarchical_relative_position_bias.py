@@ -76,7 +76,7 @@ class HierarchicalRelativePositionBias(nn.Module):
         param_name,
         self.position_bias_init, (total_positions, self.num_head),
         jnp.float32,
-        axes=('positions', 'heads'))
+        axes=('relpos_buckets', 'heads'))
     relative_pos_bias = jnp.take(bias_params, relative_positions, axis=0)
     return relative_pos_bias
 

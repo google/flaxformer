@@ -396,7 +396,7 @@ class DecoderLayer(nn.Module, param_remapping.ParameterRemappable):
     encoder_decoder_bias = None
     if self.relpos_bias:
       if isinstance(self.relpos_bias,
-                    relative_position_biases.RelativePositionBiases):
+                    relative_position_biases.RelativeAttentionAPI):
         if max_decode_length:
           relpos_length = max_decode_length
         else:
@@ -706,7 +706,7 @@ class Encoder(nn.Module, param_remapping.ParameterRemappable):
   # absolute position embeddings are desired.
   token_embedder_factory: Optional[Callable[[],
                                             embedding.Embedder[Array]]] = None
-  shared_token_embedder: Optional[embedding.Embed] = None
+  shared_token_embedder: Optional[embedding.Embedder[Array]] = None
   position_embedder_factory: Optional[Callable[
       [], embedding.Embedder[Array]]] = None
   sow_intermediates: bool = False
@@ -724,11 +724,9 @@ class Encoder(nn.Module, param_remapping.ParameterRemappable):
     if self.shared_token_embedder is not None:
       embedders = {'token_ids': self.shared_token_embedder}
     else:
-      self.token_embedder_factory: Callable[[], embedding.Embed]
       self.token_embedder = self.token_embedder_factory()
       embedders = {'token_ids': self.token_embedder}
     if self.position_embedder_factory is not None:
-      self.position_embedder_factory: Callable[[], embedding.Embed]
       self.position_embedder = self.position_embedder_factory()
       embedders['position_ids'] = self.position_embedder
     self.embedder = embedding.MultiEmbed(
@@ -861,6 +859,8 @@ class Encoder(nn.Module, param_remapping.ParameterRemappable):
     Returns:
       output of a transformer encoder.
     """
+    if self.sow_intermediates:
+      self.sow('intermediates', 'input_tokens_ids', inputs)
     embedded_inputs = self.embed_and_combine_inputs(
         inputs,
         inputs_positions=inputs_positions,
@@ -873,7 +873,8 @@ class Encoder(nn.Module, param_remapping.ParameterRemappable):
         encoder_mask=encoder_mask,
         logit_mask=logit_mask,
         enable_dropout=enable_dropout)
-
+    if self.sow_intermediates:
+      self.sow('intermediates', 'final_encoder_outputs', encoder_outputs)
     return encoder_outputs
 
 
@@ -932,7 +933,7 @@ class Decoder(nn.Module, param_remapping.ParameterRemappable):
   # absolute position embeddings are desired.
   token_embedder_factory: Optional[Callable[[],
                                             embedding.Embedder[Array]]] = None
-  shared_token_embedder: Optional[embedding.Embed] = None
+  shared_token_embedder: Optional[embedding.Embedder[Array]] = None
   position_embedder_factory: Optional[Callable[
       [], embedding.Embedder[Array]]] = None
 
@@ -952,11 +953,9 @@ class Decoder(nn.Module, param_remapping.ParameterRemappable):
     if self.shared_token_embedder is not None:
       embedders = {'token_ids': self.shared_token_embedder}
     else:
-      self.token_embedder_factory: Callable[[], embedding.Embed]
       self.token_embedder = self.token_embedder_factory()
       embedders = {'token_ids': self.token_embedder}
     if self.position_embedder_factory is not None:
-      self.position_embedder_factory: Callable[[], embedding.Embed]
       self.position_embedder = self.position_embedder_factory()
       embedders['position_ids'] = self.position_embedder
     self.embedder = embedding.MultiEmbed(
@@ -1269,6 +1268,11 @@ class EncoderDecoder(nn.Module, param_remapping.ParameterRemappable):
       self.decoder = self.decoder_factory(
           shared_token_embedder=self.token_embedder)
 
+  def _make_padding_attention_mask(self, query_tokens: Array,
+                                   key_tokens: Array) -> Array:
+    return dense_attention.make_attention_mask(
+        query_tokens > 0, key_tokens > 0, dtype=self.dtype)
+
   def encode(self,
              encoder_input_tokens,
              encoder_segment_ids=None,
@@ -1288,8 +1292,8 @@ class EncoderDecoder(nn.Module, param_remapping.ParameterRemappable):
       encoded feature array from the transformer encoder.
     """
     # Make padding attention mask.
-    encoder_mask = dense_attention.make_attention_mask(
-        encoder_input_tokens > 0, encoder_input_tokens > 0, dtype=self.dtype)
+    encoder_mask = self._make_padding_attention_mask(encoder_input_tokens,
+                                                     encoder_input_tokens)
     # Add segmentation block-diagonal attention mask if using segmented data.
     if encoder_segment_ids is not None:
       encoder_mask = dense_attention.combine_masks(
@@ -1350,17 +1354,15 @@ class EncoderDecoder(nn.Module, param_remapping.ParameterRemappable):
       # Do not mask decoder attention based on targets padding at
       # decoding/inference time.
       decoder_mask = None
-      encoder_decoder_mask = dense_attention.make_attention_mask(
-          jnp.ones_like(decoder_target_tokens),
-          encoder_input_tokens > 0,
-          dtype=self.dtype)
+      encoder_decoder_mask = self._make_padding_attention_mask(
+          jnp.ones_like(decoder_target_tokens), encoder_input_tokens)
     else:
       decoder_mask = dense_attention.make_decoder_mask(
           decoder_target_tokens=decoder_target_tokens,
           dtype=self.dtype,
           decoder_segment_ids=decoder_segment_ids)
-      encoder_decoder_mask = dense_attention.make_attention_mask(
-          decoder_target_tokens > 0, encoder_input_tokens > 0, dtype=self.dtype)
+      encoder_decoder_mask = self._make_padding_attention_mask(
+          decoder_target_tokens, encoder_input_tokens)
 
     # Add segmentation block-diagonal attention masks if using segmented data.
     if encoder_segment_ids is not None:

@@ -155,6 +155,8 @@ class LongEncoderLayer(nn.Module, param_remapping.ParameterRemappable):
     parallel: whether to call attention and mlp in parallel
     sow_intermediates: whether to track intermediates using Module.sow.
     scanned: whether this layer is being scanned over.
+    use_logit_mask: whether the input mask is used to zero out the padding
+      representations.
   """
   attention_factory: MakeLongSelfAttentionFn
   mlp: nn.Module
@@ -168,6 +170,7 @@ class LongEncoderLayer(nn.Module, param_remapping.ParameterRemappable):
   parallel: bool = False
   sow_intermediates: bool = False
   scanned: bool = False
+  use_logit_mask: bool = True
 
   def setup(self):
     if (self.relpos_bias_factory is not None and
@@ -253,6 +256,13 @@ class LongEncoderLayer(nn.Module, param_remapping.ParameterRemappable):
           x,
           self.activation_partitioning_dims,
           logical_axis_names=('batch', 'length', 'embed'))
+      # Convert padding representations to zero vectors. Note inputs_mask
+      # and x are normally expected to have the same [batch, length] shape.
+      # However, if this isn't the case, set use_logit_mask to False to
+      # avoid a shape incompatibility error.
+      if self.use_logit_mask:
+        logit_mask = inputs_mask.astype(x.dtype)[:, :, jnp.newaxis]
+        x = x * logit_mask
       # The shape should be maintained for the residual connection.
       # [batch, length, emb_dim] -> [batch, length, emb_dim]
       x = self.attention(
@@ -274,6 +284,9 @@ class LongEncoderLayer(nn.Module, param_remapping.ParameterRemappable):
           y,
           self.activation_partitioning_dims,
           logical_axis_names=('batch', 'length', 'embed'))
+      # Convert padding representations to zero vectors
+      if self.use_logit_mask:
+        y = y * logit_mask.astype(y.dtype)
       # [batch, length, emb_dim] -> [batch, length, emb_dim]
       y = self.mlp(y, enable_dropout=enable_dropout)
       y = x + self.post_mlp_dropout(y, deterministic=not enable_dropout)

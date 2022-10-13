@@ -804,7 +804,7 @@ class NgramHashEmbed(nn.Module, Embedder[Array]):
   def __call__(self,
                input_ids: Array,
                *,
-               segment_ids: Optional[Array],
+               segment_ids: Optional[Array] = None,
                decode: bool = False,
                enable_dropout: bool = True) -> Array:
     """Converts IDs to ngram embeddings via multiple hashing.
