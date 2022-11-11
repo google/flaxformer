@@ -447,7 +447,7 @@ class DecoderLayer(nn.Module, param_remapping.ParameterRemappable):
                prefill: bool = False,
                prefill_lengths: Optional[Array] = None,
                **kwargs):
-    """Applies EncoderDecoder1DBlock module.
+    """Applies a single T5 decoder layer.
 
     Args:
       targets: Input data for decoder with shape [batch_size,

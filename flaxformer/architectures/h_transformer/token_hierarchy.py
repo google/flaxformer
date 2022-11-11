@@ -491,7 +491,7 @@ def _shift_blocks_1d(input_array: Array, block_name: TokenBlockName) -> Array:
   """
   pad_shape = list(input_array.shape)
   pad_shape[1] = 1
-  zero_pad = jnp.zeros(tuple(pad_shape), dtype=input_array.dtype)
+  zero_pad = jnp.zeros(tuple(pad_shape), dtype=jnp.float32)
   if block_name == TokenBlockName.LEFT:
     # Shift top blocks downward and fill the vacancy with zero blocks.
     # This pushes out the bottom block.

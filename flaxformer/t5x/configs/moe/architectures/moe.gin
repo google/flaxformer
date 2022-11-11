@@ -248,7 +248,7 @@ routing.TokensChooseMaskedRouter:
   router_weights = @routing.RouterWeights()
   num_selected_experts = %NUM_SELECTED_EXPERTS
   jitter_noise = %JITTER_NOISE
-  dtype = %MOE_TRUNCATED_DTYPE
+  dtype = 'float32'
   ignore_padding_tokens = False
 sparse_encoder/routing.TokensChooseMaskedRouter:
   batch_prioritized_routing = True
@@ -257,7 +257,7 @@ sparse_decoder/routing.TokensChooseMaskedRouter:
 
 routing.RouterWeights:
   use_bias = False
-  dtype = %MOE_TRUNCATED_DTYPE
+  dtype = 'float32'
   kernel_init = @router_init/linen.initializers.normal()
   bias_init = %BIAS_INIT
 # We obtain slightly better results adopting typical normally-distributed

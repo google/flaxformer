@@ -23,8 +23,10 @@ import jax
 from jax import random
 import jax.numpy as jnp
 import numpy as np
+
 from flaxformer.architectures.longt5 import long_attention
 from flaxformer.architectures.longt5 import relative_position_biases_general
+from flaxformer.components import relative_position_biases
 from flaxformer.components.attention import dense_attention
 
 # Parse absl flags test_srcdir and test_tmpdir.

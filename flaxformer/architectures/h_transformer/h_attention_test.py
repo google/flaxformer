@@ -74,7 +74,7 @@ class HAttention1DTest(parameterized.TestCase):
   def test_decoder_runs(self, use_rpb, use_multihead_rpb):
     num_clusters = 2
     num_level = 4
-    num_block = onp.int(onp.exp2(num_level))
+    num_block = int(onp.exp2(num_level))
     seq_len = num_clusters * num_block
     inputs_q = jnp.ones((self.batch_size, seq_len, self.feature_size))
     rng = {'params': random.PRNGKey(0), 'dropout': random.PRNGKey(1)}
@@ -105,7 +105,7 @@ class HAttention1DTest(parameterized.TestCase):
   def test_encoder_runs(self, use_rpb, use_multihead_rpb):
     num_clusters = 2
     num_level = 4
-    num_block = onp.int(onp.exp2(num_level))
+    num_block = int(onp.exp2(num_level))
     seq_len = num_clusters * num_block
     inputs_q = jnp.ones((self.batch_size, seq_len, self.feature_size))
     rng = {'params': random.PRNGKey(0), 'dropout': random.PRNGKey(1)}
@@ -136,7 +136,7 @@ class HAttention1DTest(parameterized.TestCase):
   def test_cross_attention_runs(self, use_rpb, use_multihead_rpb):
     num_clusters = 2
     num_level = 4
-    num_block = onp.int(onp.exp2(num_level))
+    num_block = int(onp.exp2(num_level))
     seq_len = num_clusters * num_block
     inputs_q = jnp.ones((self.batch_size, seq_len, self.feature_size))
     rng = {'params': random.PRNGKey(0), 'dropout': random.PRNGKey(1)}

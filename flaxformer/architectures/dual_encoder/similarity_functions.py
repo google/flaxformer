@@ -123,16 +123,16 @@ class PointwiseFFNN(nn.Module):
 
   def __call__(self,
                encodings1: Array,
-               encodings2: Array,
+               encodings2: Optional[Array] = None,
                *,
                enable_dropout: bool = True) -> Array:
-    """Compute the pointiwse feed-forward NN similarity from two encodings.
+    """Compute the pointiwse feed-forward NN similarity from 1 or 2 encodings.
 
     Args:
       encodings1: A 2-D tensor of (left) encodings with shape [batch size,
         encoding dim].
-      encodings2: A 2-D tensor of (right) encodings with shape [batch size,
-        encoding dim].
+      encodings2: An optional 2-D tensor of (right) encodings with shape [batch
+        size, encoding dim].
       enable_dropout: Whether to enable dropout layers.
 
     Returns:
@@ -140,27 +140,31 @@ class PointwiseFFNN(nn.Module):
     """
     inputs = []
     encodings1_dim = encodings1.shape[-1]
-    encodings2_dim = encodings2.shape[-1]
+    if encodings2 is not None:
+      encodings2_dim = encodings2.shape[-1]
 
-    # Optionally add the two encodings as features.
-    if self.use_concat_feature:
-      inputs += [encodings1, encodings2]
+      # Optionally add the two encodings as features.
+      if self.use_concat_feature:
+        inputs += [encodings1, encodings2]
 
-    # If using element-wise features, enforce that the encodings have the same
-    # dimension.
-    if self.use_difference_feature or self.use_product_feature:
-      if encodings1_dim != encodings2_dim:
-        raise ValueError(
-            'If using element-wise features, enforce that the encodings have the same dimension.'
-        )
+      # If using element-wise features, enforce that the encodings have the same
+      # dimension.
+      if self.use_difference_feature or self.use_product_feature:
+        if encodings1_dim != encodings2_dim:
+          raise ValueError(
+              'If using element-wise features, enforce that the encodings have '
+              'the same dimension. The dimensions are: encodings1_dim: %d, '
+              'encodings2_dim: %d' % (encodings1_dim, encodings2_dim))
 
-    # Optionally add the element-wise difference as a feature.
-    if self.use_difference_feature:
-      inputs += [jnp.abs(encodings1 - encodings2)]
+      # Optionally add the element-wise difference as a feature.
+      if self.use_difference_feature:
+        inputs += [jnp.abs(encodings1 - encodings2)]
 
-    # Optionally add the element-wise product as a feature.
-    if self.use_product_feature:
-      inputs += [lax.mul(encodings1, encodings2)]
+      # Optionally add the element-wise product as a feature.
+      if self.use_product_feature:
+        inputs += [lax.mul(encodings1, encodings2)]
+    else:
+      inputs = [encodings1]
 
     inputs = jnp.concatenate(inputs, axis=-1)
     if self.dropout_factory:

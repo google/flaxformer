@@ -185,7 +185,7 @@ class OneDimTokenHierarchyTest(parameterized.TestCase):
     feature_size = num_head * head_dim
     num_level = 2
     num_cluster = 2
-    num_block = np.int(np.exp2(num_level))
+    num_block = int(np.exp2(num_level))
     seq_len = num_block * num_cluster
     padding_len = 3
 
@@ -264,7 +264,7 @@ class OneDimTokenHierarchyTest(parameterized.TestCase):
                                       expected_results):
     num_level = 3
     num_cluster = 2
-    num_block = np.int(np.exp2(num_level))
+    num_block = int(np.exp2(num_level))
     seq_len = num_block * num_cluster
 
     hierarchy = token_hierarchy.OneDimTokenHierarchy(
