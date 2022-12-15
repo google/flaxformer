@@ -31,7 +31,8 @@ class DecoderOnlyTest(absltest.TestCase):
 
   def test_decoder_shapes_per_layer(self):
     """Tests if the decoder parameter have the expected shapes."""
-    decoder = perceiver_ar_test_utils.test_make_decoder_only1(num_latents=2)
+    decoder = perceiver_ar_test_utils.test_make_decoder_only1(
+        num_latents=2, parallel=False)
     inputs = np.array(
         [
             # Batch 1.
@@ -49,6 +50,39 @@ class DecoderOnlyTest(absltest.TestCase):
     params = variables['params']
     reformatted = decoder.apply({}, params, method=decoder.to_save_format)
     check_params(reformatted, 'decoder_shapes_per_layer.json')
+    self.assertEqual(output.shape, (2, 2, 4))
+
+    # Convert back to Flax module structure format and test again.
+    params2 = decoder.apply({}, reformatted, method=decoder.from_save_format)
+    output2 = decoder.apply(
+        {'params': params2},
+        decoder_input_tokens=inputs,
+        decoder_target_tokens=inputs,  # used for mask generation
+        enable_dropout=False,
+    )
+    np.testing.assert_allclose(output, output2, rtol=1e-8)
+
+  def test_parallel_decoder_shapes_per_layer(self):
+    """Tests if the decoder parameter have the expected shapes."""
+    decoder = perceiver_ar_test_utils.test_make_decoder_only1(
+        num_latents=2, parallel=True)
+    inputs = np.array(
+        [
+            # Batch 1.
+            [183, 20, 75],
+            # Batch 2.
+            [392, 19, 7],
+        ],
+        dtype=np.int32)
+    output, variables = decoder.init_with_output(
+        random.PRNGKey(0),
+        decoder_input_tokens=inputs,
+        decoder_target_tokens=inputs,  # used for mask generation
+        enable_dropout=False,
+    )
+    params = variables['params']
+    reformatted = decoder.apply({}, params, method=decoder.to_save_format)
+    check_params(reformatted, 'parallel_decoder_shapes_per_layer.json')
     self.assertEqual(output.shape, (2, 2, 4))
 
     # Convert back to Flax module structure format and test again.

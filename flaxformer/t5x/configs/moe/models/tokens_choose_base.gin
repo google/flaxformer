@@ -36,7 +36,6 @@ NUM_SELECTED_EXPERTS = 2  # Top-2 routing
 # Router computations are performed on a per-group basis. Smaller group sizes
 # are faster, but may be slightly less stable.
 GROUP_SIZE = 4096
-EXPERT_DROPOUT_RATE = 0.0
 AUX_LOSS_FACTOR = 0.01
 ROUTER_Z_LOSS_FACTOR = 0.0
 

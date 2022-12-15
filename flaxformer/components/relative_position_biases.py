@@ -72,6 +72,12 @@ class RelativePositionBiases(nn.Module, RelativeAttentionAPI):
     head_axis_name: Axis to partition the relpos bias heads on. Setting this
       field trades training performance for unbounded parallelism in mixed
       models.
+    on_device_computation: Whether to compute "relative_position" on devices.
+      When turned off, all computation will be done with numpy and gets folded
+      into program constants. When turned on, computation will happen on
+      devices in runtime. The option is generally useful when exporting large
+      models with relatively giant (qlen,klen) pairs, so that the giant
+      constants will not be embedded into the program.
   """
   num_buckets: int
   max_distance: int
@@ -79,12 +85,14 @@ class RelativePositionBiases(nn.Module, RelativeAttentionAPI):
   dtype: Any
   embedding_init: Callable[..., Array] = nn.linear.default_embed_init
   head_axis_name: str = 'heads'
+  on_device_computation: bool = False
 
   @staticmethod
   def _relative_position_bucket(relative_position,
                                 bidirectional=True,
                                 num_buckets=32,
-                                max_distance=128):
+                                max_distance=128,
+                                computation_module=np):
     """Translate relative position to a bucket number for relative attention.
 
     The relative position is defined as memory_position - query_position, i.e.
@@ -103,6 +111,9 @@ class RelativePositionBiases(nn.Module, RelativeAttentionAPI):
       bidirectional: a boolean - whether the attention is bidirectional
       num_buckets: an integer
       max_distance: an integer
+      computation_module: The module, i.e., numpy or jax.numpy to use when
+        conducting computation. Please refer to "on_device_computation" for more
+        information.
 
     Returns:
       a Tensor with the same shape as relative_position, containing int32
@@ -112,19 +123,21 @@ class RelativePositionBiases(nn.Module, RelativeAttentionAPI):
     n = -relative_position
     if bidirectional:
       num_buckets //= 2
-      ret += (n < 0).astype(np.int32) * num_buckets
-      n = np.abs(n)
+      ret += (n < 0).astype(computation_module.int32) * num_buckets
+      n = computation_module.abs(n)
     else:
-      n = np.maximum(n, 0)
+      n = computation_module.maximum(n, 0)
     # now n is in the range [0, inf)
     max_exact = num_buckets // 2
     is_small = (n < max_exact)
     val_if_large = max_exact + (
-        np.log(n.astype(np.float32) / max_exact + np.finfo(np.float32).eps) /
-        np.log(max_distance / max_exact) *
-        (num_buckets - max_exact)).astype(np.int32)
-    val_if_large = np.minimum(val_if_large, num_buckets - 1)
-    ret += np.where(is_small, n, val_if_large)
+        computation_module.log(
+            n.astype(computation_module.float32) / max_exact +
+            computation_module.finfo(computation_module.float32).eps) /
+        computation_module.log(max_distance / max_exact) *
+        (num_buckets - max_exact)).astype(computation_module.int32)
+    val_if_large = computation_module.minimum(val_if_large, num_buckets - 1)
+    ret += computation_module.where(is_small, n, val_if_large)
     return ret
 
   @nn.compact
@@ -168,16 +181,16 @@ class RelativePositionBiases(nn.Module, RelativeAttentionAPI):
                          f'instead has the shape {cached_bias.shape}.')
       return cached_bias
 
-    # TODO: should we be computing this w. numpy as a program
-    # constant?
-    context_position = np.arange(qlen, dtype=jnp.int32)[:, None]
-    memory_position = np.arange(klen, dtype=jnp.int32)[None, :]
+    computation_module = jnp if self.on_device_computation else np
+    context_position = computation_module.arange(qlen, dtype=jnp.int32)[:, None]
+    memory_position = computation_module.arange(klen, dtype=jnp.int32)[None, :]
     relative_position = memory_position - context_position  # shape (qlen, klen)
     rp_bucket = self._relative_position_bucket(
         relative_position,
         bidirectional=bidirectional,
         num_buckets=self.num_buckets,
-        max_distance=self.max_distance)
+        max_distance=self.max_distance,
+        computation_module=computation_module)
     relative_attention_bias = partitioning.param_with_axes(
         'rel_embedding',
         self.embedding_init, (self.num_heads, self.num_buckets),

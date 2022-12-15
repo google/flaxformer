@@ -784,6 +784,13 @@ class T5ModelsDecodingLatentResetFillTest(absltest.TestCase):
     self.assertEqual(1920,
                      model.get_decoding_latent_reset_fill(input_length=5000))
 
+    # Ensure we can decode with only 1 latent.
+    model_single_latent = t5_models.PerceiverARModel(
+        module=None, vocabulary=None, optimizer_def=None, num_latents=1)
+    self.assertEqual(
+        1,
+        model_single_latent.get_decoding_latent_reset_fill(input_length=8192))
+
   def test_get_decoding_latent_reset_fill_when_configured(self):
     model = t5_models.PerceiverARModel(
         module=None,

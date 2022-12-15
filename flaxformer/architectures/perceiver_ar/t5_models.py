@@ -209,7 +209,7 @@ class PerceiverARModel(models.DecoderOnlyModel):
       # Example: 2048 latents, 1920 reset fill.
       # For small numbers of latents, just do half.
       decoding_latent_reset_fill = max(self._num_latents - 128,
-                                       self._num_latents // 2)
+                                       self._num_latents // 2, 1)
 
     # For shorter sequences, make sure we use the largest fill possible.
     # For example, if there are 2048 latents, the default reset fill from above

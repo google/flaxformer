@@ -82,8 +82,8 @@ class HierarchicalAttention(nn.Module, metaclass=abc.ABCMeta):
     sharding_over_head_dimension: Whether to shard over the head dimension.
       Setting this to False when the number of heads is not divisible your
       activation num_partitions.
-    use_rpb: Whether the hierarchical relative position bias is used.
-      Default to True because this setting delivers better results.
+    use_rpb: Whether the hierarchical relative position bias is used. Default to
+      True because this setting delivers better results.
     use_multihead_rpb: Whether the hierarchical relative position bias is
       different among multihead. If False, the same relative position bias is
       shared among all heads. Default to True so the bias array is stored in 2D
@@ -94,6 +94,7 @@ class HierarchicalAttention(nn.Module, metaclass=abc.ABCMeta):
       fixed at 3. This is also the case for the interpolation.
     coarsening_kernel_type: Type of coarsening convolution kernels.
     interpolation_kernel_type: Type of interpolation convolution kernels.
+    use_mxu: Indicates if MXU function einsum is used for mamtul.
   """
 
   num_heads: int = 8
@@ -117,6 +118,7 @@ class HierarchicalAttention(nn.Module, metaclass=abc.ABCMeta):
   conv_kernel_size: int = 2
   coarsening_kernel_type: th.ConvKernelType = th.ConvKernelType.CONST
   interpolation_kernel_type: th.ConvKernelType = th.ConvKernelType.CONST
+  use_mxu: bool = False
 
   @nn.compact
   def __call__(self,
@@ -405,7 +407,11 @@ class HierarchicalAttention(nn.Module, metaclass=abc.ABCMeta):
 
     def _matmult(query: Array, key: Array) -> Array:
       # einsum_str = 'bpqKhd, bpQkhd->bpqkh'
-      return jnp.sum(query[..., None, :, :] * key[..., None, :, :, :], axis=-1)
+      if self.use_mxu:
+        return jnp.einsum('bpqhd, bpkhd->bpqkh', query, key)
+      else:
+        return jnp.sum(
+            query[..., None, :, :] * key[..., None, :, :, :], axis=-1)
 
     if self.use_rpb:
       zero_block_mask = hierarchy.gen_packed_zero_block_mask(
@@ -648,12 +654,18 @@ class HierarchicalAttention(nn.Module, metaclass=abc.ABCMeta):
 
     def _matmul(attention: Array, value: Array) -> Array:
       if value.ndim == 5:
-        # einsum_str = 'bpqkhD, bpQkhd->bpqhd'
-        result = jnp.sum(
-            attention[..., None] * value[..., None, :, :, :], axis=3)
+        if self.use_mxu:
+          result = jnp.einsum('bpqkh, bpkhd->bpqhd', attention, value)
+        else:
+          # einsum_str = 'bpqkhD, bpQkhd->bpqhd'
+          result = jnp.sum(
+              attention[..., None] * value[..., None, :, :, :], axis=3)
       else:
-        # einsum_str = 'bpqkh, bpQkh->bpqh'
-        result = jnp.sum(attention * value[..., None, :, :], axis=3)
+        if self.use_mxu:
+          result = jnp.einsum('bpqkh, bpkh->bpqh', attention, value)
+        else:
+          # einsum_str = 'bpqkh, bpQkh->bpqh'
+          result = jnp.sum(attention * value[..., None, :, :], axis=3)
       return result
 
     first_block = True
@@ -813,10 +825,11 @@ class OneDimDecoderSelfAttention(OneDimHierarchicalAttention):
 
   causal_mask: bool = True
 
-  def __call__(self,
-               inputs: Array,
-               padding_mask: Array,
-               enable_dropout: Optional[bool] = False) -> Array:
+  def __call__(
+      self,  # pytype: disable=signature-mismatch  # overriding-default-value-checks
+      inputs: Array,
+      padding_mask: Array,
+      enable_dropout: Optional[bool] = False) -> Array:
     return super().__call__(
         inputs,
         inputs,
@@ -830,10 +843,11 @@ class OneDimEncoderSelfAttention(OneDimHierarchicalAttention):
 
   causal_mask: bool = False
 
-  def __call__(self,
-               inputs: Array,
-               padding_mask: Array,
-               enable_dropout: Optional[bool] = False) -> Array:
+  def __call__(
+      self,  # pytype: disable=signature-mismatch  # overriding-default-value-checks
+      inputs: Array,
+      padding_mask: Array,
+      enable_dropout: Optional[bool] = False) -> Array:
     return super().__call__(
         inputs,
         inputs,

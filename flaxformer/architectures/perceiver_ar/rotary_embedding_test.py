@@ -114,6 +114,34 @@ class RotaryTest(absltest.TestCase):
     np.testing.assert_allclose(out_short_q[0], out_full_q[0, 2:5])
     np.testing.assert_allclose(out_short_q[1], out_full_q[1, 3:])
 
+  def test_rotary_embedding_to_subset(self):
+    """Checks the shape of rotary encodings."""
+    batch = 2
+    qheads = 4
+    d = 2 * 6
+    qklen = 6
+    kheads = 7
+    maxlen = 8
+
+    # First, generate with queries as long as keys.
+    q = np.ones((batch, qklen, qheads, d))
+    k = np.ones((batch, qklen, kheads, d))
+
+    out_halfrot_q, out_halfrot_k = rotary_embedding.apply_rotary_embedding_to_subset(
+        q, k, max_timescale=maxlen, fraction_to_rotate=0.5)
+    self.assertEqual(out_halfrot_q.shape, q.shape)
+    self.assertEqual(out_halfrot_k.shape, k.shape)
+
+    # First half of dims should be rotated and therefore not the same as input.
+    # Second half should match input.
+
+    with np.testing.assert_raises(AssertionError):
+      np.testing.assert_allclose(out_halfrot_q[..., :d // 2], q[..., :d // 2])
+    np.testing.assert_allclose(out_halfrot_q[..., d // 2:], q[..., d // 2:])
+
+    with np.testing.assert_raises(AssertionError):
+      np.testing.assert_allclose(out_halfrot_k[..., :d // 2], k[..., :d // 2])
+    np.testing.assert_allclose(out_halfrot_k[..., d // 2:], k[..., d // 2:])
 
 if __name__ == '__main__':
   absltest.main()

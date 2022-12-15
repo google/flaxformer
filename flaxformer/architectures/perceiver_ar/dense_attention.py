@@ -35,7 +35,6 @@ import jax.numpy as jnp
 from flaxformer import activation_partitioning
 from flaxformer.architectures.perceiver_ar import rotary_embedding
 from flaxformer.components import dense
-from flaxformer.components import embedding
 from flaxformer.components.attention import dense_attention
 from flaxformer.types import Array
 from flaxformer.types import DType
@@ -114,6 +113,7 @@ class MultiHeadDotProductAttention(nn.Module, dense_attention.DenseAttention):
   kernels_to_fuse: Optional[str] = None
   use_rotary_embedding: bool = False
   rotary_embedding_max_timescale: float = 1e4
+  rotary_embedding_fraction_to_rotate: float = 1.0
   # Whether to shard over the head dimension, setting this to False when the
   # number of heads is not divisible your activation num_partitions
   sharding_over_head_dimension: bool = True
@@ -579,18 +579,14 @@ class MultiHeadDotProductAttention(nn.Module, dense_attention.DenseAttention):
       # use rotary embeddings before attention
       # https://arxiv.org/abs/2104.09864
       # TODO: Put it in a new class
-      dim = query.shape[-1]
-      max_length = max(query.shape[1], key.shape[1])
-      sin, cos = embedding.generate_fixed_pos_embedding(
-          dim, max_length, max_timescale=self.rotary_embedding_max_timescale)
-      query, key = rotary_embedding.apply_rotary_embedding(
+      query, key = rotary_embedding.apply_rotary_embedding_to_subset(
           query,
           key,
-          cos,
-          sin,
+          max_timescale=self.rotary_embedding_max_timescale,
+          fraction_to_rotate=self.rotary_embedding_fraction_to_rotate,
           decode=decode,
           rotary_index=rotary_index,
-          q_position_offset=query_position_offset)
+          query_position_offset=query_position_offset)
 
     # Compute attention.
     attn_weights = self.compute_attention_fn(
@@ -691,6 +687,7 @@ class MultiQueryDotProductAttention(nn.Module, dense_attention.DenseAttention):
   float32_logits: bool = False
   use_rotary_embedding: bool = False
   rotary_embedding_max_timescale: float = 1e4
+  rotary_embedding_fraction_to_rotate: float = 1.0
   split_head_kernel: bool = False
   q_conv: Optional[nn.Module] = None
   k_conv: Optional[nn.Module] = None
@@ -1195,18 +1192,14 @@ class MultiQueryDotProductAttention(nn.Module, dense_attention.DenseAttention):
       # use rotary embeddings before attention
       # https://arxiv.org/abs/2104.09864
       # TODO: Figure out if this should be put in a new class.
-      dim = query.shape[-1]
-      max_length = max(query.shape[1], key.shape[1])
-      sin, cos = embedding.generate_fixed_pos_embedding(
-          dim, max_length, max_timescale=self.rotary_embedding_max_timescale)
-      query, key = rotary_embedding.apply_rotary_embedding(
+      query, key = rotary_embedding.apply_rotary_embedding_to_subset(
           query,
           key,
-          cos,
-          sin,
+          max_timescale=self.rotary_embedding_max_timescale,
+          fraction_to_rotate=self.rotary_embedding_fraction_to_rotate,
           decode=decode,
           rotary_index=rotary_index,
-          q_position_offset=query_position_offset)
+          query_position_offset=query_position_offset)
 
     # Apply attention.
     x = self.attention_fn(

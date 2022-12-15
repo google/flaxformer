@@ -249,7 +249,7 @@ class DecoderLayer(nn.Module, param_remapping.ParameterRemappable):
               prefill=prefill,
               prefill_lengths=prefill_lengths,
               query_position_offset=query_position_offset) + self.mlp(
-                  x,
+                  x_queries,
                   decode=decode,
                   prefill=prefill,
                   prefill_lengths=prefill_lengths,

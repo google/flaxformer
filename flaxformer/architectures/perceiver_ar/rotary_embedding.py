@@ -15,11 +15,13 @@
 """A library with rotary embedding functions."""
 
 import functools
+import math
 from typing import Optional, Tuple
 
 import jax
 from jax import numpy as jnp
 
+from flaxformer.components import embedding
 from flaxformer.types import Array
 
 
@@ -100,3 +102,55 @@ def apply_rotary_embedding(
   if multiquery:
     out_k = jnp.squeeze(out_k, 2)
   return out_q, out_k
+
+
+def apply_rotary_embedding_to_subset(
+    query: Array,
+    key: Array,
+    max_timescale: float,
+    fraction_to_rotate: float,
+    decode: bool = False,
+    query_position_offset: Optional[Array] = None,
+    rotary_index: Optional[Array] = None) -> Tuple[Array, Array]:
+  """Apply rotary embedding to a fraction of dimensions."""
+  if fraction_to_rotate > 1.0 or fraction_to_rotate <= 0.0:
+    raise ValueError(
+        f'fraction_to_rotate must be in (0, 1], got {fraction_to_rotate}.')
+
+  dim = query.shape[-1]
+
+  def _to_even(x):
+    return math.floor(x / 2.) * 2
+
+  num_rotated_channels = _to_even(dim * fraction_to_rotate)
+
+  max_length = max(query.shape[1], key.shape[1])
+  sin, cos = embedding.generate_fixed_pos_embedding(
+      num_rotated_channels, max_length, max_timescale=max_timescale)
+
+  if num_rotated_channels == dim:
+    return apply_rotary_embedding(
+        query,
+        key,
+        cos,
+        sin,
+        decode=decode,
+        rotary_index=rotary_index,
+        q_position_offset=query_position_offset)
+  else:
+    query_r = query[..., :num_rotated_channels]
+    query_u = query[..., num_rotated_channels:]
+    key_r = key[..., :num_rotated_channels]
+    key_u = key[..., num_rotated_channels:]
+
+    query_r, key_r = apply_rotary_embedding(
+        query_r,
+        key_r,
+        cos,
+        sin,
+        decode=decode,
+        rotary_index=rotary_index,
+        q_position_offset=query_position_offset)
+    query = jnp.concatenate((query_r, query_u), axis=-1)
+    key = jnp.concatenate((key_r, key_u), axis=-1)
+    return query, key

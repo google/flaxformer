@@ -483,18 +483,20 @@ class LongEncoder(nn.Module, param_remapping.ParameterRemappable):
     return encoder_outputs
 
   def __call__(self,
-               inputs,
-               inputs_mask,
+               inputs: Array,
+               inputs_mask: Optional[Array] = None,
                *,
-               inputs_positions=None,
-               inputs_segment_ids=None,
+               inputs_positions: Optional[Array] = None,
+               inputs_segment_ids: Optional[Array] = None,
                enable_dropout: bool = True):
     """Applies Transformer model on the inputs.
 
     Args:
       inputs: input data
       inputs_mask: bool array with same shape as `inputs` indicating True for
-        non-padding tokens and False for padding.
+        non-padding tokens and False for padding. If `None` (the default), we
+        automatically construct the mask based on which `inputs` are nonzero
+        (rather than zero for padding).
       inputs_positions: input subsequence positions for packed examples.
       inputs_segment_ids: input segmentation info for packed examples.
       enable_dropout: Enables dropout if set to True.
@@ -502,6 +504,8 @@ class LongEncoder(nn.Module, param_remapping.ParameterRemappable):
     Returns:
       output of a transformer encoder.
     """
+    if inputs_mask is None:
+      inputs_mask = inputs > 0
     embedded_inputs = self.embed_and_combine_inputs(
         inputs,
         inputs_positions=inputs_positions,

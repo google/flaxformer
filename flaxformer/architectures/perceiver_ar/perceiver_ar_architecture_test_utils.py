@@ -42,7 +42,7 @@ def make_attention1(num_attn_heads, dtype, use_rotary_embedding=False):
 
 
 def test_make_decoder_only1(
-    num_latents: int) -> perceiver_ar_architecture.DecoderOnly:
+    num_latents: int, parallel: bool) -> perceiver_ar_architecture.DecoderOnly:
   """Returns a DecoderOnly."""
   dtype = jnp.float32
   num_attn_heads = 8
@@ -59,7 +59,8 @@ def test_make_decoder_only1(
         dropout_factory=make_dropout,
         layer_norm_factory=make_layer_norm,
         relative_position_bias_factory=None,
-        num_latents=num_latents)
+        num_latents=num_latents,
+        parallel=parallel)
 
   def make_output_logits():
     return dense.DenseGeneral(
