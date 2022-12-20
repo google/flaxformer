@@ -192,7 +192,6 @@ class MeanPooling(nn.Module):
     # Broadcast to the `hidden_size` dimension.
     input_masks = jnp.expand_dims(input_masks, axis=-1)
     embeddings_sum = jnp.sum(encoded_inputs * input_masks, axis=1)
-    # TODO: Switch to a JAX equivalent for divide_no_nan.
     masks_sum = jnp.maximum(input_masks.sum(axis=1), EPSILON)
 
     return embeddings_sum / masks_sum

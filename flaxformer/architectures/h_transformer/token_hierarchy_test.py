@@ -28,24 +28,23 @@ class OneDimTokenCoarseningTest(parameterized.TestCase):
 
   @parameterized.named_parameters(
       ('sample', token_hierarchy.TokenCoarseningMethod.SAMPLE,
-       np.array([[[1.], [3.], [5.]]])),
+       np.array([[[[1.], [2.]], [[5.], [6.]]]])),
       ('sum', token_hierarchy.TokenCoarseningMethod.SUM,
-       np.array([[[3.], [7.], [11.]]])),
+       np.array([[[[4.], [6.]], [[12.], [14.]]]])),
       ('const_average', token_hierarchy.TokenCoarseningMethod.CONST_AVERAGE,
-       np.array([[[1.5], [3.5], [5.5]]])),
-      ('linear_average', token_hierarchy.TokenCoarseningMethod.LINEAR_AVERAGE,
-       np.array([[[2.], [4.], [4.25]]])),
+       np.array([[[[2.], [3.]], [[6.], [7.]]]])),
   )
   def test_coarsening(self, method, expected_result):
     batch_size = 1
-    seq_len = 6
-    feature_size = 1
-    seq_shape = [batch_size, seq_len, feature_size]
+    seq_len = 4
+    num_head = 2
+    head_dim = 1
+    seq_shape = [batch_size, seq_len, num_head, head_dim]
     data_size = np.prod(seq_shape)
     inputs = jnp.arange(1, data_size + 1).reshape(tuple(seq_shape))
 
     coasening_fn = token_hierarchy.OneDimTokenCoarsening(
-        conv_kernel_size=2, method=method)
+        method=method, coarsening_ratio=2)
     result = coasening_fn(inputs)
     logging.info('method = %s', method)
     logging.info('result = %s', result)
@@ -121,26 +120,31 @@ class OneDimTokenHierarchyTest(parameterized.TestCase):
   def test_hierarchical_coarsen_without_padding(self, causal_mask,
                                                 expected_coarse_query):
     batch_size = 1
-    feature_size = 2
+    num_head = 2
+    head_dim = 1
     num_cluster = 2
     num_block = 4
     seq_len = num_block * num_cluster
-
-    seq_shape = [batch_size, seq_len, feature_size]
-    inputs_q = jnp.arange(1, 17).reshape(tuple(seq_shape))
+    seq_shape = [batch_size, seq_len, num_head, head_dim]
+    inputs = jnp.arange(1, 17).reshape(tuple(seq_shape))
 
     hierarchy = token_hierarchy.OneDimTokenHierarchy(
         seq_len=seq_len,
         num_cluster=num_cluster,
         for_self_attention=True,
         causal_mask=causal_mask)
-    results = hierarchy.hierarchical_coarsen(inputs_q, inputs_q)
-    coarse_qkv = results.packed_coarse_qkv
-    coarse_query, coarse_key, coarse_value = coarse_qkv.values()
+    results = hierarchy.hierarchical_coarsen(
+        inputs, input_array_name=token_hierarchy.InputArrayName.QUERY)
+    coarse_query = results.packed_coarse_qkv
+    results = hierarchy.hierarchical_coarsen(
+        inputs, input_array_name=token_hierarchy.InputArrayName.KEY)
+    coarse_key = results.packed_coarse_qkv
+    results = hierarchy.hierarchical_coarsen(
+        inputs, input_array_name=token_hierarchy.InputArrayName.VALUE)
+    coarse_value = results.packed_coarse_qkv
 
-    partitioned_shape = tuple(
-        (batch_size, num_block, num_cluster, feature_size))
-    diag_qkv = inputs_q.reshape(partitioned_shape)
+    partitioned_shape = tuple((batch_size, num_block, num_cluster, num_head))
+    diag_qkv = inputs.reshape(partitioned_shape)
     expected_coarse_key = {
         token_hierarchy.TokenBlockName.ANCHOR:
             diag_qkv,
@@ -167,12 +171,23 @@ class OneDimTokenHierarchyTest(parameterized.TestCase):
     }
 
     for dict_key, coarse_q in coarse_query.items():
-      np.testing.assert_array_almost_equal(coarse_q,
-                                           expected_coarse_query[dict_key])
-      np.testing.assert_array_almost_equal(coarse_key[dict_key],
-                                           expected_coarse_key[dict_key])
-      np.testing.assert_array_almost_equal(coarse_value[dict_key],
-                                           expected_coarse_value[dict_key])
+      logging.info('coarse_q[%s] = %s', dict_key, coarse_q)
+      logging.info('expected_coarse_q = %s',
+                   expected_coarse_query[dict_key][..., None])
+      np.testing.assert_array_almost_equal(
+          coarse_q, expected_coarse_query[dict_key][..., None])
+
+      logging.info('coarse_value = %s', coarse_value[dict_key])
+      logging.info('expected_coarse_value = %s',
+                   expected_coarse_value[dict_key][..., None])
+      np.testing.assert_array_almost_equal(
+          coarse_value[dict_key], expected_coarse_value[dict_key][..., None])
+
+      logging.info('coarse_key = %s', coarse_key[dict_key])
+      logging.info('expected_coarse_key = %s',
+                   expected_coarse_key[dict_key][..., None])
+      np.testing.assert_array_almost_equal(
+          coarse_key[dict_key], expected_coarse_key[dict_key][..., None])
 
   @parameterized.named_parameters(
       ('boolean_mask', True),
@@ -180,23 +195,23 @@ class OneDimTokenHierarchyTest(parameterized.TestCase):
   )
   def test_hierarchical_coarsen_with_padding(self, boolean_mask):
     batch_size = 1
-    num_head = 1
-    head_dim = 2
-    feature_size = num_head * head_dim
+    num_head = 2
+    head_dim = 1
     num_level = 2
     num_cluster = 2
     num_block = int(np.exp2(num_level))
     seq_len = num_block * num_cluster
     padding_len = 3
 
-    seq_shape = [batch_size, seq_len, feature_size]
-    data_size = np.prod(seq_shape)
-    inputs_q = jnp.arange(1, data_size + 1).reshape(tuple(seq_shape))
-
     padding_mask = np.ones((batch_size, seq_len, 1))
     padding_mask[:, -padding_len:] = 0
     if boolean_mask:
       padding_mask = padding_mask > 0
+
+    seq_shape = [batch_size, seq_len, num_head, head_dim]
+    data_size = np.prod(seq_shape)
+    inputs = jnp.arange(1, data_size + 1).reshape(tuple(seq_shape))
+    inputs *= padding_mask[..., None]
 
     hierarchy = token_hierarchy.OneDimTokenHierarchy(
         seq_len=seq_len,
@@ -204,33 +219,33 @@ class OneDimTokenHierarchyTest(parameterized.TestCase):
         for_self_attention=True,
         causal_mask=False)
     results = hierarchy.hierarchical_coarsen(
-        inputs_q,
-        inputs_q,
-        query_padding_mask=padding_mask,
-        key_padding_mask=padding_mask)
-    coarse_qkv = results.packed_coarse_qkv
+        inputs,
+        input_array_name=token_hierarchy.InputArrayName.QUERY,
+        padding_mask=padding_mask)
+    coarse_query = results.packed_coarse_qkv
+    results = hierarchy.hierarchical_coarsen(
+        inputs,
+        input_array_name=token_hierarchy.InputArrayName.KEY,
+        padding_mask=padding_mask)
     aggregated_padding_mask = results.packed_aggregated_key_padding_mask
 
-    coarse_query, _, _ = coarse_qkv.values()
-
-    partitioned_shape = tuple(
-        (batch_size, num_block, num_cluster, feature_size))
-    inputs_q *= padding_mask
-    diag_qkv = inputs_q.reshape(partitioned_shape)
+    partitioned_shape = tuple((batch_size, num_block, num_cluster, num_head, 1))
+    diag_qkv = inputs.reshape(partitioned_shape)
     expected_coarse_query = {
         token_hierarchy.TokenBlockName.ANCHOR:
             diag_qkv,
         token_hierarchy.TokenBlockName.LEFT:
             np.array([[[[0., 0.], [0., 0.]], [[5., 6.], [7., 8.]],
                        [[9., 10.], [0., 0.]], [[0., 0.], [0., 0.]],
-                       [[0., 0.], [0., 0.]], [[9., 10.], [0., 0.]]]]),
+                       [[0., 0.], [0., 0.]], [[9., 10.], [0., 0.]]]])[...,
+                                                                      None],
         token_hierarchy.TokenBlockName.RIGHT:
             np.array([[[[1., 2.], [3., 4.]], [[5., 6.], [7., 8.]],
                        [[9., 10.], [0., 0.]], [[0., 0.], [0., 0.]],
-                       [[2., 3.], [6., 7.]], [[0., 0.], [0., 0.]]]])
+                       [[2., 3.], [6., 7.]], [[0., 0.], [0., 0.]]]])[..., None],
     }
 
-    partitioned_mask_shape = tuple((batch_size, num_block, num_cluster, 1))
+    partitioned_mask_shape = tuple((batch_size, num_block, num_cluster, 1, 1))
     diag_padding_mask = padding_mask.reshape(partitioned_mask_shape).astype(
         jnp.float32)
     expected_padding_mask = {
@@ -238,17 +253,24 @@ class OneDimTokenHierarchyTest(parameterized.TestCase):
             diag_padding_mask,
         token_hierarchy.TokenBlockName.LEFT:
             np.array([[[[0.], [0.]], [[1.], [1.]], [[1.], [1.]], [[1.], [0.]],
-                       [[0.], [0.]], [[2.], [2.]]]]),
+                       [[0.], [0.]], [[2.], [2.]]]])[..., None],
         token_hierarchy.TokenBlockName.RIGHT:
             np.array([[[[1.], [1.]], [[1.], [0.]], [[0.], [0.]], [[0.], [0.]],
-                       [[1.], [0.]], [[0.], [0.]]]]),
+                       [[1.], [0.]], [[0.], [0.]]]])[..., None],
     }
 
     for dict_key, coarse_q in coarse_query.items():
-      np.testing.assert_array_almost_equal(coarse_q,
-                                           expected_coarse_query[dict_key])
+      logging.info('aggregated_padding_mask = %s',
+                   aggregated_padding_mask[dict_key])
+      logging.info('expected_padding_mask = %s',
+                   expected_padding_mask[dict_key])
       np.testing.assert_array_equal(aggregated_padding_mask[dict_key],
                                     expected_padding_mask[dict_key])
+
+      logging.info('coarse_q = %s', coarse_q)
+      logging.info('expected_coarse_q = %s', expected_coarse_query[dict_key])
+      np.testing.assert_array_almost_equal(coarse_q,
+                                           expected_coarse_query[dict_key])
 
   @parameterized.named_parameters(
       ('const', token_hierarchy.ConvKernelType.CONST,

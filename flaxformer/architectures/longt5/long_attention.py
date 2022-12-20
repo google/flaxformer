@@ -17,19 +17,23 @@
 
 import abc
 import functools
-from typing import Any, Optional, Tuple, Union
+from typing import Any, Callable, Optional, Tuple, Union
 from flax import linen as nn
 
+from flax.core import variables
 from flax.linen import initializers
 from flax.linen import partitioning
 from flax.linen.linear import default_kernel_init
+from flax.training import common_utils
 import jax
 from jax import lax
 from jax import random
 import jax.numpy as jnp
+from flaxformer import activation_partitioning
 from flaxformer.architectures.longt5 import relative_position_biases_general
 from flaxformer.architectures.longt5 import tensor_utils
 from flaxformer.components import dense
+from flaxformer.components import embedding
 from flaxformer.components import layer_norm
 from flaxformer.components.attention import dense_attention  # GOOGLE-INTERNAL # pylint: disable=line-too-long
 from flaxformer.types import Array

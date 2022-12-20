@@ -88,13 +88,12 @@ class HierarchicalAttention(nn.Module, metaclass=abc.ABCMeta):
       different among multihead. If False, the same relative position bias is
       shared among all heads. Default to True so the bias array is stored in 2D
       shape for the compatibility with Adafactor optimizer.
-    conv_kernel_size: Convolution kernel size used for coarsening and
-      interpolation. This is not used during coarsening if the attribute
-      coarsening_kernel_type=ConvKernelType.LINEAR since the kernel size is
-      fixed at 3. This is also the case for the interpolation.
-    coarsening_kernel_type: Type of coarsening convolution kernels.
+    conv_kernel_size: Convolution kernel size used for interpolation.
+      This is not used during interpolation if the attribute
+      interpolation_kernel_type=ConvKernelType.LINEAR since the kernel size is
+      fixed at 3.
     interpolation_kernel_type: Type of interpolation convolution kernels.
-    use_mxu: Indicates if MXU function einsum is used for mamtul.
+    use_mxu: Indicates if MXU function einsum is used.
   """
 
   num_heads: int = 8
@@ -116,7 +115,6 @@ class HierarchicalAttention(nn.Module, metaclass=abc.ABCMeta):
   use_rpb: bool = True
   use_multihead_rpb: bool = True
   conv_kernel_size: int = 2
-  coarsening_kernel_type: th.ConvKernelType = th.ConvKernelType.CONST
   interpolation_kernel_type: th.ConvKernelType = th.ConvKernelType.CONST
   use_mxu: bool = False
 
@@ -149,22 +147,19 @@ class HierarchicalAttention(nn.Module, metaclass=abc.ABCMeta):
     """
     self._validate_call_parameters(inputs_q, inputs_kv, query_padding_mask,
                                    key_padding_mask)
-    if query_padding_mask is not None and query_padding_mask.ndim == inputs_q.ndim - 1:
-      query_padding_mask = query_padding_mask[..., None]
-    if key_padding_mask is not None and key_padding_mask.ndim == inputs_q.ndim - 1:
-      key_padding_mask = key_padding_mask[..., None]
-
     for_self_attention = inputs_q is inputs_kv
-    hierarchy = self._setup_hierarchy(
-        inputs_q.shape[1], for_self_attention=for_self_attention)
-    coarse_results = hierarchy.hierarchical_coarsen(
-        inputs_q,
-        inputs_kv,
-        query_padding_mask=query_padding_mask,
-        key_padding_mask=key_padding_mask)
-    coarse_qkv = coarse_results.packed_coarse_qkv
-    aggregated_key_padding_mask = coarse_results.packed_aggregated_key_padding_mask
 
+    # Applies padding_mask.
+    if query_padding_mask is not None:
+      if query_padding_mask.ndim == inputs_q.ndim - 1:
+        query_padding_mask = query_padding_mask[..., None]
+      inputs_q *= query_padding_mask
+    if key_padding_mask is not None:
+      if key_padding_mask.ndim == inputs_kv.ndim - 1:
+        key_padding_mask = key_padding_mask[..., None]
+      inputs_kv *= key_padding_mask
+
+    # Performs Multihead projections.
     qkv_features = self.qkv_features or inputs_q.shape[-1]
     head_dim = qkv_features // self.num_heads
     if self.rescale_logits:
@@ -174,7 +169,6 @@ class HierarchicalAttention(nn.Module, metaclass=abc.ABCMeta):
       # This folds logit rescaling into initializer.
       depth_scaling = jnp.sqrt(head_dim).astype(self.dtype)
       query_kernel_init = lambda *args: self.kernel_init(*args) / depth_scaling
-
     make_dense = functools.partial(
         dense.DenseGeneral,
         axis=-1,
@@ -186,27 +180,39 @@ class HierarchicalAttention(nn.Module, metaclass=abc.ABCMeta):
         precision=self.precision,
         reshape_kernel=not self.split_head_kernel,
     )
-    dense_q = make_dense(
-        kernel_init=query_kernel_init, name='query_multihead_projection')
-    dense_k = make_dense(
-        kernel_init=self.kernel_init, name='key_multihead_projection')
-    dense_v = make_dense(
-        kernel_init=self.kernel_init, name='value_multihead_projection')
+    query = make_dense(
+        kernel_init=query_kernel_init, name='query_multihead_projection')(
+            inputs_q)
+    key = make_dense(
+        kernel_init=self.kernel_init, name='key_multihead_projection')(
+            inputs_kv)
+    value = make_dense(
+        kernel_init=self.kernel_init, name='value_multihead_projection')(
+            inputs_kv)
+    if self.sharding_over_head_dimension:
+      query = self._shard_over_head_dimension(query)
+      key = self._shard_over_head_dimension(key)
+      value = self._shard_over_head_dimension(value)
 
-    query: Dict[th.TokenBlockName, Array] = {}
-    key: Dict[th.TokenBlockName, Array] = {}
-    value: Dict[th.TokenBlockName, Array] = {}
-    for block_name in hierarchy.block_names:
-      query[block_name] = dense_q(
-          coarse_qkv[th.InputArrayName.QUERY][block_name])
-      key[block_name] = dense_k(coarse_qkv[th.InputArrayName.KEY][block_name])
-      value[block_name] = dense_v(
-          coarse_qkv[th.InputArrayName.VALUE][block_name])
-      if self.sharding_over_head_dimension:
-        query[block_name] = self._shard_over_head_dimension(query[block_name])
-        key[block_name] = self._shard_over_head_dimension(key[block_name])
-        value[block_name] = self._shard_over_head_dimension(value[block_name])
+    # Set up token hierarchy for Query/Key/Value.
+    hierarchy = self._setup_hierarchy(
+        inputs_q.shape[1], for_self_attention=for_self_attention)
+    coarse_query = hierarchy.hierarchical_coarsen(
+        query,
+        input_array_name=th.InputArrayName.QUERY,
+        padding_mask=query_padding_mask)
+    query = coarse_query.packed_coarse_qkv
+    coarse_key = hierarchy.hierarchical_coarsen(
+        key,
+        input_array_name=th.InputArrayName.KEY,
+        padding_mask=key_padding_mask)
+    key = coarse_key.packed_coarse_qkv
+    aggregated_key_padding_mask = coarse_key.packed_aggregated_key_padding_mask
+    coarse_value = hierarchy.hierarchical_coarsen(
+        value, input_array_name=th.InputArrayName.VALUE)
+    value = coarse_value.packed_coarse_qkv
 
+    # Computes hierarchical attention and applies it to Value.
     dropout_rng = None
     if enable_dropout and self.dropout_rate > 0.:
       dropout_rng = self.make_rng('dropout')
@@ -415,7 +421,7 @@ class HierarchicalAttention(nn.Module, metaclass=abc.ABCMeta):
 
     if self.use_rpb:
       zero_block_mask = hierarchy.gen_packed_zero_block_mask(
-          use_growth_factor=False)
+          use_growth_factor=False, trailing_ndim=3)
       position_bias_fn = self._setup_position_bias(hierarchy)
 
     if self.rescale_logits:
@@ -433,7 +439,7 @@ class HierarchicalAttention(nn.Module, metaclass=abc.ABCMeta):
           similarity[block_name] += position_bias
         else:
           similarity[block_name] += (
-              position_bias * zero_block_mask[block_name][..., None])
+              position_bias * zero_block_mask[block_name])
 
     # The normalization below is critical to avoid NaN error. I suspect that
     # float32 is not enough to support the potentially very large value in
@@ -497,7 +503,7 @@ class HierarchicalAttention(nn.Module, metaclass=abc.ABCMeta):
           continue
         attention[block_name] *= correction_mask[block_name]
 
-    # This is for the auto-regressive decoding. We only need to explcitly
+    # This is for the auto-regressive decoding. We only need to explicitly
     # mask the attention[th.TokenBlockName.ANCHOR] because we can
     # simply skip the use of non-causal attention blocks in the
     # hierarchical attention-value multiplication. So no need to explicitly
@@ -564,7 +570,7 @@ class HierarchicalAttention(nn.Module, metaclass=abc.ABCMeta):
       softmax_partition = self._multiply_attention_value(
           attention, all_ones, hierarchy)
     else:
-      softmax_partition = self._column_sum(attention, hierarchy)
+      softmax_partition = self._row_sum(attention, hierarchy)
 
     # Sets entries corresponding to padding tokens to 1.
     if query_padding_mask is not None:
@@ -579,11 +585,11 @@ class HierarchicalAttention(nn.Module, metaclass=abc.ABCMeta):
         jnp.ones(softmax_partition.shape, dtype=self.dtype))
     return self._duplicate_heads(softmax_partition, head_dim)
 
-  def _column_sum(self, attention: Dict[th.TokenBlockName, Array],
-                  hierarchy: th.TokenHierarchy) -> Array:
-    """Computes softmax partition by summing attention matrix columns.
+  def _row_sum(self, attention: Dict[th.TokenBlockName, Array],
+               hierarchy: th.TokenHierarchy) -> Array:
+    """Computes softmax partition by summing attention matrix rows.
 
-    If there is no padding_mask, simple column summation correctly
+    If there is no padding_mask, simple row summation correctly
     computes softmax_partition. We need packed_zero_block_mask to
     account for the scaling factor 2^k in coarsening at level-k.
 
@@ -597,9 +603,10 @@ class HierarchicalAttention(nn.Module, metaclass=abc.ABCMeta):
         is [batch, length, 1].
     """
     zero_block_mask = hierarchy.gen_packed_zero_block_mask(
-        use_growth_factor=True)
+        use_growth_factor=True, trailing_ndim=2)
     first_block = True
     for block_name in hierarchy.block_names:
+      # Summing over cluster column indexes in each block.
       block_result = jnp.sum(attention[block_name], axis=-2)
       if block_name == th.TokenBlockName.ANCHOR:
         fine_partition = block_result
@@ -735,7 +742,6 @@ class OneDimHierarchicalAttention(HierarchicalAttention):
         for_self_attention=for_self_attention,
         causal_mask=self.causal_mask,
         conv_kernel_size=self.conv_kernel_size,
-        coarsening_kernel_type=self.coarsening_kernel_type,
         interpolation_kernel_type=self.interpolation_kernel_type,
         dtype=self.dtype)
 
