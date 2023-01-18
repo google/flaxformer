@@ -852,7 +852,7 @@ class Encoder(nn.Module, param_remapping.ParameterRemappable):
     Args:
       inputs: input data
       inputs_positions: input subsequence positions for packed examples.
-      encoder_mask: decoder self-attention mask.
+      encoder_mask: encoder self-attention mask.
       segment_ids: Input segmentation info for packed examples.
       enable_dropout: Enables dropout if set to True.
 

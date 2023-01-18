@@ -16,12 +16,14 @@
 
 from absl.testing import absltest
 from absl.testing import parameterized
+from flax import linen
 from jax import random
 import jax.numpy as jnp
 import numpy as onp
 
 from flaxformer import testing_utils
 from flaxformer.architectures.h_transformer import h_attention
+from flaxformer.architectures.h_transformer import token_hierarchy as th
 
 
 class HAttention1DTest(parameterized.TestCase):
@@ -42,6 +44,16 @@ class HAttention1DTest(parameterized.TestCase):
           num_heads=self.num_heads, num_clusters=2, use_rpb=True)
       rng = {'params': random.PRNGKey(0), 'dropout': random.PRNGKey(1)}
       attention_module.init(rng, inputs_q, padding_mask=None)
+
+  def test_bad_padding_mask_shape(self):
+    # Delibrately sets a wrong shape here to trigger the ValueError.
+    inputs_q = jnp.ones((self.batch_size, 16, self.feature_size))
+    padding_mask = jnp.ones((self.batch_size, 16, 1, 1))
+    with self.assertRaises(ValueError):
+      attention_module = h_attention.OneDimEncoderSelfAttention(
+          num_heads=self.num_heads, num_clusters=2, use_rpb=True)
+      rng = {'params': random.PRNGKey(0), 'dropout': random.PRNGKey(1)}
+      attention_module.init(rng, inputs_q, padding_mask=padding_mask)
 
   def test_large_num_clusters(self):
     # Delibrately sets num_clusters > sequence_length//2. This used to trigger
@@ -199,6 +211,83 @@ class HAttention1DTest(parameterized.TestCase):
         testing_utils.param_dtypes_shapes_axes(variables['params'],
                                                variables['params_axes']),
         expected_params)
+
+  def test_self_attention_output(self):
+    x = jnp.array([[
+        0.08482573, 0.29561728, 0.33432317, 0.6481298, -0.7824855, 0.6298023,
+        -0.3278767, -1.6607414
+    ],
+                   [
+                       1.9097669, 1.1209449, -0.8260815, 1.0434877, -0.453946,
+                       0.8152592, -1.1234418, 0.2729053
+                   ]],
+                  dtype=jnp.float32).T
+
+    x = jnp.expand_dims(x, 0)
+    # The H-similarity matrix computed by hand for the above input without
+    # projections, using constant interpolation and coarsening:
+    s = jnp.array([[
+        3.654405017, 2.165819418, -1.549263898, 2.047796353, 0.2592372306,
+        0.2592372306, -0.8335717156, -0.8335717156
+    ],
+                   [
+                       2.165819418, 1.343907045, -0.8271601383, 1.361290584,
+                       0.2592372306, 0.2592372306, -0.8335717156, -0.8335717156
+                   ],
+                   [
+                       -1.549263898, -0.8271601383, 0.7941826266, -0.6453210751,
+                       0.1133933598, -0.4629130414, -0.5346589167, -0.5346589167
+                   ],
+                   [
+                       2.047796353, 1.361290584, -0.6453210751, 1.508938818,
+                       -0.9808392381, 1.258906586, -0.5346589167, -0.5346589167
+                   ],
+                   [
+                       0.2592372306, 0.2592372306, 0.1133933598, -0.9808392381,
+                       0.8183505286, -0.8628948204, 0.7665406749, 1.175621795
+                   ],
+                   [
+                       0.2592372306, 0.2592372306, -0.4629130414, 1.258906586,
+                       -0.8628948204, 1.0612985, -1.122393763, -0.8234501969
+                   ],
+                   [
+                       -0.8335717156, -0.8335717156, -0.5346589167,
+                       -0.5346589167, 0.7665406749, -1.122393763, 1.369624608,
+                       0.2379251883
+                   ],
+                   [
+                       -0.8335717156, -0.8335717156, -0.5346589167,
+                       -0.5346589167, 1.175621795, -0.8234501969, 0.2379251883,
+                       2.8325393
+                   ]])
+
+    s = s / jnp.sqrt(2)
+    a = linen.softmax(s, axis=1)
+    target_out = a @ x[0]
+
+    attn = h_attention.OneDimEncoderSelfAttention(
+        num_heads=1,
+        num_clusters=2,
+        out_features=2,
+        broadcast_dropout=False,
+        dropout_rate=0.0,
+        use_rpb=False,
+        rescale_logits=True,
+        use_mxu=True,
+        interpolation_kernel_type=th.ConvKernelType.CONST,
+        max_similarity_mode='scan_all',
+        use_row_sum=False,
+        multihead_projection=False,
+        output_projection=False,
+    )
+
+    mask = jnp.ones((1, 8, 1))
+    key = random.PRNGKey(0)
+    variables = attn.init(key, x, mask)
+    out = attn.apply(variables, x, mask)
+
+    self.assertTrue(jnp.allclose(out, target_out, rtol=5e-5))
+
 
 
 if __name__ == '__main__':

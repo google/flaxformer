@@ -19,8 +19,10 @@ networks.
 """
 
 import inspect
-from typing import Callable, Dict, Iterable, Mapping, NamedTuple, Optional, Sequence, Union
+from typing import Callable, Dict, Iterable, Mapping, Optional, Sequence, Union
+
 from flax import linen as nn
+import flax.struct
 from jax import lax
 from jax import random
 import jax.numpy as jnp
@@ -77,7 +79,10 @@ class NonRepeatingDropout(nn.Module):
       return lax.select(mask, inputs / keep_prob, jnp.zeros_like(inputs))
 
 
-class DualEncoderOutput(NamedTuple):
+@flax.struct.dataclass
+class DualEncoderOutput:
+  """Outputs of T5X retrieval DualEncoder architecture."""
+
   left_encoded: Array
   right_encoded: Array
   logits: Union[Array, Dict[str, Array]]

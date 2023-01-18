@@ -408,21 +408,25 @@ class TokenHierarchy(metaclass=abc.ABCMeta):
 
   def gen_packed_zero_block_mask(
       self,
+      batch_size: int,
       use_growth_factor: bool = False,
-      trailing_ndim: int = 2) -> Dict[TokenBlockName, Array]:
+      trailing_ndim: int = 2,
+  ) -> Dict[TokenBlockName, Array]:
     """Generates blockwise zero mask pattern in packed form.
 
     Args:
+      batch_size: The batch size for training data.
       use_growth_factor: This indicates if the block entries at each level is
         enlarged by a factor exponential to the hierarchy level.
       trailing_ndim: Number of dimensions after the block dim. See notes below.
 
     Returns:
       Packed zero block mask: Dict with key=block_name, and value array has
-        shape <float>[batch=1, packed_dim, num_cluster=1, num_head=1]
-        or [batch=1, packed_dim, num_cluster=1, num_head=1, head_dim=1]
-        or [batch=1, packed_dim, num_cluster=1, num_cluster=1, head_dim=1].
-        The shapes are simply [1, packed_dim, 1, 1] or [1, packed_dim, 1, 1, 1].
+        shape <float>[batch, packed_dim, num_cluster=1, num_head=1]
+        or [batch, packed_dim, num_cluster=1, num_head=1, head_dim=1]
+        or [batch, packed_dim, num_cluster=1, num_cluster=1, head_dim=1].
+        The shapes are simply [batch, packed_dim, 1, 1] or
+        [batch, packed_dim, 1, 1, 1].
 
     Note:
       This mask is used to zero out blocks in three types of arrays:
@@ -445,32 +449,37 @@ class TokenHierarchy(metaclass=abc.ABCMeta):
       block_mask_list = []
       scalar = 1.
       for level in range(self.num_level):
-        block_mask = self._gen_zero_block_mask(level, block_name)
+        block_mask = self._gen_zero_block_mask(level, block_name, batch_size)
         if scalar > 1.:
           block_mask *= scalar
         block_mask_list.append(block_mask)
         scalar *= growth_factor
-      packed_block_mask = jnp.concatenate(block_mask_list, axis=0)
+      packed_block_mask = jnp.concatenate(block_mask_list, axis=1)
       if trailing_ndim == 2:
-        packed_block_mask = packed_block_mask[None, :, None, None]
+        packed_block_mask = packed_block_mask[:, :, None, None]
       else:
-        packed_block_mask = packed_block_mask[None, :, None, None, None]
+        packed_block_mask = packed_block_mask[:, :, None, None, None]
       packed_zero_block_mask[block_name] = packed_block_mask
 
     return packed_zero_block_mask
 
   @abc.abstractmethod
-  def _gen_zero_block_mask(self, level: int,
-                           block_name: TokenBlockName) -> Array:
+  def _gen_zero_block_mask(
+      self,
+      level: int,
+      block_name: TokenBlockName,
+      batch_size: int,
+  ) -> Array:
     """Generates a block mask.
 
     Args:
       level: The specified level in the hierarchy.
       block_name: The generated mask is for the token/attention block with
          this name.
+      batch_size: The batch size for training data.
 
     Returns:
-      Generated zero block mask with shape <float32>[num_block]
+      Generated zero block mask with shape <float32>[batch_size, num_block]
     """
 
 
@@ -819,8 +828,9 @@ class OneDimTokenHierarchy(TokenHierarchy):
     """
     to_replace = (input_name == InputArrayName.QUERY)
     if to_replace:
+      batch_size = coarse_qkv[0].shape[0]
       packed_zero_block_mask = self.gen_packed_zero_block_mask(
-          use_growth_factor=False, trailing_ndim=3)
+          batch_size=batch_size, use_growth_factor=False, trailing_ndim=3)
 
     packed_coarse_qkv = {}
     for block_name in self.block_names:
@@ -857,23 +867,28 @@ class OneDimTokenHierarchy(TokenHierarchy):
       reshaped_coarse_qkv[level] = coarse_qkv[level].reshape(new_shape)
     return reshaped_coarse_qkv
 
-  def _gen_zero_block_mask(self, level: int,
-                           block_name: TokenBlockName) -> Array:
+  def _gen_zero_block_mask(
+      self,
+      level: int,
+      block_name: TokenBlockName,
+      batch_size: int,
+  ) -> Array:
     """Generates a block mask.
 
     Args:
       level: The specified level in the hierarchy.
       block_name: The generated mask is for the token/attention block with
          this name.
+      batch_size: The batch size for training data.
 
     Returns:
-      Generated zero block mask with shape <float32>[num_block]
+      Generated zero block mask with shape <float32>[batch_size, num_block]
     """
     num_block = self.num_block[level]
     block_coord = self.block_coord[block_name]
-    block_mask = np.ones((num_block,), dtype=self._dtype)
+    block_mask = np.ones((batch_size, num_block), dtype=self._dtype)
     if block_coord == -1:
-      block_mask[0] = 0.
+      block_mask[:, 0] = 0.
     elif block_coord == 1:
-      block_mask[-1] = 0.
+      block_mask[:, -1] = 0.
     return jnp.array(block_mask)

@@ -273,8 +273,12 @@ class DualEncoderTest(parameterized.TestCase):
 
     model = make_test_dual_encoder(
         similarity_fn='batch_dot_product', pool_method=pool_method)
-    (left_encoded, right_encoded, logits), variables = model.init_with_output(
-        random.PRNGKey(0), left_inputs, right_inputs, enable_dropout=False)
+    results, variables = model.init_with_output(
+        random.PRNGKey(0), left_inputs, right_inputs, enable_dropout=False
+    )
+    left_encoded = results.left_encoded
+    right_encoded = results.right_encoded
+    logits = results.logits
 
     reformatted = model.apply({},
                               variables['params'],
@@ -322,12 +326,16 @@ class DualEncoderTest(parameterized.TestCase):
 
     model = make_test_dual_encoder(
         similarity_fn='batch_dot_product', pool_method='mean')
-    (left_encoded, right_encoded, logits), variables = model.init_with_output(
+    results, variables = model.init_with_output(
         random.PRNGKey(0),
         left_inputs,
         right_inputs,
         right_negative_inputs,
-        enable_dropout=False)
+        enable_dropout=False,
+    )
+    left_encoded = results.left_encoded
+    right_encoded = results.right_encoded
+    logits = results.logits
 
     reformatted = model.apply({},
                               variables['params'],
@@ -365,8 +373,12 @@ class DualEncoderTest(parameterized.TestCase):
 
     model = make_test_dual_encoder(
         similarity_fn='pointwise_ffnn', pool_method='first')
-    (left_encoded, right_encoded, logits), variables = model.init_with_output(
-        random.PRNGKey(0), left_inputs, right_inputs, enable_dropout=False)
+    results, variables = model.init_with_output(
+        random.PRNGKey(0), left_inputs, right_inputs, enable_dropout=False
+    )
+    left_encoded = results.left_encoded
+    right_encoded = results.right_encoded
+    logits = results.logits
 
     reformatted = model.apply({},
                               variables['params'],
@@ -401,8 +413,12 @@ class DualEncoderTest(parameterized.TestCase):
 
     model = make_test_dual_encoder(
         similarity_fn='single_tower_pointwise_ffnn', pool_method='first')
-    (left_encoded, right_encoded, logits), variables = model.init_with_output(
-        random.PRNGKey(0), left_inputs, right_inputs, enable_dropout=False)
+    results, variables = model.init_with_output(
+        random.PRNGKey(0), left_inputs, right_inputs, enable_dropout=False
+    )
+    left_encoded = results.left_encoded
+    right_encoded = results.right_encoded
+    logits = results.logits
 
     reformatted = model.apply({},
                               variables['params'],
@@ -440,8 +456,12 @@ class DualEncoderTest(parameterized.TestCase):
         pool_method='first',
         logit_fns=['batch_dot_product', 'pointwise_ffnn'])
 
-    (left_encoded, right_encoded, logits), _ = model.init_with_output(
-        random.PRNGKey(0), left_inputs, right_inputs, enable_dropout=False)
+    results, _ = model.init_with_output(
+        random.PRNGKey(0), left_inputs, right_inputs, enable_dropout=False
+    )
+    left_encoded = results.left_encoded
+    right_encoded = results.right_encoded
+    logits = results.logits
 
     self.assertEqual(left_encoded.shape, (2, PROJECTION_DIM))
     self.assertEqual(right_encoded.shape, (2, PROJECTION_DIM))
