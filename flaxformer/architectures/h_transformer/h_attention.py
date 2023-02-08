@@ -294,19 +294,27 @@ class HierarchicalAttention(nn.Module, metaclass=abc.ABCMeta):
        Instance of HierarchicalRelativePositionBias.
     """
 
+  @abc.abstractmethod
+  def _get_qkv_axis_names(self):
+    """Get partitioning axis names for Query/Key/Value.
+
+    Returns:
+       Tuple with axis names.
+    """
+
   def _shard_over_head_dimension(self, qkv: Array) -> Array:
     """Shards multihead projections.
 
     Args:
-      qkv: Projected Query/Key/Value  with shape <float>[batch, packed_dim,
-        num_clusters, num_heads, head_dim].
+      qkv: Projected Query/Key/Value  with shape <float>[batch, length,
+        num_heads, head_dim].
 
     Returns:
        Sharded projection of Query/Key/Value.
     """
     if flax_partitioning.get_axis_rules():
-      qkv = flax_partitioning.with_sharding_constraint(
-          qkv, ('batch', 'block', 'cluster', 'heads', 'kv'))
+      axis_names = self._get_qkv_axis_names()
+      qkv = flax_partitioning.with_sharding_constraint(qkv, axis_names)
     else:
       # Only partitions along data axis because the partitioner does not handle
       # array with ndim=5 for both data and model partition. This is less
@@ -921,6 +929,9 @@ class OneDimHierarchicalAttention(HierarchicalAttention):
         softmax_partition[..., None], head_dim, axis=3)
     new_shape = softmax_partition.shape[:2] + (self.num_heads * head_dim,)
     return softmax_partition.reshape(new_shape)
+
+  def _get_qkv_axis_names(self):
+    return ('batch', 'length', 'heads', 'kv')
 
 
 class OneDimDecoderSelfAttention(OneDimHierarchicalAttention):

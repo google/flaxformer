@@ -39,7 +39,7 @@ tests_require = [
 
 setup(
     name="flaxformer",
-    version="0.6.3",
+    version="0.6.4",
     description="Flaxformer: Transformer implementations in Flax",
     long_description="\n\n".join([README]),
     long_description_content_type="text/markdown",

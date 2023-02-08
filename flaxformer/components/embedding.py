@@ -435,6 +435,9 @@ class MultiEmbed(nn.Module):
 class FixedEmbed(nn.Module, EmbedderWithDecode[Array]):
   """Fixed (not learnable) embeddings specified by the initializer function.
 
+  Note: This embedding is not currently compatible with using prefixes when
+  decoding because it assumes that the decoding loop starts at position 0.
+
   Attributes:
     init_fn: The initializer function that defines the embeddings.
     max_length: The maximum supported length.
@@ -486,6 +489,9 @@ class FixedEmbed(nn.Module, EmbedderWithDecode[Array]):
 
 class PositionEmbed(nn.Module, EmbedderWithDecode[Array]):
   """Learned absolute positional embeddings for the inputs.
+
+  Note: This embedding is not currently compatible with using prefixes when
+  decoding because it assumes that the decoding loop starts at position 0.
 
   Attributes:
     num_embeddings: The maximum supported length. We learn this many positions.

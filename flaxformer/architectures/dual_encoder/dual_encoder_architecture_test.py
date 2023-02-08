@@ -14,6 +14,7 @@
 
 """Tests for the dual encoder architecture."""
 
+import dataclasses
 import functools
 from typing import Any, Optional, Sequence
 from absl import logging

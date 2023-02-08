@@ -32,14 +32,18 @@ from flaxformer.components.attention import dense_attention
 
 FrozenDict = flax.core.FrozenDict
 MoeLayer = moe_layers.MoeLayer
-SparseParallelFusedDecoderLayer = moe_parallel_fused_decoder.SparseParallelFusedDecoderLayer
+SparseParallelFusedDecoderLayer = (
+    moe_parallel_fused_decoder.SparseParallelFusedDecoderLayer
+)
 
 EMBEDDING_INIT = nn.initializers.normal(stddev=1.0)
 RELPOS_BIAS_INIT = nn.initializers.variance_scaling(1.0, 'fan_avg', 'uniform')
 ATTENTION_KERNEL_INIT = nn.initializers.variance_scaling(
-    1.0, 'fan_in', 'normal')
-MLP_KERNEL_INIT = nn.initializers.variance_scaling(1.0, 'fan_in',
-                                                   'truncated_normal')
+    1.0, 'fan_in', 'normal'
+)
+MLP_KERNEL_INIT = nn.initializers.variance_scaling(
+    1.0, 'fan_in', 'truncated_normal'
+)
 BIAS_INIT = nn.initializers.zeros
 DTYPE = jnp.float32
 
@@ -49,8 +53,8 @@ _make_layer_norm = layer_norm.T5LayerNorm
 
 
 def _make_multi_query_attention(
-    embed_dim: int, num_heads: int,
-    head_dim) -> dense_attention.MultiQueryDotProductAttention:
+    embed_dim: int, num_heads: int, head_dim
+) -> dense_attention.MultiQueryDotProductAttention:
   """Test configuration for attention."""
   return dense_attention.MultiQueryDotProductAttention(
       num_heads=num_heads,
@@ -66,18 +70,21 @@ def _make_multi_query_attention(
       # Must be specified for constructing fused O-Wo projection.
       out_features=embed_dim,
       use_rotary_embedding=True,
-      dropout_rate=0.1)
+      dropout_rate=0.1,
+  )
 
 
-def _make_relative_position_bias(
-) -> relative_position_biases.RelativePositionBiases:
+def _make_relative_position_bias() -> (
+    relative_position_biases.RelativePositionBiases
+):
   """Test configuration for the position bias."""
   return relative_position_biases.RelativePositionBiases(
       num_buckets=32,
       max_distance=64,
       num_heads=8,
       dtype=DTYPE,
-      embedding_init=RELPOS_BIAS_INIT)
+      embedding_init=RELPOS_BIAS_INIT,
+  )
 
 
 def _make_dense_mlp(embed_dim: int) -> dense.MlpBlock:
@@ -91,101 +98,114 @@ def _make_dense_mlp(embed_dim: int) -> dense.MlpBlock:
       fuse_kernels=False,
       kernel_init=MLP_KERNEL_INIT,
       bias_init=BIAS_INIT,
-      dtype=DTYPE)
+      dtype=DTYPE,
+  )
 
 
 def _make_q_wi_fused_projection(
     attention_module: dense_attention.MultiQueryDotProductAttention,
-    mlp_module: dense.MlpBlock) -> MoeLayer:
+    mlp_module: dense.MlpBlock,
+) -> MoeLayer:
   """Returns sparse Q-Wi projection."""
   expert = dense.DenseGeneral(
       axis=-1,
       features=moe_parallel_fused_decoder.compute_fused_q_wi_dims(
-          attention_module, mlp_module),
+          attention_module, mlp_module
+      ),
       use_bias=False,
       dtype=DTYPE,
       kernel_init=ATTENTION_KERNEL_INIT,
       bias_init=BIAS_INIT,
       reshape_kernel=False,
-      kernel_axis_names=('embed', 'heads', 'q_wi_fused'))
+      kernel_axis_names=('embed', 'heads', 'q_wi_fused'),
+  )
   router = routing.TokensChooseMaskedRouter(
       # Default router weights fine for Q-Wi projection which takes 3D inputs:
       # [batch_size, seq_length, hidden_dim].
       router_weights=routing.RouterWeights(),
       num_selected_experts=1,
-      jitter_noise=0.,
+      jitter_noise=0.0,
       batch_prioritized_routing=False,
       dtype=DTYPE,
-      ignore_padding_tokens=False)
+      ignore_padding_tokens=False,
+  )
   return MoeLayer(
       num_experts=4,
       num_expert_partitions=4,
       router=router,
       max_group_size=2,
-      train_capacity_factor=1.,
-      eval_capacity_factor=1.,
+      train_capacity_factor=1.0,
+      eval_capacity_factor=1.0,
       expert=expert,
       num_model_partitions=1,
       input_hidden_dims_axes=('embed',),
       output_hidden_dims_axes=('heads', 'mlp'),
-      dtype=DTYPE)
+      dtype=DTYPE,
+  )
 
 
 def _make_o_wo_fused_projection(
-    attention_module: dense_attention.MultiQueryDotProductAttention
+    attention_module: dense_attention.MultiQueryDotProductAttention,
 ) -> MoeLayer:
   """Returns sparse O-Wo projection."""
   expert = dense.DenseGeneral(
       axis=(-2, -1),
       features=moe_parallel_fused_decoder.compute_fused_o_wo_dims(
-          attention_module),
+          attention_module
+      ),
       use_bias=False,
       dtype=DTYPE,
       kernel_init=ATTENTION_KERNEL_INIT,
       bias_init=BIAS_INIT,
       reshape_kernel=False,
       # o_wo_fused = mlp//heads + head_dim.
-      kernel_axis_names=('heads', 'o_wo_fused', 'embed'))
+      kernel_axis_names=('heads', 'o_wo_fused', 'embed'),
+  )
   router = routing.TokensChooseMaskedRouter(
       # Specialized router weights required for O-Wo projection which takes 4D
       # inputs: [batch_size, seq_length, heads, o_wo_fused].
       router_weights=routing.RouterWeights(
           axis=(-2, -1),  # ('heads', 'o_wo_fused') projection
           kernel_axis_names=('heads', 'o_wo_fused', 'unmodeled'),
-          reshape_kernel=False),
+          reshape_kernel=False,
+      ),
       num_selected_experts=1,
-      jitter_noise=0.,
+      jitter_noise=0.0,
       batch_prioritized_routing=False,
       dtype=DTYPE,
-      ignore_padding_tokens=False)
+      ignore_padding_tokens=False,
+  )
   return MoeLayer(
       num_experts=4,
       num_expert_partitions=4,
       router=router,
       max_group_size=2,
-      train_capacity_factor=1.,
-      eval_capacity_factor=1.,
+      train_capacity_factor=1.0,
+      eval_capacity_factor=1.0,
       expert=expert,
       num_model_partitions=1,
       input_hidden_dims_axes=('heads', 'mlp'),
       output_hidden_dims_axes=('embed',),
-      dtype=DTYPE)
+      dtype=DTYPE,
+  )
 
 
 def _make_kv_fused_projection(
-    attention_module: dense_attention.MultiQueryDotProductAttention
+    attention_module: dense_attention.MultiQueryDotProductAttention,
 ) -> dense.DenseGeneral:
   """Returns dense KV projection."""
   return dense.DenseGeneral(
       axis=-1,
       features=moe_parallel_fused_decoder.compute_fused_kv_dims(
-          attention_module),
+          attention_module
+      ),
       use_bias=False,
       dtype=DTYPE,
       kernel_init=ATTENTION_KERNEL_INIT,
       bias_init=BIAS_INIT,
       reshape_kernel=False,
-      kernel_axis_names=('embed', 'multiquery_heads', 'kv_fused'))
+      kernel_axis_names=('embed', 'multiquery_heads', 'kv_fused'),
+  )
 
 
 class ParallelFusedDecoderOnlyTest(absltest.TestCase):
@@ -197,8 +217,9 @@ class ParallelFusedDecoderOnlyTest(absltest.TestCase):
     num_heads = 8
     head_dim = 4
 
-    attention_module = _make_multi_query_attention(embed_dim, num_heads,
-                                                   head_dim)
+    attention_module = _make_multi_query_attention(
+        embed_dim, num_heads, head_dim
+    )
     mlp_module = _make_dense_mlp(embed_dim)
 
     decoder_layer = SparseParallelFusedDecoderLayer(
@@ -214,13 +235,11 @@ class ParallelFusedDecoderOnlyTest(absltest.TestCase):
         relative_position_bias_factory=_make_relative_position_bias,
     )
 
-    decoder_target_tokens = np.zeros((batch_size, seq_length, embed_dim),
-                                     dtype=np.float32)
+    decoder_target_tokens = np.zeros(
+        (batch_size, seq_length, embed_dim), dtype=np.float32
+    )
     output, variables = decoder_layer.init_with_output(
-        {
-            'params': random.PRNGKey(0),
-            'dropout': random.PRNGKey(0)
-        },
+        {'params': random.PRNGKey(0), 'dropout': random.PRNGKey(0)},
         targets=decoder_target_tokens,
         encoded=None,
         enable_dropout=True,
@@ -272,31 +291,38 @@ class ParallelFusedDecoderOnlyTest(absltest.TestCase):
             'relpos_bias': {
                 'rel_embedding': (8, 32),
             },
-        }))
+        }),
+    )
 
   def test_projection_dims(self):
     embed_dim = 8
     num_heads = 8
     head_dim = 2
 
-    attention_module = _make_multi_query_attention(embed_dim, num_heads,
-                                                   head_dim)
+    attention_module = _make_multi_query_attention(
+        embed_dim, num_heads, head_dim
+    )
     mlp_module = _make_dense_mlp(embed_dim)
 
     with self.subTest(name='fused_o_wo_dims'):
       self.assertEqual(
           attention_module.out_features,
-          moe_parallel_fused_decoder.compute_fused_o_wo_dims(attention_module))
+          moe_parallel_fused_decoder.compute_fused_o_wo_dims(attention_module),
+      )
 
     with self.subTest(name='fused_kv_dims'):
       self.assertEqual(
           (1, 2 * head_dim),
-          moe_parallel_fused_decoder.compute_fused_kv_dims(attention_module))
+          moe_parallel_fused_decoder.compute_fused_kv_dims(attention_module),
+      )
 
     with self.subTest(name='fused_q_wi_dims'):
-      self.assertEqual((num_heads, 514),
-                       moe_parallel_fused_decoder.compute_fused_q_wi_dims(
-                           attention_module, mlp_module))
+      self.assertEqual(
+          (num_heads, 514),
+          moe_parallel_fused_decoder.compute_fused_q_wi_dims(
+              attention_module, mlp_module
+          ),
+      )
 
 
 if __name__ == '__main__':

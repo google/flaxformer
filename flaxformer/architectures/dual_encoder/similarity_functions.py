@@ -35,12 +35,13 @@ from jax import lax
 import jax.numpy as jnp
 
 from flaxformer.components import dense
+from flaxformer.components.attention import dense_attention
 from flaxformer.types import Array
 from flaxformer.types import DType
 from flaxformer.types import Initializer
 
 
-#============================ Pointwise Similarity =============================
+# ============================ Pointwise Similarity ============================
 class PointwiseFFNN(nn.Module):
   """Pointwise feed-forward NN similarity functions.
 
@@ -209,7 +210,7 @@ class DotProduct(nn.Module):
     return jnp.sum(left_encodings * right_encodings, axis=-1, keepdims=True)
 
 
-#============================ Batch Similarity =================================
+# ============================ Batch Similarity ================================
 class BatchDotProduct(nn.Module):
   """Batch version of dot product similarity function."""
 
@@ -274,3 +275,166 @@ class DoNothing(nn.Module):
     del right_additional_encodings
     del params
     return jnp.zeros((), dtype=jnp.int32)
+
+
+class BatchAttentionSimilarity(nn.Module):
+  """Batched attention-based similiarity score.
+
+  Attributes:
+    attention: the attention module.
+    mlp_layer: the MLP module, applied after attention.
+    layer_norm_factory:  A callable that returns a new layer norm. This is
+      applied before the attention module and before the MLP.
+    activation_fn: An activation function for the hidden layers. Default to
+      'linear', where no activation is requested.
+    dropout_factory:  An optional callable that returns a new dropout instance.
+      If it exists, it is applied after the attention module.
+  """
+
+  attention: nn.Module
+  mlp_layer: nn.Module
+  layer_norm_factory: Callable[[], nn.Module]
+  activation_fn: str = 'linear'
+  dropout_factory: Optional[Callable[[], nn.Module]] = None
+
+  def setup(self):
+    assert self.mlp_layer.out_dim == 1, (
+        'Requires mlp layer to return a Tensor with output dimension 1. '
+        f'Currently, mlp_layer.out_dim={self.mlp_layer.out_dim}'
+    )
+    self.pre_attention_layer_norm = self.layer_norm_factory()
+    self.pre_mlp_layer_norm = self.layer_norm_factory()
+
+    # Optional dropout module.
+    if self.dropout_factory:
+      self.dropout = self.dropout_factory()  # pylint: disable=not-callable
+    else:
+      self.dropout = None
+
+    if self.activation_fn == 'linear':
+      self.activation = None
+    else:
+      self.activation = getattr(nn, self.activation_fn)
+
+  def __call__(
+      self,
+      encoded_input_1: Array,
+      encoded_input_2: Array,
+      encoded_input_mask_1: Array,
+      encoded_input_mask_2: Array,
+      *,
+      pointwise_similarity: bool = True,
+      enable_dropout: bool = True,
+  ) -> Array:
+    """Computes the attention based similarity from two encodings.
+
+    encoded_input_1 and encoded_input_2 are the encoded inputs from
+    the two encoder towers. They share the same batch size and encoding
+    dimension. If the left and right towers are asymmetric, or generate
+    embeddings of different dimensionality, please add projection layers
+    to map them into the same dimsion.
+
+    Args:
+      encoded_input_1: A 3-D tensor of the shape [batch_size, sequence_length_1,
+        encoding_dim].
+      encoded_input_2: A 3-D tensor of the shape [batch_size, sequence_length_2,
+        encoding_dim].
+      encoded_input_mask_1: A 2-D tensor of the shape [batch_size,
+        sequence_length_1], as a binary mask for the non-padded tokens of
+        encoded_input_1.
+      encoded_input_mask_2: A 2-D tensor of the shape [batch_size,
+        sequence_length_2], as a binary mask for the non-padded tokens of
+        encoded_input_2.
+      pointwise_similarity: a bool indicaing whether to return pointwise
+        similarity only. Default to True. If False, it allows encoded_input_1
+        and encoded_input_2 have different batch sizes, and returns a score
+        matrix of the shape [batch_size_1, batch_size_2], with elements being
+        Similarity(encoded_input_1[i], encoded_input_2[j]), where i in [0,
+        batch_size_1) and j in [0, batch_size_2). If True, it requires the batch
+        sizes of encoded_input_1 and encoded_input_2 to be the same, and returns
+        a vector of Similarity(encoded_input_1[i], encoded_input_2[i]), where i
+        in [0, batch_size).
+      enable_dropout: a bool indicating whether to use dropout.
+
+    Returns:
+      similarity_tensor: a float tensor with similarity score.
+        If pointwise_similarity = True, the tensor is of the shape [batch_size],
+        otherwise [batch_size_1, batch_size_2].
+    """
+    batch_size_1 = encoded_input_1.shape[0]
+    batch_size_2 = encoded_input_2.shape[0]
+    if pointwise_similarity:
+      assert batch_size_1 == batch_size_2, (
+          'pointwise similarity requires both inputs have the same batch. '
+          f'Current shape are {encoded_input_1.shape} and '
+          f'{encoded_input_2.shape}.'
+      )
+    else:
+      input_ndim = jnp.ndim(encoded_input_1)
+      # To calculate the similarity between the i-th element in encoded_input_1
+      # and the j-th element in encoded_input_2, we need to tile / repeat the
+      # encoded_input_1/2.
+      # The encoded_input_1 is tiled along the batch dimension by batch_size_2.
+      # e.g. encoded_input_1 has 3 elements [[1-st], [2-nd], [3-rd]], and
+      # batch_size_2 = 2. The tiled results will be
+      # [[1-st], [2-nd], [3-rd], [1-st], [2-nd], [3-rd]].
+      encoded_input_1 = jnp.tile(
+          encoded_input_1, (batch_size_2,) + (1,) * (input_ndim - 1)
+      )
+      encoded_input_mask_1 = jnp.tile(
+          encoded_input_mask_1,
+          (batch_size_2,) + (1,) * (jnp.ndim(encoded_input_mask_1) - 1),
+      )
+      # The encoded_input_2 is repeated along the batch dimension by
+      # batch_size_1. e.g. encoded_input_2 has 2 elements [[1-st], [2-nd]], and
+      # batch_size_1 = 3. The tiled results will be
+      # [[1-st], [2-nd],[1-st], [2-nd], [1-st], [2-nd]].
+      encoded_input_2 = jnp.repeat(encoded_input_2, batch_size_1, axis=0)
+      encoded_input_mask_2 = jnp.repeat(
+          encoded_input_mask_2, batch_size_1, axis=0
+      )
+
+    dtype = encoded_input_1.dtype
+
+    encoded_input_1 = self.pre_attention_layer_norm(encoded_input_1)
+    encoded_input_2 = self.pre_attention_layer_norm(encoded_input_2)
+
+    # Mask to remove padding tokens.
+    encoded_mask = dense_attention.make_attention_mask(
+        encoded_input_mask_1, encoded_input_mask_2, dtype=dtype
+    )
+
+    # attention map returns a tensor of the shape [batch_size,
+    # sequence_length_1, embedding_dim]
+    mlp_input = self.attention(
+        encoded_input_1,
+        encoded_input_2,
+        encoded_mask,
+        enable_dropout=enable_dropout,
+    )
+
+    if self.dropout is not None and enable_dropout:
+      mlp_input = self.dropout(mlp_input, deterministic=not enable_dropout)
+
+    mlp_input = self.pre_mlp_layer_norm(mlp_input)
+
+    # mlp_layer returns [batch_size, sequence_length_1, 1]
+    logits = self.mlp_layer(mlp_input, enable_dropout=enable_dropout)
+
+    logits = jnp.reshape(logits, encoded_input_mask_1.shape)
+
+    avg_logits = jnp.sum(logits * encoded_input_mask_1, axis=1) / jnp.sum(
+        encoded_input_mask_1, axis=1
+    )
+    if self.activation:
+      avg_logits = self.activation(avg_logits)
+
+    if not pointwise_similarity:
+      # In case of element-wise similarity, the returned tensor will be a metrix
+      # with [i, j]-th element being similarity(encoded_input_1[i],
+      # encoded_input_2[j]).
+      avg_logits = jnp.reshape(
+          avg_logits, [batch_size_1, batch_size_2], order='F'
+      )
+
+    return avg_logits

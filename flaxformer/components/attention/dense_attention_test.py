@@ -47,13 +47,16 @@ class SelfAttention(dense_attention.MultiHeadDotProductAttention):
   """Self-attention special case of multi-head dot-product attention."""
 
   @nn.compact
-  def __call__(self,
-               inputs_q: Array,
-               mask: Optional[Array] = None,
-               bias: Optional[Array] = None,
-               enable_dropout: bool = True):
+  def __call__(
+      self,
+      inputs_q: Array,
+      mask: Optional[Array] = None,
+      bias: Optional[Array] = None,
+      enable_dropout: bool = True,
+  ):
     return super().__call__(
-        inputs_q, inputs_q, mask, bias, enable_dropout=enable_dropout)
+        inputs_q, inputs_q, mask, bias, enable_dropout=enable_dropout
+    )
 
 
 @dataclasses.dataclass(frozen=True)
@@ -88,7 +91,8 @@ class SelfAttentionArgs:
         use_bias=self.use_bias,
         rescale_logits=self.rescale_logits,
         float32_logits=self.float32_logits,
-        use_rotary_embedding=self.use_rotary_embedding)
+        use_rotary_embedding=self.use_rotary_embedding,
+    )
 
   def apply_args(self):
     inputs_q = jnp.ones((self.batch_size, self.q_len, self.features))
@@ -98,7 +102,7 @@ class SelfAttentionArgs:
         'inputs_q': inputs_q,
         'mask': mask,
         'bias': bias,
-        'enable_dropout': self.enable_dropout
+        'enable_dropout': self.enable_dropout,
     }
 
 
@@ -130,12 +134,14 @@ class AttentionTest(parameterized.TestCase):
     )
 
     output = dense_attention.dot_product_attention(
-        **args, broadcast_dropout=True)
+        **args, broadcast_dropout=True
+    )
     self.assertEqual(output.shape, (batch_size, q_len, num_heads, v_depth))
 
     # Make sure we also reach the code path where we don't broadcast dropout.
     output = dense_attention.dot_product_attention(
-        **args, broadcast_dropout=False)
+        **args, broadcast_dropout=False
+    )
     self.assertEqual(output.shape, (batch_size, q_len, num_heads, v_depth))
 
   def test_dot_product_attention_no_batch_dim(self):
@@ -197,13 +203,15 @@ class AttentionTest(parameterized.TestCase):
         params,
         **apply_args,
         mutable=['cache'],
-        rngs={'dropout': random.PRNGKey(2)})
+        rngs={'dropout': random.PRNGKey(2)},
+    )
     self.assertEqual(y.shape, (args.batch_size, args.q_len, args.out_features))
 
   def test_make_attention_mask_multiply_pairwise_fn(self):
     decoder_target_tokens = jnp.array([[7, 0, 0], [8, 5, 0]])
     attention_mask = dense_attention.make_attention_mask(
-        decoder_target_tokens > 0, decoder_target_tokens > 0, dtype=jnp.int32)
+        decoder_target_tokens > 0, decoder_target_tokens > 0, dtype=jnp.int32
+    )
     expected0 = jnp.array([[1, 0, 0], [0, 0, 0], [0, 0, 0]])
     expected1 = jnp.array([[1, 1, 0], [1, 1, 0], [0, 0, 0]])
     self.assertEqual(attention_mask.shape, (2, 1, 3, 3))
@@ -213,15 +221,26 @@ class AttentionTest(parameterized.TestCase):
   def test_make_attention_mask_equal_pairwise_fn(self):
     segment_ids = jnp.array([[1, 1, 2, 2, 2, 0], [1, 1, 1, 2, 0, 0]])
     attention_mask = dense_attention.make_attention_mask(
-        segment_ids, segment_ids, pairwise_fn=jnp.equal, dtype=jnp.int32)
+        segment_ids, segment_ids, pairwise_fn=jnp.equal, dtype=jnp.int32
+    )
     # Padding is not treated in a special way. So they need to be zeroed out
     # separately.
-    expected0 = jnp.array([[1, 1, 0, 0, 0, 0], [1, 1, 0, 0, 0, 0],
-                           [0, 0, 1, 1, 1, 0], [0, 0, 1, 1, 1, 0],
-                           [0, 0, 1, 1, 1, 0], [0, 0, 0, 0, 0, 1]])
-    expected1 = jnp.array([[1, 1, 1, 0, 0, 0], [1, 1, 1, 0, 0, 0],
-                           [1, 1, 1, 0, 0, 0], [0, 0, 0, 1, 0, 0],
-                           [0, 0, 0, 0, 1, 1], [0, 0, 0, 0, 1, 1]])
+    expected0 = jnp.array([
+        [1, 1, 0, 0, 0, 0],
+        [1, 1, 0, 0, 0, 0],
+        [0, 0, 1, 1, 1, 0],
+        [0, 0, 1, 1, 1, 0],
+        [0, 0, 1, 1, 1, 0],
+        [0, 0, 0, 0, 0, 1],
+    ])
+    expected1 = jnp.array([
+        [1, 1, 1, 0, 0, 0],
+        [1, 1, 1, 0, 0, 0],
+        [1, 1, 1, 0, 0, 0],
+        [0, 0, 0, 1, 0, 0],
+        [0, 0, 0, 0, 1, 1],
+        [0, 0, 0, 0, 1, 1],
+    ])
     self.assertEqual(attention_mask.shape, (2, 1, 6, 6))
     np.testing.assert_array_equal(attention_mask[0, 0], expected0)
     np.testing.assert_array_equal(attention_mask[1, 0], expected1)
@@ -232,8 +251,9 @@ class AttentionTest(parameterized.TestCase):
     self.assertEqual(y.shape, (2, 1, 3, 3))
     # Padding is not treated in a special way. So they need to be zeroed out
     # separately.
-    expected_y = jnp.array([[[1., 0., 0.], [1., 1., 0.], [1., 1., 1.]]],
-                           jnp.float32)
+    expected_y = jnp.array(
+        [[[1.0, 0.0, 0.0], [1.0, 1.0, 0.0], [1.0, 1.0, 1.0]]], jnp.float32
+    )
     np.testing.assert_allclose(y[0], expected_y)
     np.testing.assert_allclose(y[1], expected_y)
 
@@ -246,24 +266,27 @@ class AttentionTest(parameterized.TestCase):
     x = jnp.ones((1, 3))
     y = dense_attention.make_causal_mask(x)
     self.assertEqual(y.shape, (1, 1, 3, 3))
-    expected_y = jnp.array([[[[1., 0., 0.], [1., 1., 0.], [1., 1., 1.]]]],
-                           jnp.float32)
+    expected_y = jnp.array(
+        [[[[1.0, 0.0, 0.0], [1.0, 1.0, 0.0], [1.0, 1.0, 1.0]]]], jnp.float32
+    )
     np.testing.assert_allclose(y, expected_y)
 
   def test_combine_masks(self):
     masks = [
-        jnp.array([0, 1, 0, 1], jnp.float32), None,
+        jnp.array([0, 1, 0, 1], jnp.float32),
+        None,
         jnp.array([1, 1, 1, 1], jnp.float32),
-        jnp.array([1, 1, 1, 0], jnp.float32)
+        jnp.array([1, 1, 1, 0], jnp.float32),
     ]
     y = dense_attention.combine_masks(*masks)
     np.testing.assert_allclose(y, jnp.array([0, 1, 0, 0], jnp.float32))
 
   def test_combine_biases(self):
     masks = [
-        jnp.array([0, 1, 0, 1], jnp.float32), None,
+        jnp.array([0, 1, 0, 1], jnp.float32),
+        None,
         jnp.array([0, 1, 1, 1], jnp.float32),
-        jnp.array([0, 1, 1, 0], jnp.float32)
+        jnp.array([0, 1, 1, 0], jnp.float32),
     ]
     y = dense_attention.combine_biases(*masks)
     np.testing.assert_allclose(y, jnp.array([0, 3, 2, 2], jnp.float32))
@@ -271,9 +294,11 @@ class AttentionTest(parameterized.TestCase):
   def test_make_decoder_mask_lm_unpacked(self):
     decoder_target_tokens = jnp.array([6, 7, 3, 0])
     mask = dense_attention.make_decoder_mask(
-        decoder_target_tokens=decoder_target_tokens, dtype=jnp.float32)
-    expected_mask = jnp.array([[[1, 0, 0, 0], [1, 1, 0, 0], [1, 1, 1, 0],
-                                [0, 0, 0, 0]]])
+        decoder_target_tokens=decoder_target_tokens, dtype=jnp.float32
+    )
+    expected_mask = jnp.array(
+        [[[1, 0, 0, 0], [1, 1, 0, 0], [1, 1, 1, 0], [0, 0, 0, 0]]]
+    )
     np.testing.assert_array_equal(mask, expected_mask)
 
   def test_make_decoder_mask_lm_packed(self):
@@ -282,10 +307,16 @@ class AttentionTest(parameterized.TestCase):
     mask = dense_attention.make_decoder_mask(
         decoder_target_tokens=decoder_target_tokens,
         dtype=jnp.float32,
-        decoder_segment_ids=decoder_segment_ids)
-    expected_mask = jnp.array([[[[1, 0, 0, 0, 0, 0], [1, 1, 0, 0, 0, 0],
-                                 [1, 1, 1, 0, 0, 0], [0, 0, 0, 1, 0, 0],
-                                 [0, 0, 0, 1, 1, 0], [0, 0, 0, 0, 0, 0]]]])
+        decoder_segment_ids=decoder_segment_ids,
+    )
+    expected_mask = jnp.array([[[
+        [1, 0, 0, 0, 0, 0],
+        [1, 1, 0, 0, 0, 0],
+        [1, 1, 1, 0, 0, 0],
+        [0, 0, 0, 1, 0, 0],
+        [0, 0, 0, 1, 1, 0],
+        [0, 0, 0, 0, 0, 0],
+    ]]])
     np.testing.assert_array_equal(mask, expected_mask)
 
   def test_make_decoder_mask_prefix_lm_unpacked(self):
@@ -294,11 +325,19 @@ class AttentionTest(parameterized.TestCase):
     mask = dense_attention.make_decoder_mask(
         decoder_target_tokens=decoder_target_tokens,
         dtype=jnp.float32,
-        decoder_causal_attention=decoder_causal_attention)
+        decoder_causal_attention=decoder_causal_attention,
+    )
     expected_mask = jnp.array(
-        [[[[1, 1, 1, 0, 0, 0], [1, 1, 1, 0, 0, 0], [1, 1, 1, 0, 0, 0],
-           [1, 1, 1, 1, 0, 0], [1, 1, 1, 1, 1, 0], [0, 0, 0, 0, 0, 0]]]],
-        dtype=jnp.float32)
+        [[[
+            [1, 1, 1, 0, 0, 0],
+            [1, 1, 1, 0, 0, 0],
+            [1, 1, 1, 0, 0, 0],
+            [1, 1, 1, 1, 0, 0],
+            [1, 1, 1, 1, 1, 0],
+            [0, 0, 0, 0, 0, 0],
+        ]]],
+        dtype=jnp.float32,
+    )
     np.testing.assert_array_equal(mask, expected_mask)
 
   def test_make_decoder_mask_prefix_lm_packed(self):
@@ -309,11 +348,17 @@ class AttentionTest(parameterized.TestCase):
         decoder_target_tokens=decoder_target_tokens,
         dtype=jnp.float32,
         decoder_causal_attention=decoder_causal_attention,
-        decoder_segment_ids=decoder_segment_ids)
-    expected_mask = jnp.array([[[[1, 1, 0, 0, 0, 0, 0], [1, 1, 0, 0, 0, 0, 0],
-                                 [1, 1, 1, 0, 0, 0, 0], [0, 0, 0, 1, 1, 0, 0],
-                                 [0, 0, 0, 1, 1, 0, 0], [0, 0, 0, 1, 1, 1, 0],
-                                 [0, 0, 0, 0, 0, 0, 0]]]])
+        decoder_segment_ids=decoder_segment_ids,
+    )
+    expected_mask = jnp.array([[[
+        [1, 1, 0, 0, 0, 0, 0],
+        [1, 1, 0, 0, 0, 0, 0],
+        [1, 1, 1, 0, 0, 0, 0],
+        [0, 0, 0, 1, 1, 0, 0],
+        [0, 0, 0, 1, 1, 0, 0],
+        [0, 0, 0, 1, 1, 1, 0],
+        [0, 0, 0, 0, 0, 0, 0],
+    ]]])
     np.testing.assert_array_equal(mask, expected_mask)
 
   def test_make_decoder_mask_prefix_lm_unpacked_multiple_elements(self):
@@ -322,11 +367,14 @@ class AttentionTest(parameterized.TestCase):
     mask = dense_attention.make_decoder_mask(
         decoder_target_tokens=decoder_target_tokens,
         dtype=jnp.float32,
-        decoder_causal_attention=decoder_causal_attention)
-    expected_mask0 = jnp.array([[1, 1, 0, 0], [1, 1, 0, 0], [1, 1, 1, 0],
-                                [0, 0, 0, 0]])
-    expected_mask1 = jnp.array([[1, 0, 0, 0], [1, 1, 0, 0], [0, 0, 0, 0],
-                                [0, 0, 0, 0]])
+        decoder_causal_attention=decoder_causal_attention,
+    )
+    expected_mask0 = jnp.array(
+        [[1, 1, 0, 0], [1, 1, 0, 0], [1, 1, 1, 0], [0, 0, 0, 0]]
+    )
+    expected_mask1 = jnp.array(
+        [[1, 0, 0, 0], [1, 1, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0]]
+    )
     self.assertEqual(mask.shape, (2, 1, 4, 4))
     np.testing.assert_array_equal(mask[0, 0], expected_mask0)
     np.testing.assert_array_equal(mask[1, 0], expected_mask1)
@@ -337,11 +385,17 @@ class AttentionTest(parameterized.TestCase):
     mask = dense_attention.make_decoder_mask(
         decoder_target_tokens=decoder_target_tokens,
         dtype=jnp.float32,
-        decoder_causal_attention=decoder_causal_attention)
-    expected_mask0 = jnp.array([[1, 1, 0, 0, 1, 1, 0], [1, 1, 0, 0, 1, 1, 0],
-                                [1, 1, 1, 0, 0, 0, 0], [1, 1, 1, 1, 0, 0, 0],
-                                [1, 1, 1, 1, 1, 1, 0], [1, 1, 1, 1, 1, 1, 0],
-                                [0, 0, 0, 0, 0, 0, 0]])
+        decoder_causal_attention=decoder_causal_attention,
+    )
+    expected_mask0 = jnp.array([
+        [1, 1, 0, 0, 1, 1, 0],
+        [1, 1, 0, 0, 1, 1, 0],
+        [1, 1, 1, 0, 0, 0, 0],
+        [1, 1, 1, 1, 0, 0, 0],
+        [1, 1, 1, 1, 1, 1, 0],
+        [1, 1, 1, 1, 1, 1, 0],
+        [0, 0, 0, 0, 0, 0, 0],
+    ])
 
     self.assertEqual(mask.shape, (1, 1, 7, 7))
     np.testing.assert_array_equal(mask[0, 0], expected_mask0)
@@ -354,16 +408,19 @@ class AttentionTest(parameterized.TestCase):
         decoder_target_tokens=decoder_target_tokens,
         dtype=jnp.float32,
         decoder_causal_attention=decoder_causal_attention,
-        decoder_segment_ids=decoder_segment_ids)
-    expected_mask0 = jnp.array([[1, 1, 0, 0, 1, 1, 0, 0, 0],
-                                [1, 1, 0, 0, 1, 1, 0, 0, 0],
-                                [1, 1, 1, 0, 0, 0, 0, 0, 0],
-                                [1, 1, 1, 1, 0, 0, 0, 0, 0],
-                                [1, 1, 1, 1, 1, 1, 0, 0, 0],
-                                [1, 1, 1, 1, 1, 1, 0, 0, 0],
-                                [0, 0, 0, 0, 0, 0, 1, 1, 0],
-                                [0, 0, 0, 0, 0, 0, 1, 1, 0],
-                                [0, 0, 0, 0, 0, 0, 1, 1, 1]])
+        decoder_segment_ids=decoder_segment_ids,
+    )
+    expected_mask0 = jnp.array([
+        [1, 1, 0, 0, 1, 1, 0, 0, 0],
+        [1, 1, 0, 0, 1, 1, 0, 0, 0],
+        [1, 1, 1, 0, 0, 0, 0, 0, 0],
+        [1, 1, 1, 1, 0, 0, 0, 0, 0],
+        [1, 1, 1, 1, 1, 1, 0, 0, 0],
+        [1, 1, 1, 1, 1, 1, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0, 1, 1, 0],
+        [0, 0, 0, 0, 0, 0, 1, 1, 0],
+        [0, 0, 0, 0, 0, 0, 1, 1, 1],
+    ])
 
     self.assertEqual(mask.shape, (1, 1, 9, 9))
     np.testing.assert_array_equal(mask[0, 0], expected_mask0)
@@ -379,7 +436,8 @@ class AttentionTest(parameterized.TestCase):
         out_features=f,
         dropout_rate=0,
         rescale_logits=False,
-        use_bias=False)
+        use_bias=False,
+    )
     args = base_args.init_args()
 
     if f != h * d:
@@ -399,21 +457,14 @@ class AttentionTest(parameterized.TestCase):
     out_kernel = np.random.randn(h, d, f)
 
     params = {
-        'query': {
-            'kernel': query_kernel.reshape(f, -1)
-        },
-        'key': {
-            'kernel': key_kernel.reshape(f, -1)
-        },
-        'value': {
-            'kernel': value_kernel.reshape(f, -1)
-        },
-        'out': {
-            'kernel': out_kernel.reshape(-1, f)
-        }
+        'query': {'kernel': query_kernel.reshape(f, -1)},
+        'key': {'kernel': key_kernel.reshape(f, -1)},
+        'value': {'kernel': value_kernel.reshape(f, -1)},
+        'out': {'kernel': out_kernel.reshape(-1, f)},
     }
     y = dense_attention.MultiHeadDotProductAttention(**args).apply(
-        {'params': freeze(params)}, inputs_q, inputs_kv)
+        {'params': freeze(params)}, inputs_q, inputs_kv
+    )
 
     query = np.einsum('bqf,fhd->bqhd', inputs_q, query_kernel)
     key = np.einsum('bkf,fhd->bkhd', inputs_kv, key_kernel)
@@ -431,13 +482,14 @@ class AttentionTest(parameterized.TestCase):
     prefill_lengths = np.array([3, 1])
 
     base_args = SelfAttentionArgs(
-        num_heads=h, qkv_features=f, out_features=f, dropout_rate=0)
+        num_heads=h, qkv_features=f, out_features=f, dropout_rate=0
+    )
     args = base_args.init_args()
 
     cache = {
         'cached_key': np.zeros((b, h, d, k)),
         'cached_value': np.zeros((b, h, d, k)),
-        'cache_index': np.array([0, 0])
+        'cache_index': np.array([0, 0]),
     }
     inputs_q = np.random.randn(b, k, f)
     inputs_kv = np.random.randn(b, k, f)
@@ -448,7 +500,8 @@ class AttentionTest(parameterized.TestCase):
       return x.reshape(b, -1, h, d)
 
     with mock.patch.object(
-        dense.DenseGeneral, '__call__', new=mock_dense_general):
+        dense.DenseGeneral, '__call__', new=mock_dense_general
+    ):
       _, mutated = dense_attention.MultiHeadDotProductAttention(**args).apply(
           {'cache': freeze(cache)},
           inputs_q,
@@ -456,7 +509,8 @@ class AttentionTest(parameterized.TestCase):
           decode=False,
           prefill=True,
           prefill_lengths=prefill_lengths,
-          mutable=['cache'])
+          mutable=['cache'],
+      )
       updated_cache = mutated['cache']
 
     # Perform the same mocked projection to generate the expected cache.
@@ -482,13 +536,14 @@ class AttentionTest(parameterized.TestCase):
     f = h * d
 
     base_args = SelfAttentionArgs(
-        num_heads=h, qkv_features=f, out_features=f, dropout_rate=0)
+        num_heads=h, qkv_features=f, out_features=f, dropout_rate=0
+    )
     args = base_args.init_args()
 
     cache = {
         'cached_key': np.zeros((b, h, d, k)),
         'cached_value': np.zeros((b, h, d, k)),
-        'cache_index': np.array(0)
+        'cache_index': np.array(0),
     }
     inputs_q = np.random.randn(b, 1, f)
     inputs_kv = np.random.randn(b, 1, f)
@@ -499,13 +554,15 @@ class AttentionTest(parameterized.TestCase):
       return x.reshape(b, -1, h, d)
 
     with mock.patch.object(
-        dense.DenseGeneral, '__call__', new=mock_dense_general):
+        dense.DenseGeneral, '__call__', new=mock_dense_general
+    ):
       _, mutated = dense_attention.MultiHeadDotProductAttention(**args).apply(
           {'cache': freeze(cache)},
           inputs_q,
           inputs_kv,
           decode=True,
-          mutable=['cache'])
+          mutable=['cache'],
+      )
       updated_cache = mutated['cache']
 
     # Perform the same mocked projection to generate the expected cache.
@@ -529,7 +586,8 @@ class AttentionTest(parameterized.TestCase):
     value = np.random.randn(b, k, h, d)
     bias = np.random.randn(b, h, q, k)
     attn_out = dense_attention.dot_product_attention(
-        query, key, value, bias=bias)
+        query, key, value, bias=bias
+    )
     logits = np.einsum('bqhd,bkhd->bhqk', query, key)
     weights = jax.nn.softmax(logits + bias, axis=-1)
     expected = np.einsum('bhqk,bkhd->bqhd', weights, value)
@@ -546,7 +604,8 @@ class AttentionTest(parameterized.TestCase):
         out_features=f,
         dropout_rate=0,
         rescale_logits=False,
-        use_bias=False)
+        use_bias=False,
+    )
     args = base_args.init_args()
 
     if f != h * d:
@@ -566,21 +625,14 @@ class AttentionTest(parameterized.TestCase):
     out_kernel = np.random.randn(h, d, f)
 
     params = {
-        'query': {
-            'kernel': query_kernel.reshape(f, -1)
-        },
-        'key': {
-            'kernel': key_kernel
-        },
-        'value': {
-            'kernel': value_kernel
-        },
-        'out': {
-            'kernel': out_kernel.reshape(-1, f)
-        }
+        'query': {'kernel': query_kernel.reshape(f, -1)},
+        'key': {'kernel': key_kernel},
+        'value': {'kernel': value_kernel},
+        'out': {'kernel': out_kernel.reshape(-1, f)},
     }
     y = dense_attention.MultiQueryDotProductAttention(**args).apply(
-        {'params': freeze(params)}, inputs_q, inputs_kv)
+        {'params': freeze(params)}, inputs_q, inputs_kv
+    )
 
     query = np.einsum('bqf,fhd->bqhd', inputs_q, query_kernel)
     key = np.einsum('bkf,fd->bkd', inputs_kv, key_kernel)
@@ -594,10 +646,12 @@ class AttentionTest(parameterized.TestCase):
   @parameterized.named_parameters([
       dict(
           testcase_name='multi_head',
-          attn_class=dense_attention.MultiHeadDotProductAttention),
+          attn_class=dense_attention.MultiHeadDotProductAttention,
+      ),
       dict(
           testcase_name='multi_query',
-          attn_class=dense_attention.MultiQueryDotProductAttention),
+          attn_class=dense_attention.MultiQueryDotProductAttention,
+      ),
   ])
   def test_attention_prefill_logits_match_forward(self, attn_class):
     """Make sure values during a cache prefill match values from training."""
@@ -607,7 +661,8 @@ class AttentionTest(parameterized.TestCase):
     f = h * d
 
     base_args = SelfAttentionArgs(
-        num_heads=h, qkv_features=f, out_features=f, dropout_rate=0)
+        num_heads=h, qkv_features=f, out_features=f, dropout_rate=0
+    )
     args = base_args.init_args()
 
     inputs_q = np.random.randn(b, t, f).astype(np.float32)
@@ -615,62 +670,71 @@ class AttentionTest(parameterized.TestCase):
     bias = np.random.randn(1, h, t, t).astype(np.float32)
     mask = dense_attention.make_decoder_mask(
         (np.arange(t) < np.reshape(ls, (-1, 1))).astype(inputs_q.dtype),
-        dtype=inputs_q.dtype).astype(np.float32)
+        dtype=inputs_q.dtype,
+    ).astype(np.float32)
 
     attn = attn_class(**args)
-    params = attn.init(jax.random.PRNGKey(0), inputs_q, inputs_kv, mask,
-                       bias)['params']
+    params = attn.init(jax.random.PRNGKey(0), inputs_q, inputs_kv, mask, bias)[
+        'params'
+    ]
 
     # Calculate logits as done during training, no caching or anything.
-    logits = attn.apply({'params': params},
-                        inputs_q,
-                        inputs_kv,
-                        mask=mask,
-                        bias=bias,
-                        enable_dropout=False,
-                        decode=False,
-                        prefill=False)
+    logits = attn.apply(
+        {'params': params},
+        inputs_q,
+        inputs_kv,
+        mask=mask,
+        bias=bias,
+        enable_dropout=False,
+        decode=False,
+        prefill=False,
+    )
 
     # Initialize the cache.
-    _, variables_with_cache = attn.apply({'params': params},
-                                         inputs_q,
-                                         inputs_kv,
-                                         mask=mask,
-                                         bias=bias,
-                                         decode=True,
-                                         prefill=False,
-                                         mutable=['cache'])
+    _, variables_with_cache = attn.apply(
+        {'params': params},
+        inputs_q,
+        inputs_kv,
+        mask=mask,
+        bias=bias,
+        decode=True,
+        prefill=False,
+        mutable=['cache'],
+    )
     cache = variables_with_cache['cache']
     # Calculate the logits returned during the cache prefill step. Actions
     # taken to facilitate caching should not effect the output.
-    prefill_logits, _ = attn.apply({
-        'params': params,
-        'cache': cache
-    },
-                                   inputs_q,
-                                   inputs_kv,
-                                   mask=mask,
-                                   bias=bias,
-                                   enable_dropout=False,
-                                   decode=False,
-                                   prefill=True,
-                                   prefill_lengths=ls,
-                                   mutable=['cache'])
+    prefill_logits, _ = attn.apply(
+        {'params': params, 'cache': cache},
+        inputs_q,
+        inputs_kv,
+        mask=mask,
+        bias=bias,
+        enable_dropout=False,
+        decode=False,
+        prefill=True,
+        prefill_lengths=ls,
+        mutable=['cache'],
+    )
 
     np.testing.assert_allclose(
-        prefill_logits, logits, err_msg='logits do not match.')
+        prefill_logits, logits, err_msg='logits do not match.'
+    )
 
   @parameterized.named_parameters([
       dict(
           testcase_name='multi_head',
-          attn_class=dense_attention.MultiHeadDotProductAttention),
+          attn_class=dense_attention.MultiHeadDotProductAttention,
+      ),
       dict(
           testcase_name='multi_query',
-          attn_class=dense_attention.MultiQueryDotProductAttention),
+          attn_class=dense_attention.MultiQueryDotProductAttention,
+      ),
       dict(
           testcase_name='one_head',
           attn_class=dense_attention.MultiHeadDotProductAttention,
-          num_heads=1),
+          num_heads=1,
+      ),
   ])
   def test_rotary_embedding_attention(self, attn_class, num_heads=3):
     """Makes sure enabling rotary embeddings works."""
@@ -684,7 +748,8 @@ class AttentionTest(parameterized.TestCase):
         qkv_features=f,
         out_features=f,
         dropout_rate=0,
-        use_rotary_embedding=True)
+        use_rotary_embedding=True,
+    )
     args = base_args.init_args()
 
     inputs_q = np.random.randn(b, t, f).astype(np.float32)
@@ -692,21 +757,25 @@ class AttentionTest(parameterized.TestCase):
     bias = np.random.randn(1, h, t, t).astype(np.float32)
     mask = dense_attention.make_decoder_mask(
         (np.arange(t) < np.reshape(ls, (-1, 1))).astype(inputs_q.dtype),
-        dtype=inputs_q.dtype).astype(np.float32)
+        dtype=inputs_q.dtype,
+    ).astype(np.float32)
 
     attn = attn_class(**args)
-    params = attn.init(jax.random.PRNGKey(0), inputs_q, inputs_kv, mask,
-                       bias)['params']
+    params = attn.init(jax.random.PRNGKey(0), inputs_q, inputs_kv, mask, bias)[
+        'params'
+    ]
 
     # Calculate logits as done during training, no caching or anything.
-    logits = attn.apply({'params': params},
-                        inputs_q,
-                        inputs_kv,
-                        mask=mask,
-                        bias=bias,
-                        enable_dropout=False,
-                        decode=False,
-                        prefill=False)
+    logits = attn.apply(
+        {'params': params},
+        inputs_q,
+        inputs_kv,
+        mask=mask,
+        bias=bias,
+        enable_dropout=False,
+        decode=False,
+        prefill=False,
+    )
 
     self.assertEqual(logits.shape, (b, t, f))
 
@@ -714,19 +783,23 @@ class AttentionTest(parameterized.TestCase):
       dict(
           testcase_name='multi_head_causal',
           attn_class=dense_attention.MultiHeadDotProductAttention,
-          causal=True),
+          causal=True,
+      ),
       dict(
           testcase_name='multi_query_causal',
           attn_class=dense_attention.MultiQueryDotProductAttention,
-          causal=True),
+          causal=True,
+      ),
       dict(
           testcase_name='multi_head',
           attn_class=dense_attention.MultiHeadDotProductAttention,
-          causal=False),
+          causal=False,
+      ),
       dict(
           testcase_name='multi_query',
           attn_class=dense_attention.MultiQueryDotProductAttention,
-          causal=False),
+          causal=False,
+      ),
   ])
   def test_final_prefill_logits_match_first_decode(self, attn_class, causal):
     """Check logits of final input position matches in prefill and decode.
@@ -766,7 +839,8 @@ class AttentionTest(parameterized.TestCase):
           qkv_features=f,
           out_features=f,
           dropout_rate=0,
-          float32_logits=True)
+          float32_logits=True,
+      )
       args = base_args.init_args()
 
       inputs_q = np.random.randn(b, t, f).astype(np.float32)
@@ -776,27 +850,33 @@ class AttentionTest(parameterized.TestCase):
       # considered in the attention like it will when it is the first decode
       # token.
       valid_tokens = (np.arange(t) <= np.reshape(lengths, (-1, 1))).astype(
-          inputs_q.dtype)
+          inputs_q.dtype
+      )
       last_valid = np.take_along_axis(
-          valid_tokens, np.expand_dims(lengths, axis=-1), axis=1)
+          valid_tokens, np.expand_dims(lengths, axis=-1), axis=1
+      )
       assert np.all(last_valid == np.ones((2, 1), dtype=last_valid.dtype))
       mask = dense_attention.make_decoder_mask(
           valid_tokens,
           # Use bidirectional attention in the input.
           decoder_causal_attention=None if causal else valid_tokens,
-          dtype=inputs_q.dtype)
+          dtype=inputs_q.dtype,
+      )
 
       attn = attn_class(**args, precision='float32')
       params = attn.init(
-          jax.random.PRNGKey(0), inputs_q, inputs_kv, mask, bias)['params']
+          jax.random.PRNGKey(0), inputs_q, inputs_kv, mask, bias
+      )['params']
 
       # Initialize the cache
-      _, variables_with_cache = attn.apply({'params': params},
-                                           inputs_q,
-                                           inputs_kv,
-                                           decode=True,
-                                           prefill=False,
-                                           mutable=['cache'])
+      _, variables_with_cache = attn.apply(
+          {'params': params},
+          inputs_q,
+          inputs_kv,
+          decode=True,
+          prefill=False,
+          mutable=['cache'],
+      )
       cache = variables_with_cache['cache']
       # Prefill the cache and select the logits from the position of the final
       # input token.
@@ -813,19 +893,18 @@ class AttentionTest(parameterized.TestCase):
           decode=False,
           prefill=True,
           prefill_lengths=lengths,
-          mutable=['cache'])
+          mutable=['cache'],
+      )
       prefilled_cache = vars_with_new_cache['cache']
 
       lengths_index = jnp.reshape(lengths, (-1, 1, 1))
       final_prefilled_logits = jnp.take_along_axis(
-          prefilled_logits, lengths_index, axis=1)
+          prefilled_logits, lengths_index, axis=1
+      )
 
       # Do a single decode step, with the final input token as input.
       decode_logits, _ = attn.apply(
-          {
-              'params': params,
-              'cache': prefilled_cache
-          },
+          {'params': params, 'cache': prefilled_cache},
           jnp.take_along_axis(inputs_q, lengths_index, axis=1),
           jnp.take_along_axis(inputs_kv, lengths_index, axis=1),
           mask=None,
@@ -833,18 +912,22 @@ class AttentionTest(parameterized.TestCase):
           enable_dropout=False,
           decode=True,
           prefill=False,
-          mutable=['cache'])
+          mutable=['cache'],
+      )
 
       np.testing.assert_allclose(
-          decode_logits, final_prefilled_logits, atol=1e-6)
+          decode_logits, final_prefilled_logits, atol=1e-6
+      )
 
   @parameterized.named_parameters([
       dict(
           testcase_name='multi_head',
-          attn_class=dense_attention.MultiHeadDotProductAttention),
+          attn_class=dense_attention.MultiHeadDotProductAttention,
+      ),
       dict(
           testcase_name='multi_query',
-          attn_class=dense_attention.MultiQueryDotProductAttention),
+          attn_class=dense_attention.MultiQueryDotProductAttention,
+      ),
   ])
   def test_attention_causal_prefill_and_decode_match_decode(self, attn_class):
     """Make sure causal prefill->decode is the same as just decode."""
@@ -859,7 +942,8 @@ class AttentionTest(parameterized.TestCase):
           qkv_features=f,
           out_features=f,
           dropout_rate=0,
-          float32_logits=True)
+          float32_logits=True,
+      )
       args = base_args.init_args()
 
       inputs_q = np.random.randn(b, t, f).astype(np.float32)
@@ -867,30 +951,31 @@ class AttentionTest(parameterized.TestCase):
       bias = np.random.randn(1, h, t, t).astype(np.float32)
       mask = dense_attention.make_decoder_mask(
           (np.arange(t) < np.reshape(ls, (-1, 1))).astype(inputs_q.dtype),
-          dtype=inputs_q.dtype).astype(np.float32)
+          dtype=inputs_q.dtype,
+      ).astype(np.float32)
 
       attn = attn_class(**args, precision='float32')
       params = attn.init(
-          jax.random.PRNGKey(0), inputs_q, inputs_kv, mask, bias)['params']
+          jax.random.PRNGKey(0), inputs_q, inputs_kv, mask, bias
+      )['params']
 
       # Pure Decoding
       # Initialize the cache
-      _, variables_with_cache = attn.apply({'params': params},
-                                           inputs_q,
-                                           inputs_kv,
-                                           decode=True,
-                                           prefill=False,
-                                           mutable=['cache'])
+      _, variables_with_cache = attn.apply(
+          {'params': params},
+          inputs_q,
+          inputs_kv,
+          decode=True,
+          prefill=False,
+          mutable=['cache'],
+      )
       decoded_cache = variables_with_cache['cache']
 
       # Run decoding for each input element.
       decoded_logits = []
       for i in range(t):
         logits, vars_with_new_cache = attn.apply(
-            {
-                'params': params,
-                'cache': decoded_cache
-            },
+            {'params': params, 'cache': decoded_cache},
             inputs_q[:, i, np.newaxis],
             inputs_kv[:, i, np.newaxis],
             mask=None,
@@ -898,28 +983,28 @@ class AttentionTest(parameterized.TestCase):
             enable_dropout=False,
             decode=True,
             prefill=False,
-            mutable=['cache'])
+            mutable=['cache'],
+        )
         decoded_logits.append(logits)
         decoded_cache = vars_with_new_cache['cache']
       decoded_logits = jnp.concatenate(decoded_logits, axis=1)
 
       # Prefilled Cache
       # Initialize the cache
-      _, variables_with_cache = attn.apply({'params': params},
-                                           inputs_q,
-                                           inputs_kv,
-                                           mask=mask,
-                                           bias=bias,
-                                           decode=True,
-                                           prefill=False,
-                                           mutable=['cache'])
+      _, variables_with_cache = attn.apply(
+          {'params': params},
+          inputs_q,
+          inputs_kv,
+          mask=mask,
+          bias=bias,
+          decode=True,
+          prefill=False,
+          mutable=['cache'],
+      )
       prefilled_cache = variables_with_cache['cache']
       # Prefill the cache with values calculated via causal attention.
       prefilled_logits, vars_with_new_cache = attn.apply(
-          {
-              'params': params,
-              'cache': prefilled_cache
-          },
+          {'params': params, 'cache': prefilled_cache},
           inputs_q,
           inputs_kv,
           mask=mask,
@@ -928,7 +1013,8 @@ class AttentionTest(parameterized.TestCase):
           decode=False,
           prefill=True,
           prefill_lengths=ls,
-          mutable=['cache'])
+          mutable=['cache'],
+      )
       prefilled_cache = vars_with_new_cache['cache']
 
       # Run decoding, starting from where we finished prefilling.
@@ -947,10 +1033,7 @@ class AttentionTest(parameterized.TestCase):
       for i in range(decode_steps):
         idx = np.reshape(ls + i, (-1, 1, 1))
         logits, vars_with_new_cache = attn.apply(
-            {
-                'params': params,
-                'cache': prefilled_cache
-            },
+            {'params': params, 'cache': prefilled_cache},
             # Select the next element based on our cache index + the number of
             # decode steps taken.
             np.take_along_axis(padded_inputs_q, idx, axis=1),
@@ -960,7 +1043,8 @@ class AttentionTest(parameterized.TestCase):
             enable_dropout=False,
             decode=True,
             prefill=False,
-            mutable=['cache'])
+            mutable=['cache'],
+        )
         prefilled_cache = vars_with_new_cache['cache']
         prefilled_decode_logits.append(logits)
       prefilled_decode_logits = np.concatenate(prefilled_decode_logits, axis=1)
@@ -968,8 +1052,8 @@ class AttentionTest(parameterized.TestCase):
       # Copy the decode step logits into the original logits array, while
       # making sure to discard any of the busy work steps.
       for i, l in enumerate(ls):
-        prefilled_logits[i, l:] = prefilled_decode_logits[i, :t - l]
-        prefilled_logits[i, l:] = prefilled_decode_logits[i, :t - l]
+        prefilled_logits[i, l:] = prefilled_decode_logits[i, : t - l]
+        prefilled_logits[i, l:] = prefilled_decode_logits[i, : t - l]
 
       # `DenseGeneral`, used in the attention class to project q, k, and v, can
       # have some comparatively large difference when running on a slice with
@@ -980,18 +1064,21 @@ class AttentionTest(parameterized.TestCase):
           prefilled_cache['cached_key'],
           decoded_cache['cached_key'],
           atol=1e-6,
-          err_msg='cached keys do not match')
+          err_msg='cached keys do not match',
+      )
       np.testing.assert_allclose(
           prefilled_cache['cached_value'],
           decoded_cache['cached_value'],
           atol=1e-6,
-          err_msg='cached values do not match')
+          err_msg='cached values do not match',
+      )
       # Check outputs match
       np.testing.assert_allclose(
           prefilled_logits,
           decoded_logits,
           atol=1e-6,
-          err_msg='logits do not match')
+          err_msg='logits do not match',
+      )
 
   def test_multiquery_dot_product_attention_prefill_caching(self):
     # b: batch, f: qkv_features, k: kv_len, h: num_head, d: head_dim
@@ -1000,13 +1087,14 @@ class AttentionTest(parameterized.TestCase):
     prefill_lengths = np.array([3, 1])
 
     base_args = SelfAttentionArgs(
-        num_heads=h, qkv_features=f, out_features=f, dropout_rate=0)
+        num_heads=h, qkv_features=f, out_features=f, dropout_rate=0
+    )
     args = base_args.init_args()
 
     cache = {
         'cached_key': np.zeros((b, d, k)),
         'cached_value': np.zeros((b, d, k)),
-        'cache_index': np.array([0, 0])
+        'cache_index': np.array([0, 0]),
     }
     inputs_q = np.random.randn(b, k, f)
     inputs_kv = np.random.randn(b, k, f)
@@ -1020,7 +1108,8 @@ class AttentionTest(parameterized.TestCase):
         return x[:, :, :d]
 
     with mock.patch.object(
-        dense.DenseGeneral, '__call__', new=mock_dense_general):
+        dense.DenseGeneral, '__call__', new=mock_dense_general
+    ):
       _, mutated = dense_attention.MultiQueryDotProductAttention(**args).apply(
           {'cache': freeze(cache)},
           inputs_q,
@@ -1028,7 +1117,8 @@ class AttentionTest(parameterized.TestCase):
           decode=False,
           prefill=True,
           prefill_lengths=prefill_lengths,
-          mutable=['cache'])
+          mutable=['cache'],
+      )
       updated_cache = mutated['cache']
 
     # Perform the same mocked projection to generate the expected cache.
@@ -1054,13 +1144,14 @@ class AttentionTest(parameterized.TestCase):
     f = h * d
 
     base_args = SelfAttentionArgs(
-        num_heads=h, qkv_features=f, out_features=f, dropout_rate=0)
+        num_heads=h, qkv_features=f, out_features=f, dropout_rate=0
+    )
     args = base_args.init_args()
 
     cache = {
         'cached_key': np.zeros((b, d, k)),
         'cached_value': np.zeros((b, d, k)),
-        'cache_index': np.array(0)
+        'cache_index': np.array(0),
     }
     inputs_q = np.random.randn(b, 1, f)
     inputs_kv = np.random.randn(b, 1, f)
@@ -1074,13 +1165,15 @@ class AttentionTest(parameterized.TestCase):
         return x[:, :, :d]
 
     with mock.patch.object(
-        dense.DenseGeneral, '__call__', new=mock_dense_general):
+        dense.DenseGeneral, '__call__', new=mock_dense_general
+    ):
       _, mutated = dense_attention.MultiQueryDotProductAttention(**args).apply(
           {'cache': freeze(cache)},
           inputs_q,
           inputs_kv,
           decode=True,
-          mutable=['cache'])
+          mutable=['cache'],
+      )
       updated_cache = mutated['cache']
 
     # Perform the same mocked projection to generate the expected cache.
@@ -1104,7 +1197,8 @@ class AttentionTest(parameterized.TestCase):
     value = np.random.randn(b, k, d)
     bias = np.random.randn(b, h, q, k)
     attn_out = dense_attention.dot_product_attention_multiquery(
-        query, key, value, bias=bias)
+        query, key, value, bias=bias
+    )
     logits = np.einsum('bqhd,bkd->bhqk', query, key)
     weights = jax.nn.softmax(logits + bias, axis=-1)
     expected_attn_out = np.einsum('bhqk,bkd->bqhd', weights, value)
@@ -1121,7 +1215,8 @@ class AttentionTest(parameterized.TestCase):
         out_features=f,
         dropout_rate=0,
         rescale_logits=False,
-        use_bias=False)
+        use_bias=False,
+    )
     args = base_args.init_args()
 
     if f != h * d:
@@ -1141,41 +1236,26 @@ class AttentionTest(parameterized.TestCase):
     out_kernel = np.random.randn(h, d, f)
 
     params = {
-        'query': {
-            'kernel': query_kernel.reshape(f, -1)
-        },
-        'key': {
-            'kernel': key_kernel.reshape(f, -1)
-        },
-        'value': {
-            'kernel': value_kernel.reshape(f, -1)
-        },
-        'out': {
-            'kernel': out_kernel.reshape(-1, f)
-        }
+        'query': {'kernel': query_kernel.reshape(f, -1)},
+        'key': {'kernel': key_kernel.reshape(f, -1)},
+        'value': {'kernel': value_kernel.reshape(f, -1)},
+        'out': {'kernel': out_kernel.reshape(-1, f)},
     }
     y = dense_attention.MultiHeadDotProductAttention(**args).apply(
-        {'params': freeze(params)}, inputs_q, inputs_kv)
+        {'params': freeze(params)}, inputs_q, inputs_kv
+    )
 
     params = {
-        'query': {
-            'kernel': query_kernel
-        },
-        'key': {
-            'kernel': key_kernel
-        },
-        'value': {
-            'kernel': value_kernel
-        },
-        'out': {
-            'kernel': out_kernel
-        }
+        'query': {'kernel': query_kernel},
+        'key': {'kernel': key_kernel},
+        'value': {'kernel': value_kernel},
+        'out': {'kernel': out_kernel},
     }
     args_split_head_kernel = dict(args)
     args_split_head_kernel['split_head_kernel'] = True
     y_split_head_kernel = dense_attention.MultiHeadDotProductAttention(
-        **args_split_head_kernel).apply({'params': freeze(params)}, inputs_q,
-                                        inputs_kv)
+        **args_split_head_kernel
+    ).apply({'params': freeze(params)}, inputs_q, inputs_kv)
     np.testing.assert_allclose(y, y_split_head_kernel, rtol=1e-5, atol=1e-5)
 
   @parameterized.parameters({'f': 20}, {'f': 22})
@@ -1189,7 +1269,8 @@ class AttentionTest(parameterized.TestCase):
         out_features=f,
         dropout_rate=0,
         rescale_logits=False,
-        use_bias=False)
+        use_bias=False,
+    )
     args = base_args.init_args()
     args['split_head_kernel'] = True
     args['rescale_logits'] = True
@@ -1211,39 +1292,26 @@ class AttentionTest(parameterized.TestCase):
     out_kernel = np.random.randn(h, d, f)
 
     params = {
-        'query': {
-            'kernel': query_kernel
-        },
-        'key': {
-            'kernel': key_kernel
-        },
-        'value': {
-            'kernel': value_kernel
-        },
-        'out': {
-            'kernel': out_kernel
-        }
+        'query': {'kernel': query_kernel},
+        'key': {'kernel': key_kernel},
+        'value': {'kernel': value_kernel},
+        'out': {'kernel': out_kernel},
     }
     y = dense_attention.MultiHeadDotProductAttention(**args).apply(
-        {'params': freeze(params)}, inputs_q, inputs_kv)
+        {'params': freeze(params)}, inputs_q, inputs_kv
+    )
 
     fused_kernel = np.stack([key_kernel, value_kernel], axis=1)
     params = {
-        'query': {
-            'kernel': query_kernel
-        },
-        'kv_fused': {
-            'kernel': fused_kernel
-        },
-        'out': {
-            'kernel': out_kernel
-        }
+        'query': {'kernel': query_kernel},
+        'kv_fused': {'kernel': fused_kernel},
+        'out': {'kernel': out_kernel},
     }
     args_fused_kernels = dict(args)
     args_fused_kernels['kernels_to_fuse'] = 'kv'
     y_fused_kernels = dense_attention.MultiHeadDotProductAttention(
-        **args_fused_kernels).apply({'params': freeze(params)}, inputs_q,
-                                    inputs_kv)
+        **args_fused_kernels
+    ).apply({'params': freeze(params)}, inputs_q, inputs_kv)
     np.testing.assert_allclose(y, y_fused_kernels, rtol=1e-5, atol=1e-5)
 
   @parameterized.parameters({'f': 20}, {'f': 22})
@@ -1257,7 +1325,8 @@ class AttentionTest(parameterized.TestCase):
         out_features=f,
         dropout_rate=0,
         rescale_logits=False,
-        use_bias=False)
+        use_bias=False,
+    )
     args = base_args.init_args()
     args['split_head_kernel'] = True
     args['rescale_logits'] = True
@@ -1278,36 +1347,25 @@ class AttentionTest(parameterized.TestCase):
     out_kernel = np.random.randn(h, d, f)
 
     params = {
-        'query': {
-            'kernel': query_kernel
-        },
-        'key': {
-            'kernel': key_kernel
-        },
-        'value': {
-            'kernel': value_kernel
-        },
-        'out': {
-            'kernel': out_kernel
-        }
+        'query': {'kernel': query_kernel},
+        'key': {'kernel': key_kernel},
+        'value': {'kernel': value_kernel},
+        'out': {'kernel': out_kernel},
     }
     y = dense_attention.MultiHeadDotProductAttention(**args).apply(
-        {'params': freeze(params)}, inputs_q, inputs_q)
+        {'params': freeze(params)}, inputs_q, inputs_q
+    )
 
     fused_kernel = np.stack([query_kernel, key_kernel, value_kernel], axis=1)
     params = {
-        'qkv_fused': {
-            'kernel': fused_kernel
-        },
-        'out': {
-            'kernel': out_kernel
-        }
+        'qkv_fused': {'kernel': fused_kernel},
+        'out': {'kernel': out_kernel},
     }
     args_fused_kernels = dict(args)
     args_fused_kernels['kernels_to_fuse'] = 'qkv'
     y_fused_kernels = dense_attention.MultiHeadDotProductAttention(
-        **args_fused_kernels).apply({'params': freeze(params)}, inputs_q,
-                                    inputs_q)
+        **args_fused_kernels
+    ).apply({'params': freeze(params)}, inputs_q, inputs_q)
     np.testing.assert_allclose(y, y_fused_kernels, rtol=1e-5, atol=1e-5)
 
   @parameterized.named_parameters([
@@ -1322,11 +1380,15 @@ class AttentionTest(parameterized.TestCase):
       ('kv_fuse_kernel_none', 'kv', False, False, False),
       ('kv_fuse_kernel_qkv', 'kv', True, False, False),
       ('kv_fuse_kernel_qkv_kv', 'kv', True, True, False),
-      ('kv_fuse_kernel_qkv_kv_q', 'kv', True, True, True)
+      ('kv_fuse_kernel_qkv_kv_q', 'kv', True, True, True),
   ])
   def test_multihead_dot_product_attention_kernel_kernel_init(
-      self, fused_kernels, set_qkv_kernel_init, set_kv_kernel_init,
-      set_q_kernel_init):
+      self,
+      fused_kernels,
+      set_qkv_kernel_init,
+      set_kv_kernel_init,
+      set_q_kernel_init,
+  ):
     # b: batch, f: qkv_features, q: q_len, k: kv_len, h: num_head, d: head_dim
     f = 20
     b, q, h, d = 2, 3, 4, 5
@@ -1337,7 +1399,8 @@ class AttentionTest(parameterized.TestCase):
         out_features=f,
         dropout_rate=0,
         rescale_logits=False,
-        use_bias=False)
+        use_bias=False,
+    )
     args = base_args.init_args()
     args['split_head_kernel'] = True
     args['rescale_logits'] = True
@@ -1346,10 +1409,12 @@ class AttentionTest(parameterized.TestCase):
       args['kernels_to_fuse'] = fused_kernels
     if set_qkv_kernel_init:
       args['qkv_kernel_init'] = functools.partial(
-          self._mock_initializer, val=2.0)
+          self._mock_initializer, val=2.0
+      )
     if set_kv_kernel_init:
       args['kv_kernel_init'] = functools.partial(
-          self._mock_initializer, val=3.0)
+          self._mock_initializer, val=3.0
+      )
     if set_q_kernel_init:
       args['q_kernel_init'] = functools.partial(self._mock_initializer, val=4.0)
 
@@ -1360,7 +1425,8 @@ class AttentionTest(parameterized.TestCase):
     inputs_q = np.random.randn(b, q, f)
 
     params = dense_attention.MultiHeadDotProductAttention(**args).init(
-        random.PRNGKey(0), inputs_q, inputs_q, enable_dropout=False)
+        random.PRNGKey(0), inputs_q, inputs_q, enable_dropout=False
+    )
 
     # Construct expected param
     # Projection: [b, q, f] -> [b, q, h, d]
@@ -1376,18 +1442,10 @@ class AttentionTest(parameterized.TestCase):
         query_kernel = np.ones((f, h, d)) * 4.0
 
       expected_params = {
-          'query': {
-              'kernel': query_kernel.tolist()
-          },
-          'key': {
-              'kernel': key_kernel.tolist()
-          },
-          'value': {
-              'kernel': value_kernel.tolist()
-          },
-          'out': {
-              'kernel': out_kernel.tolist()
-          }
+          'query': {'kernel': query_kernel.tolist()},
+          'key': {'kernel': key_kernel.tolist()},
+          'value': {'kernel': value_kernel.tolist()},
+          'out': {'kernel': out_kernel.tolist()},
       }
     elif fused_kernels == 'qkv':
       if set_qkv_kernel_init:
@@ -1397,12 +1455,8 @@ class AttentionTest(parameterized.TestCase):
 
       fused_kernel = np.stack([query_kernel, key_kernel, value_kernel], axis=1)
       expected_params = {
-          'qkv_fused': {
-              'kernel': fused_kernel.tolist()
-          },
-          'out': {
-              'kernel': out_kernel.tolist()
-          }
+          'qkv_fused': {'kernel': fused_kernel.tolist()},
+          'out': {'kernel': out_kernel.tolist()},
       }
     elif fused_kernels == 'kv':
       if set_kv_kernel_init:
@@ -1413,45 +1467,46 @@ class AttentionTest(parameterized.TestCase):
 
       kv_fused_kernel = np.stack([key_kernel, value_kernel], axis=1)
       expected_params = {
-          'kv_fused': {
-              'kernel': kv_fused_kernel.tolist()
-          },
-          'query': {
-              'kernel': query_kernel.tolist()
-          },
-          'out': {
-              'kernel': out_kernel.tolist()
-          }
+          'kv_fused': {'kernel': kv_fused_kernel.tolist()},
+          'query': {'kernel': query_kernel.tolist()},
+          'out': {'kernel': out_kernel.tolist()},
       }
 
     self.assertDictEqual(
         jax.tree_map(lambda a: a.tolist(), params['params'].unfreeze()),
-        expected_params)
+        expected_params,
+    )
 
   def test_decoder_logits_mask_unpacked(self):
     # [batch, length]
-    decoder_input_tokens = jnp.array([[0, 3, 9, 4, 1, 0, 0],
-                                      [0, 8, 5, 3, 1, 0, 0]])
-    expected = jnp.array([[1, 1, 1, 1, 1, 0, 0], [1, 1, 1, 1, 1, 0, 0]],
-                         dtype=jnp.float32)
+    decoder_input_tokens = jnp.array(
+        [[0, 3, 9, 4, 1, 0, 0], [0, 8, 5, 3, 1, 0, 0]]
+    )
+    expected = jnp.array(
+        [[1, 1, 1, 1, 1, 0, 0], [1, 1, 1, 1, 1, 0, 0]], dtype=jnp.float32
+    )
     # [batch, length, 1]
     expected = jnp.expand_dims(expected, axis=-1)
-    logit_mask = dense_attention.get_decoder_logit_mask(decoder_input_tokens,
-                                                        jnp.float32)
+    logit_mask = dense_attention.get_decoder_logit_mask(
+        decoder_input_tokens, jnp.float32
+    )
     self.assertEqual(logit_mask.dtype, jnp.float32)
     np.testing.assert_array_equal(logit_mask, expected)
 
   def test_decoder_logits_mask_packed(self):
     # Two sequences packed together for each batch elements.
     # [batch, length]
-    decoder_input_tokens = jnp.array([[0, 3, 9, 0, 4, 8, 0, 0],
-                                      [0, 8, 5, 8, 0, 9, 0, 0]])
-    expected = jnp.array([[1, 1, 1, 1, 1, 1, 0, 0], [1, 1, 1, 1, 1, 1, 0, 0]],
-                         dtype=jnp.float32)
+    decoder_input_tokens = jnp.array(
+        [[0, 3, 9, 0, 4, 8, 0, 0], [0, 8, 5, 8, 0, 9, 0, 0]]
+    )
+    expected = jnp.array(
+        [[1, 1, 1, 1, 1, 1, 0, 0], [1, 1, 1, 1, 1, 1, 0, 0]], dtype=jnp.float32
+    )
     # [batch, length, 1]
     expected = jnp.expand_dims(expected, axis=-1)
-    logit_mask = dense_attention.get_decoder_logit_mask(decoder_input_tokens,
-                                                        jnp.float32)
+    logit_mask = dense_attention.get_decoder_logit_mask(
+        decoder_input_tokens, jnp.float32
+    )
     self.assertEqual(logit_mask.dtype, jnp.float32)
     np.testing.assert_array_equal(logit_mask, expected)
 
@@ -1463,9 +1518,14 @@ class LocalAttentionLayerTest(parameterized.TestCase):
           [True, False],
           [True, False],
           [True, False],
-      ))
-  def test_shapes(self, always_attend_to_first_position,
-                  first_position_attends_to_all, output_projection):
+      )
+  )
+  def test_shapes(
+      self,
+      always_attend_to_first_position,
+      first_position_attends_to_all,
+      output_projection,
+  ):
     """Checks the local attention layer's shapes are correct."""
     num_heads = 2
     head_dim = 5
@@ -1502,8 +1562,9 @@ class LocalAttentionLayerTest(parameterized.TestCase):
     if output_projection:
       self.assertSequenceEqual(outputs.shape, (batch_size, q_len, out_features))
     else:
-      self.assertSequenceEqual(outputs.shape,
-                               (batch_size, q_len, num_heads, head_dim))
+      self.assertSequenceEqual(
+          outputs.shape, (batch_size, q_len, num_heads, head_dim)
+      )
 
 
 class QuantizedAttentionTest(parameterized.TestCase):
@@ -1515,7 +1576,8 @@ class QuantizedAttentionTest(parameterized.TestCase):
         bias_init=nn.initializers.normal(stddev=1e-6),
         dtype=jnp.float32,
         use_bias=True,
-        use_aqt=True)
+        use_aqt=True,
+    )
     inputs_q = np.array(
         [
             # Batch 1.
@@ -1523,7 +1585,8 @@ class QuantizedAttentionTest(parameterized.TestCase):
             # Batch 2.
             [[2, 2], [3, 1], [2, 2]],
         ],
-        dtype=np.float32)
+        dtype=np.float32,
+    )
     inputs_kv = np.array(
         [
             # Batch 1.
@@ -1531,10 +1594,11 @@ class QuantizedAttentionTest(parameterized.TestCase):
             # Batch 2.
             [[2, 2], [3, 1], [2, 2]],
         ],
-        dtype=np.float32)
+        dtype=np.float32,
+    )
     with self.assertRaisesRegex(
-        ValueError,
-        'If use_aqt is True, either of weights or acts quantization'):
+        ValueError, 'If use_aqt is True, either of weights or acts quantization'
+    ):
       module.init(random.PRNGKey(0), inputs_q, inputs_kv, enable_dropout=False)
 
   def test_multiquery_dot_product_attention_quantized_weights(self):
@@ -1546,7 +1610,9 @@ class QuantizedAttentionTest(parameterized.TestCase):
         use_bias=True,
         use_aqt=True,
         weight_params=aqt.QuantOps.WeightParams(
-            prec=8, half_shift=False, axis=None))
+            prec=8, half_shift=False, axis=None
+        ),
+    )
 
     inputs_q = np.array(
         [
@@ -1555,7 +1621,8 @@ class QuantizedAttentionTest(parameterized.TestCase):
             # Batch 2.
             [[2, 2], [3, 1], [2, 2]],
         ],
-        dtype=np.float32)
+        dtype=np.float32,
+    )
     inputs_kv = np.array(
         [
             # Batch 1.
@@ -1563,38 +1630,43 @@ class QuantizedAttentionTest(parameterized.TestCase):
             # Batch 2.
             [[2, 2], [3, 1], [2, 2]],
         ],
-        dtype=np.float32)
+        dtype=np.float32,
+    )
 
     expected_params = freeze({
         'params': {
             'query': {
-                'kernel':
-                    jnp.array([[[0.89760804], [-0.7743368]],
-                               [[-0.27043915], [-0.09338999]]],
-                              dtype=jnp.float32),
-                'bias':
-                    jnp.array([3.8685133e-07, -5.7897455e-07],
-                              dtype=jnp.float32),
+                'kernel': jnp.array(
+                    [
+                        [[0.89760804], [-0.7743368]],
+                        [[-0.27043915], [-0.09338999]],
+                    ],
+                    dtype=jnp.float32,
+                ),
+                'bias': jnp.array(
+                    [3.8685133e-07, -5.7897455e-07], dtype=jnp.float32
+                ),
             },
             'key': {
-                'kernel':
-                    jnp.array([[-1.2404252], [0.6276205]], dtype=jnp.float32),
-                'bias':
-                    jnp.array([9.180263e-07], dtype=jnp.float32),
+                'kernel': jnp.array(
+                    [[-1.2404252], [0.6276205]], dtype=jnp.float32
+                ),
+                'bias': jnp.array([9.180263e-07], dtype=jnp.float32),
             },
             'value': {
-                'kernel':
-                    jnp.array([[-0.8634736], [-0.9621272]], dtype=jnp.float32),
-                'bias':
-                    jnp.array([8.859404e-07], dtype=jnp.float32),
+                'kernel': jnp.array(
+                    [[-0.8634736], [-0.9621272]], dtype=jnp.float32
+                ),
+                'bias': jnp.array([8.859404e-07], dtype=jnp.float32),
             },
             'out': {
-                'kernel':
-                    jnp.array([[0.8359484, 0.9604499], [-1.0830641, 1.0543139]],
-                              dtype=jnp.float32),
-                'bias':
-                    jnp.array([-9.7886084e-07, 1.3396599e-06],
-                              dtype=jnp.float32),
+                'kernel': jnp.array(
+                    [[0.8359484, 0.9604499], [-1.0830641, 1.0543139]],
+                    dtype=jnp.float32,
+                ),
+                'bias': jnp.array(
+                    [-9.7886084e-07, 1.3396599e-06], dtype=jnp.float32
+                ),
             },
         },
         'params_axes': {
@@ -1617,25 +1689,35 @@ class QuantizedAttentionTest(parameterized.TestCase):
         },
     })
     result, params = module.init_with_output(
-        random.PRNGKey(0), inputs_q, inputs_kv, enable_dropout=False)
+        random.PRNGKey(0), inputs_q, inputs_kv, enable_dropout=False
+    )
     jax.tree_map(
-        functools.partial(np.testing.assert_allclose, rtol=1e-6), params,
-        expected_params)
+        functools.partial(np.testing.assert_allclose, rtol=1e-6),
+        params,
+        expected_params,
+    )
 
     np.testing.assert_allclose(
         result.tolist(),
-        [[[0.3442336916923523, -4.3061041831970215],
-          [0.3442336916923523, -4.3061041831970215],
-          [0.36651411652565, -4.258667469024658]],
-         [[0.807983934879303, -7.265725612640381],
-          [0.799161970615387, -7.264179706573486],
-          [0.807983934879303, -7.265725612640381]]],
+        [
+            [
+                [0.3442336916923523, -4.3061041831970215],
+                [0.3442336916923523, -4.3061041831970215],
+                [0.36651411652565, -4.258667469024658],
+            ],
+            [
+                [0.807983934879303, -7.265725612640381],
+                [0.799161970615387, -7.264179706573486],
+                [0.807983934879303, -7.265725612640381],
+            ],
+        ],
         rtol=1e-6,
     )
 
   def test_multiquery_dot_product_attention_materialized_weights(self):
     weight_params = aqt.QuantOps.WeightParams(
-        prec=8, half_shift=False, axis=None)
+        prec=8, half_shift=False, axis=None
+    )
     module = dense_attention.MultiQueryDotProductAttention(
         num_heads=2,
         kernel_init=nn.initializers.xavier_uniform(),
@@ -1644,7 +1726,8 @@ class QuantizedAttentionTest(parameterized.TestCase):
         use_bias=True,
         use_aqt=True,
         weight_params=weight_params,
-        possibly_use_quantized_vars=True)
+        possibly_use_quantized_vars=True,
+    )
 
     # enable_dropout
 
@@ -1655,7 +1738,8 @@ class QuantizedAttentionTest(parameterized.TestCase):
             # Batch 2.
             [[2, 2], [3, 1], [2, 2]],
         ],
-        dtype=np.float32)
+        dtype=np.float32,
+    )
     inputs_kv = np.array(
         [
             # Batch 1.
@@ -1663,22 +1747,23 @@ class QuantizedAttentionTest(parameterized.TestCase):
             # Batch 2.
             [[2, 2], [3, 1], [2, 2]],
         ],
-        dtype=np.float32)
+        dtype=np.float32,
+    )
 
     result, params = module.init_with_output(
-        random.PRNGKey(0), inputs_q, inputs_kv, enable_dropout=False)
+        random.PRNGKey(0), inputs_q, inputs_kv, enable_dropout=False
+    )
 
     expected_params = freeze({
         'params': {
             'query': {
-                'qkernel':
-                    jnp.array([[[0], [0]], [[0], [0]]], dtype=jnp.int8),
-                'qscale':
-                    jnp.array([[[3.8685133e-07], [-5.7897455e-07]]],
-                              dtype=jnp.float32),
-                'bias':
-                    jnp.array([1.1104368e-06, 2.4920448e-06],
-                              dtype=jnp.float32),
+                'qkernel': jnp.array([[[0], [0]], [[0], [0]]], dtype=jnp.int8),
+                'qscale': jnp.array(
+                    [[[3.8685133e-07], [-5.7897455e-07]]], dtype=jnp.float32
+                ),
+                'bias': jnp.array(
+                    [1.1104368e-06, 2.4920448e-06], dtype=jnp.float32
+                ),
             },
             'key': {
                 'qkernel': jnp.array([[0], [0]], dtype=jnp.int8),
@@ -1691,24 +1776,22 @@ class QuantizedAttentionTest(parameterized.TestCase):
                 'bias': jnp.array([4.5408714e-07], dtype=jnp.float32),
             },
             'out': {
-                'qkernel':
-                    jnp.array([[0, 0], [0, 0]], dtype=jnp.int8),
-                'qscale':
-                    jnp.array([[-9.7886084e-07, 1.3396599e-06]],
-                              dtype=jnp.float32),
-                'bias':
-                    jnp.array([-3.5336794e-07, -3.4736888e-07],
-                              dtype=jnp.float32),
+                'qkernel': jnp.array([[0, 0], [0, 0]], dtype=jnp.int8),
+                'qscale': jnp.array(
+                    [[-9.7886084e-07, 1.3396599e-06]], dtype=jnp.float32
+                ),
+                'bias': jnp.array(
+                    [-3.5336794e-07, -3.4736888e-07], dtype=jnp.float32
+                ),
             },
         },
         'params_axes': {
             'query': {
-                'qkernel_axes':
-                    AxisMetadata(names=('embed', 'heads', 'kv')),
-                'qscale_axes':
-                    AxisMetadata(names=('embed_qscale', 'heads', 'kv')),
-                'bias_axes':
-                    AxisMetadata(names=('kv',)),
+                'qkernel_axes': AxisMetadata(names=('embed', 'heads', 'kv')),
+                'qscale_axes': AxisMetadata(
+                    names=('embed_qscale', 'heads', 'kv')
+                ),
+                'bias_axes': AxisMetadata(names=('kv',)),
             },
             'key': {
                 'qkernel_axes': AxisMetadata(names=('embed', 'kv')),
@@ -1721,49 +1804,60 @@ class QuantizedAttentionTest(parameterized.TestCase):
                 'bias_axes': AxisMetadata(names=('kv',)),
             },
             'out': {
-                'qkernel_axes':
-                    AxisMetadata(names=('joined_kv', 'embed')),
-                'qscale_axes':
-                    AxisMetadata(names=('joined_kv_qscale', 'embed')),
-                'bias_axes':
-                    AxisMetadata(names=('embed',)),
+                'qkernel_axes': AxisMetadata(names=('joined_kv', 'embed')),
+                'qscale_axes': AxisMetadata(
+                    names=('joined_kv_qscale', 'embed')
+                ),
+                'bias_axes': AxisMetadata(names=('embed',)),
             },
         },
     })
     jax.tree_map(
-        functools.partial(np.testing.assert_allclose, rtol=1e-6), params,
-        expected_params)
+        functools.partial(np.testing.assert_allclose, rtol=1e-6),
+        params,
+        expected_params,
+    )
     self.assertDictEqual(
-        testing_utils.param_dtypes_shapes_axes(params['params'],
-                                               params['params_axes']),
+        testing_utils.param_dtypes_shapes_axes(
+            params['params'], params['params_axes']
+        ),
         {
             'key': {
                 'bias': ['float32', 'kv=1'],
                 'qkernel': ['int8', 'embed=2', 'kv=1'],
-                'qscale': ['float32', 'embed_qscale=1', 'kv=1']
+                'qscale': ['float32', 'embed_qscale=1', 'kv=1'],
             },
             'out': {
                 'bias': ['float32', 'embed=2'],
                 'qkernel': ['int8', 'joined_kv=2', 'embed=2'],
-                'qscale': ['float32', 'joined_kv_qscale=1', 'embed=2']
+                'qscale': ['float32', 'joined_kv_qscale=1', 'embed=2'],
             },
             'query': {
                 'bias': ['float32', 'kv=2'],
                 'qkernel': ['int8', 'embed=2', 'heads=2', 'kv=1'],
-                'qscale': ['float32', 'embed_qscale=1', 'heads=2', 'kv=1']
+                'qscale': ['float32', 'embed_qscale=1', 'heads=2', 'kv=1'],
             },
             'value': {
                 'bias': ['float32', 'kv=1'],
                 'qkernel': ['int8', 'embed=2', 'kv=1'],
-                'qscale': ['float32', 'embed_qscale=1', 'kv=1']
-            }
-        })
+                'qscale': ['float32', 'embed_qscale=1', 'kv=1'],
+            },
+        },
+    )
     np.testing.assert_allclose(
         result.tolist(),
-        [[[-3.5336794e-07, -3.4736888e-07], [-3.5336794e-07, -3.4736888e-07],
-          [-3.5336794e-07, -3.4736888e-07]],
-         [[-3.5336794e-07, -3.4736888e-07], [-3.5336794e-07, -3.4736888e-07],
-          [-3.5336794e-07, -3.4736888e-07]]],
+        [
+            [
+                [-3.5336794e-07, -3.4736888e-07],
+                [-3.5336794e-07, -3.4736888e-07],
+                [-3.5336794e-07, -3.4736888e-07],
+            ],
+            [
+                [-3.5336794e-07, -3.4736888e-07],
+                [-3.5336794e-07, -3.4736888e-07],
+                [-3.5336794e-07, -3.4736888e-07],
+            ],
+        ],
         rtol=1e-6,
     )
 

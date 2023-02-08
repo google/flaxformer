@@ -30,8 +30,9 @@ from flaxformer.types import Array
 # pytype: disable=not-callable
 
 
-class SparseParallelFusedDecoderLayer(nn.Module,
-                                      param_remapping.ParameterRemappable):
+class SparseParallelFusedDecoderLayer(
+    nn.Module, param_remapping.ParameterRemappable
+):
   """Sparse parallel Transformer decoder layer with fused parameters.
 
   The projection matrices from the self-attention and MLP models are fused into
@@ -64,6 +65,7 @@ class SparseParallelFusedDecoderLayer(nn.Module,
       bias module, usually owned by the Decoder.
     sow_intermediates: Whether to track intermediates using Module.sow.
   """
+
   self_attention: nn.Module
   mlp: nn.Module
   q_wi_fused: nn.Module
@@ -76,32 +78,38 @@ class SparseParallelFusedDecoderLayer(nn.Module,
   sow_intermediates: bool = False
 
   def setup(self):
-    if (self.relative_position_bias_factory is not None and
-        self.shared_relative_position_bias is not None):
+    if (
+        self.relative_position_bias_factory is not None
+        and self.shared_relative_position_bias is not None
+    ):
       raise ValueError(
           'Please set at most one of `relative_position_bias_factory` and '
           '`shared_relative_position_bias`. (They can both be None however, '
-          'e.g. for absolute position embeddings.)')
+          'e.g. for absolute position embeddings.)'
+      )
     self.relpos_bias = (
         self.relative_position_bias_factory()
-        if self.relative_position_bias_factory is not None else
-        self.shared_relative_position_bias)
+        if self.relative_position_bias_factory is not None
+        else self.shared_relative_position_bias
+    )
     self.layer_norm = self.layer_norm_factory()
     self.dropout = self.dropout_factory()
 
   @nn.compact
-  def __call__(self,
-               targets,
-               encoded,
-               decoder_mask=None,
-               encoder_decoder_mask=None,
-               *,
-               logit_mask=None,
-               enable_dropout: bool = True,
-               decode: bool = False,
-               max_decode_length: Optional[int] = None,
-               prefill: bool = False,
-               prefill_lengths: Optional[Array] = None) -> Array:
+  def __call__(
+      self,
+      targets,
+      encoded,
+      decoder_mask=None,
+      encoder_decoder_mask=None,
+      *,
+      logit_mask=None,
+      enable_dropout: bool = True,
+      decode: bool = False,
+      max_decode_length: Optional[int] = None,
+      prefill: bool = False,
+      prefill_lengths: Optional[Array] = None,
+  ) -> Array:
     """Applies SparseParallelFusedDecoder1DBlock module.
 
     Args:
@@ -135,17 +143,20 @@ class SparseParallelFusedDecoderLayer(nn.Module,
     # Shared relative position embedding attention biases.
     if self.relpos_bias:
       if decode and max_decode_length:
-        decoder_bias = self.relpos_bias(max_decode_length, max_decode_length,
-                                        False)
+        decoder_bias = self.relpos_bias(
+            max_decode_length, max_decode_length, False
+        )
       else:
-        decoder_bias = self.relpos_bias(layer_input.shape[-2],
-                                        layer_input.shape[-2], False)
+        decoder_bias = self.relpos_bias(
+            layer_input.shape[-2], layer_input.shape[-2], False
+        )
     else:
       decoder_bias = None
 
     assert layer_input.ndim == 3
     layer_input = flax_partitioning.with_sharding_constraint(
-        layer_input, logical_axis_resources=('batch', 'length', 'embed'))
+        layer_input, logical_axis_resources=('batch', 'length', 'embed')
+    )
 
     if prefill and prefill_lengths is None:
       # Figure out how far each element in the batch fills the cache based
@@ -153,16 +164,19 @@ class SparseParallelFusedDecoderLayer(nn.Module,
       # dim (because this is always set to one), and the first query
       # vector. If there is any prefix at all, the first element in the
       # prefix would be part of it.
-      prefill_lengths = jnp.sum(
-          decoder_mask[:, 0, 0, :], axis=-1).astype(jnp.int32)
+      prefill_lengths = jnp.sum(decoder_mask[:, 0, 0, :], axis=-1).astype(
+          jnp.int32
+      )
 
     x = self.layer_norm(
         layer_input,
         decode=decode,
         prefill=prefill,
-        prefill_lengths=prefill_lengths)
+        prefill_lengths=prefill_lengths,
+    )
     x = flax_partitioning.with_sharding_constraint(
-        x, logical_axis_resources=('batch', 'length', 'embed'))
+        x, logical_axis_resources=('batch', 'length', 'embed')
+    )
 
     num_heads = self.self_attention.num_heads
     if self.self_attention.head_dim is not None:
@@ -194,14 +208,16 @@ class SparseParallelFusedDecoderLayer(nn.Module,
     # Use local fused K + V to calculate fused results.
     kv = self.kv_fused(x)
     kv = flax_partitioning.with_sharding_constraint(
-        kv, ('batch', 'length', 'embed', 'heads'))
+        kv, ('batch', 'length', 'embed', 'heads')
+    )
 
     # Slice out key.
     key = jnp.squeeze(lax.dynamic_slice_in_dim(kv, 0, head_dim, -1), -2)
 
     # Slice out value.
     value = jnp.squeeze(
-        lax.dynamic_slice_in_dim(kv, head_dim, head_dim, -1), -2)
+        lax.dynamic_slice_in_dim(kv, head_dim, head_dim, -1), -2
+    )
     precomputed_qkv = (query, key, value)
 
     # y_att: [batch, length, heads, head_dim]
@@ -214,7 +230,8 @@ class SparseParallelFusedDecoderLayer(nn.Module,
         enable_dropout=enable_dropout,
         decode=decode,
         prefill=prefill,
-        prefill_lengths=prefill_lengths)
+        prefill_lengths=prefill_lengths,
+    )
 
     # y_mlp: [batch, length, heads, mlp//heads]
     y_mlp = self.mlp(
@@ -222,7 +239,8 @@ class SparseParallelFusedDecoderLayer(nn.Module,
         decode=decode,
         prefill=prefill,
         prefill_lengths=prefill_lengths,
-        enable_dropout=enable_dropout)
+        enable_dropout=enable_dropout,
+    )
 
     # y_fused: [batch, length, heads, mlp//heads + head_dim]
     y_fused = jnp.concatenate([y_att, y_mlp], axis=-1)
@@ -231,7 +249,8 @@ class SparseParallelFusedDecoderLayer(nn.Module,
     # y *= 2**-0.5
     z = layer_input + self.dropout(y_out, deterministic=not enable_dropout)
     z = flax_partitioning.with_sharding_constraint(
-        z, logical_axis_resources=('batch', 'length', 'embed'))
+        z, logical_axis_resources=('batch', 'length', 'embed')
+    )
 
     if self.sow_intermediates:
       self.sow('intermediates', 'activations', z)
@@ -241,7 +260,8 @@ class SparseParallelFusedDecoderLayer(nn.Module,
 
 
 def compute_fused_o_wo_dims(
-    attention_module: dense_attention.MultiQueryDotProductAttention) -> int:
+    attention_module: dense_attention.MultiQueryDotProductAttention,
+) -> int:
   """Returns the output dimension of the fused O-Wo projection.
 
   Args:
@@ -254,13 +274,15 @@ def compute_fused_o_wo_dims(
     ValueError if `out_features` is not specified on the attention module.
   """
   if attention_module.out_features is None:
-    raise ValueError('SparseParallelFusedDecoderLayer requires self-attention'
-                     'with manually specified `out_features`.')
+    raise ValueError(
+        'SparseParallelFusedDecoderLayer requires self-attention'
+        'with manually specified `out_features`.'
+    )
   return attention_module.out_features
 
 
 def compute_fused_kv_dims(
-    attention_module: dense_attention.MultiQueryDotProductAttention
+    attention_module: dense_attention.MultiQueryDotProductAttention,
 ) -> Tuple[int, int]:
   """Returns the output dimensions for the fused KV projection.
 
@@ -276,7 +298,8 @@ def compute_fused_kv_dims(
 
 def compute_fused_q_wi_dims(
     attention_module: dense_attention.MultiQueryDotProductAttention,
-    mlp: dense.MlpBlock) -> Tuple[int, int]:
+    mlp: dense.MlpBlock,
+) -> Tuple[int, int]:
   """Returns the output dimensions for the Q-Wi fused projection.
 
   Args:
@@ -296,14 +319,18 @@ def compute_fused_q_wi_dims(
   mlp_intermediate_dim = mlp.intermediate_dim
   if mlp_intermediate_dim % num_heads != 0:
     raise ValueError(
-        'Number of attention heads does not divide MLP intermediate dimension')
+        'Number of attention heads does not divide MLP intermediate dimension'
+    )
 
-  return (num_heads,
-          (mlp_intermediate_dim // num_heads) * n_activations + head_dim)
+  return (
+      num_heads,
+      (mlp_intermediate_dim // num_heads) * n_activations + head_dim,
+  )
 
 
 def _compute_head_dim(
-    attention_module: dense_attention.MultiQueryDotProductAttention) -> int:
+    attention_module: dense_attention.MultiQueryDotProductAttention,
+) -> int:
   """Returns the head dimension of the attention module."""
   if attention_module.head_dim is not None:
     return attention_module.head_dim

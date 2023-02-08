@@ -14,20 +14,81 @@
 
 """Tests for similarity functions."""
 from absl.testing import absltest
+from absl.testing import parameterized
 from flax import linen as nn
 from jax import random
+import jax.numpy as jnp
+import tensorflow as tf
 
 from flaxformer.architectures.dual_encoder import similarity_functions
+from flaxformer.components import dense
+from flaxformer.components import layer_norm
+from flaxformer.components.attention import dense_attention
 
-OUTPUT_DIM = 3
+
 BATCH_SIZE = 2
+DTYPE = jnp.float32
+NUM_ATTN_HEADS = 13
+OUTPUT_DIM = 17
+
+ATTENTION_KERNEL_INIT = nn.initializers.variance_scaling(
+    1.0, 'fan_in', 'normal'
+)
+BIAS_INIT = nn.initializers.normal(stddev=1e-6)
+MLP_KERNEL_INIT = nn.initializers.variance_scaling(
+    1.0, 'fan_in', 'truncated_normal'
+)
+
+
+def make_attention():
+  """Test configuration for attention."""
+  return dense_attention.MultiHeadDotProductAttention(
+      num_heads=NUM_ATTN_HEADS,
+      dtype=DTYPE,
+      qkv_features=512,
+      head_dim=None,
+      kernel_init=ATTENTION_KERNEL_INIT,
+      bias_init=BIAS_INIT,
+      use_bias=False,
+      broadcast_dropout=True,
+      dropout_rate=0.1,
+  )
+
+
+def make_dropout():
+  """Test configuration for the dropout layer."""
+  return nn.Dropout(rate=0.1)
+
+
+def make_mlp():
+  """Test configuration for the MLP."""
+  return dense.MlpBlock(
+      use_bias=False,
+      intermediate_dim=2048,
+      out_dim=1,
+      activations=('relu',),
+      kernel_init=MLP_KERNEL_INIT,
+      bias_init=BIAS_INIT,
+      intermediate_dropout_rate=0.1,
+      dtype=DTYPE,
+  )
+
+
+def make_batch_attention_similarity_model():
+  """Test configuration for BatchAttentionSimilarity module."""
+  return similarity_functions.BatchAttentionSimilarity(
+      attention=make_attention(),
+      mlp_layer=make_mlp(),
+      layer_norm_factory=layer_norm.T5LayerNorm,
+      activation_fn='linear',
+      dropout_factory=make_dropout,
+  )
 
 
 class SimilarityFunctionsTest(absltest.TestCase):
 
   def test_pointwise_ffnn(self):
     """Test if the PointwiseFFNN similarity function has correct shapes."""
-    make_dropout = lambda: nn.Dropout(rate=0.1)
     model = similarity_functions.PointwiseFFNN(
         OUTPUT_DIM, dropout_factory=make_dropout)
 
@@ -86,5 +147,57 @@ class SimilarityFunctionsTest(absltest.TestCase):
     self.assertEqual(z.shape, (BATCH_SIZE, OUTPUT_DIM))
 
 
-if __name__ == "__main__":
+class SimilarityFunctionsParameterizedTest(
+    tf.test.TestCase, parameterized.TestCase
+):
+
+  @parameterized.named_parameters(('pointwise', True), ('elementwise', False))
+  def test_batch_attention_similarity(self, pointwise_similarity):
+    """Test the BatchAttentionSimilarity."""
+    model = make_batch_attention_similarity_model()
+
+    if pointwise_similarity:
+      batch_size_1 = BATCH_SIZE
+      batch_size_2 = BATCH_SIZE
+    else:
+      batch_size_1 = 2 * BATCH_SIZE
+      batch_size_2 = 3 * BATCH_SIZE
+
+    rng = random.PRNGKey(0)
+    keys = random.split(rng, 3)
+    left_encodings = random.normal(keys[0], (batch_size_1, 11, 23))
+    right_encodings = random.normal(keys[1], (batch_size_2, 3, 23))
+    left_mask = jnp.ones((batch_size_1, 11))
+    right_mask = jnp.ones((batch_size_2, 3))
+    output, _ = model.init_with_output(
+        keys[2],
+        left_encodings,
+        right_encodings,
+        left_mask,
+        right_mask,
+        enable_dropout=False,
+        pointwise_similarity=pointwise_similarity,
+    )
+    if pointwise_similarity:
+      self.assertEqual(output.shape, (batch_size_1,))
+    else:
+      self.assertEqual(output.shape, (batch_size_1, batch_size_2))
+
+      # The following is to catch the ordering of the output, to ensure the
+      # [i, j]-th element is the similarity calculated from
+      # [left_encoding[i], right_encoding[j]].
+      pointwise_output, _ = model.init_with_output(
+          keys[2],
+          left_encodings,
+          right_encodings[:batch_size_1, :, :],
+          left_mask,
+          right_mask[:batch_size_1, :],
+          enable_dropout=False,
+          pointwise_similarity=True,
+      )
+
+      self.assertAllClose(jnp.diagonal(output), pointwise_output)
+
+
+if __name__ == '__main__':
   absltest.main()

@@ -30,6 +30,7 @@ from flaxformer.architectures.common import param_remapping
 from flaxformer.components import dense
 from flaxformer.components.attention import dense_attention
 from flaxformer.types import Array
+from flaxformer.types import Initializer
 
 # pylint: disable=not-callable
 # pytype: disable=not-callable
@@ -57,6 +58,7 @@ class ParallelFusedDecoderLayer(nn.Module, param_remapping.ParameterRemappable):
     is_quant_finetune_mode: Whether the layer is loaded for quantization
       finetuning. It's only applied in the context of quantization.
   """
+
   self_attention: nn.Module
   mlp: nn.Module
   dropout_factory: Callable[[], nn.Module]
@@ -71,44 +73,59 @@ class ParallelFusedDecoderLayer(nn.Module, param_remapping.ParameterRemappable):
   act_params: Optional[aqt.QuantOps.ActHParams] = None
   possibly_use_quantized_vars: bool = False
   is_quant_finetune_mode: bool = False
+  q_wi_fused_kernel_init: Optional[Initializer] = None
+  kv_fused_kernel_init: Optional[Initializer] = None
+  o_wo_fused_kernel_init: Optional[Initializer] = None
 
   def setup(self):
     if self.activation_partitioning_dims != 1:
-      logging.warning('ParallelFusedDecoderLayer.activation_partitioning_dims '
-                      'is deprecated and will soon be removed.')
+      logging.warning(
+          'ParallelFusedDecoderLayer.activation_partitioning_dims '
+          'is deprecated and will soon be removed.'
+      )
 
-    if (self.relative_position_bias_factory is not None and
-        self.shared_relative_position_bias is not None):
+    if (
+        self.relative_position_bias_factory is not None
+        and self.shared_relative_position_bias is not None
+    ):
       raise ValueError(
-          'Please set at most one of relative_position_bias_factory and shared_relative_position_bias. '
-          '(They can both be None however, e.g. for absolute position embeds.)')
+          'Please set at most one of relative_position_bias_factory and'
+          ' shared_relative_position_bias. (They can both be None however, e.g.'
+          ' for absolute position embeds.)'
+      )
     self.relpos_bias = (
         self.relative_position_bias_factory()
-        if self.relative_position_bias_factory is not None else
-        self.shared_relative_position_bias)
+        if self.relative_position_bias_factory is not None
+        else self.shared_relative_position_bias
+    )
     self.layer_norm = self.layer_norm_factory()
     self.dropout = self.dropout_factory()
 
-    if not isinstance(self.self_attention,
-                      dense_attention.MultiQueryDotProductAttention):
-      raise TypeError('ParallelFusedDecoderLayer requires Multiquery '
-                      'attention.')
+    if not isinstance(
+        self.self_attention, dense_attention.MultiQueryDotProductAttention
+    ):
+      raise TypeError(
+          'ParallelFusedDecoderLayer requires Multiquery attention.'
+      )
     num_heads = self.self_attention.num_heads
     if self.self_attention.head_dim is not None:
       head_dim = self.self_attention.head_dim
     else:
       head_dim = self.self_attention.qkv_features // num_heads
     if self.self_attention.out_features is None:
-      raise ValueError('ParallelFusedDecoderLayer requires self-attention'
-                       'with manually specified out_features.')
+      raise ValueError(
+          'ParallelFusedDecoderLayer requires self-attention'
+          'with manually specified out_features.'
+      )
     embed_dim = self.self_attention.out_features
     n_activations = len(self.mlp.activations)
     mlp_intermediate_dim = self.mlp.intermediate_dim
     if mlp_intermediate_dim % num_heads != 0:
       raise ValueError('num_heads must divide mlp intermediate dimension')
-    fused_out_dims = (num_heads,
-                      (mlp_intermediate_dim // num_heads) * n_activations +
-                      head_dim)
+    fused_out_dims = (
+        num_heads,
+        (mlp_intermediate_dim // num_heads) * n_activations + head_dim,
+    )
 
     # TODO: move the  AQT branching code complexity out to the
     # configuration system here and other places in Flaxformer.
@@ -130,9 +147,12 @@ class ParallelFusedDecoderLayer(nn.Module, param_remapping.ParameterRemappable):
               'to be specified using arguments `weight_params` or `act_params`.'
           )
         aqt_context = aqt_config.DynamicContext(
-            update_bounds=False, collect_acts_stats=False)
+            update_bounds=False, collect_acts_stats=False
+        )
         weight_prec = self.weight_params.prec if self.weight_params else None
-        half_shift = self.weight_params.half_shift if self.weight_params else False
+        half_shift = (
+            self.weight_params.half_shift if self.weight_params else False
+        )
         aqt_hparams = aqt_flax_layers.DenseAqt.HParams(
             weight_prec=weight_prec,
             weight_half_shift=half_shift,
@@ -157,7 +177,8 @@ class ParallelFusedDecoderLayer(nn.Module, param_remapping.ParameterRemappable):
             dtype=dtype,
             name=name,
             possibly_use_quantized_vars=self.possibly_use_quantized_vars,
-            kernel_axis_names=kernel_axis_names)
+            kernel_axis_names=kernel_axis_names,
+        )
         # we do not have reshape kernel option here but we explicitly
         # reshape kernel.
         return functools.partial(aqt_dense, padding_mask=None)
@@ -171,62 +192,77 @@ class ParallelFusedDecoderLayer(nn.Module, param_remapping.ParameterRemappable):
             bias_init=bias_init,
             reshape_kernel=reshape_kernel,
             name=name,
-            kernel_axis_names=kernel_axis_names)
+            kernel_axis_names=kernel_axis_names,
+        )
 
     self.make_dense = make_dense
+    q_wi_fused_kernel_init = self.self_attention.kernel_init
+    if self.q_wi_fused_kernel_init is not None:
+      q_wi_fused_kernel_init = self.q_wi_fused_kernel_init
     self.q_wi_fused_args = dict(
         axis=-1,
         features=fused_out_dims,
         use_bias=self.self_attention.use_bias,
         dtype=self.self_attention.dtype,
-        kernel_init=self.self_attention.kernel_init,
+        kernel_init=q_wi_fused_kernel_init,
         bias_init=self.self_attention.bias_init,
         reshape_kernel=False,
         name='q_wi_fused',
-        kernel_axis_names=('embed', 'heads', 'q_wi_fused'))
+        kernel_axis_names=('embed', 'heads', 'q_wi_fused'),
+    )
+    kv_fused_kernel_init = self.self_attention.kernel_init
+    if self.kv_fused_kernel_init is not None:
+      kv_fused_kernel_init = self.kv_fused_kernel_init
     self.kv_fused_args = dict(
         axis=-1,
         features=(1, 2 * head_dim),
         use_bias=self.self_attention.use_bias,
         dtype=self.self_attention.dtype,
-        kernel_init=self.self_attention.kernel_init,
+        kernel_init=kv_fused_kernel_init,
         bias_init=self.self_attention.bias_init,
         reshape_kernel=False,
         name='kv_fused',
-        kernel_axis_names=('embed', 'multiquery_heads', 'kv_fused'))
+        kernel_axis_names=('embed', 'multiquery_heads', 'kv_fused'),
+    )
+    o_wo_fused_kernel_init = self.self_attention.kernel_init
+    if self.o_wo_fused_kernel_init is not None:
+      o_wo_fused_kernel_init = self.o_wo_fused_kernel_init
     self.o_wo_fused_args = dict(
         axis=(-2, -1),
         features=embed_dim,
         use_bias=self.self_attention.use_bias,
         dtype=self.self_attention.dtype,
-        kernel_init=self.self_attention.kernel_init,
+        kernel_init=o_wo_fused_kernel_init,
         bias_init=self.self_attention.bias_init,
         reshape_kernel=False,
         name='o_wo_fused',
         # o_wo_fused = mlp//heads + head_dim
-        kernel_axis_names=('heads', 'o_wo_fused', 'embed'))
+        kernel_axis_names=('heads', 'o_wo_fused', 'embed'),
+    )
 
-  def _create_residuals_and_queries(self, layer_input: Array, x: Array,
-                                    logit_mask: Array,
-                                    **kwargs) -> Tuple[Array, Array, Array]:
+  def _create_residuals_and_queries(
+      self, layer_input: Array, x: Array, logit_mask: Array, **kwargs
+  ) -> Tuple[Array, Array, Array]:
     """Slice layer inputs to get versions to use as queries."""
     # This is a no-op unless overridden by a subclass.
     return layer_input, x, logit_mask
 
   @nn.compact
-  def __call__(self,
-               targets,
-               encoded,
-               decoder_mask=None,
-               encoder_decoder_mask=None,
-               *,
-               logit_mask=None,
-               enable_dropout: bool = True,
-               decode: bool = False,
-               max_decode_length: Optional[int] = None,
-               prefill: bool = False,
-               prefill_lengths: Optional[Array] = None,
-               **kwargs):
+  def __call__(
+      self,
+      targets,
+      encoded,
+      decoder_mask=None,
+      encoder_decoder_mask=None,
+      *,
+      logit_mask=None,
+      enable_dropout: bool = True,
+      decode: bool = False,
+      max_decode_length: Optional[int] = None,
+      prefill: bool = False,
+      prefill_lengths: Optional[Array] = None,
+      **kwargs,
+  ):
     """Applies ParallelFusedDecoder1DBlock module.
 
     Args:
@@ -260,11 +296,13 @@ class ParallelFusedDecoderLayer(nn.Module, param_remapping.ParameterRemappable):
     # Shared relative position embedding attention biases.
     if self.relpos_bias:
       if decode and max_decode_length:
-        decoder_bias = self.relpos_bias(max_decode_length, max_decode_length,
-                                        False)
+        decoder_bias = self.relpos_bias(
+            max_decode_length, max_decode_length, False
+        )
       else:
-        decoder_bias = self.relpos_bias(layer_input.shape[-2],
-                                        layer_input.shape[-2], False)
+        decoder_bias = self.relpos_bias(
+            layer_input.shape[-2], layer_input.shape[-2], False
+        )
     else:
       decoder_bias = None
 
@@ -273,7 +311,8 @@ class ParallelFusedDecoderLayer(nn.Module, param_remapping.ParameterRemappable):
     layer_input = activation_partitioning.with_sharding_migration(
         layer_input,
         self.activation_partitioning_dims,
-        logical_axis_names=('batch', 'length', 'embed'))
+        logical_axis_names=('batch', 'length', 'embed'),
+    )
 
     if prefill and prefill_lengths is None:
       # Figure out how far each element in the batch fills the cache based
@@ -281,18 +320,21 @@ class ParallelFusedDecoderLayer(nn.Module, param_remapping.ParameterRemappable):
       # dim (because this is always set to one), and the first query
       # vector. If there is any prefix at all, the first element in the
       # prefix would be part of it.
-      prefill_lengths = jnp.sum(
-          decoder_mask[:, 0, 0, :], axis=-1).astype(jnp.int32)
+      prefill_lengths = jnp.sum(decoder_mask[:, 0, 0, :], axis=-1).astype(
+          jnp.int32
+      )
 
     x = self.layer_norm(
         layer_input,
         decode=decode,
         prefill=prefill,
-        prefill_lengths=prefill_lengths)
+        prefill_lengths=prefill_lengths,
+    )
     x = activation_partitioning.with_sharding_migration(
         x,
         self.activation_partitioning_dims,
-        logical_axis_names=('batch', 'length', 'embed'))
+        logical_axis_names=('batch', 'length', 'embed'),
+    )
 
     num_heads = self.self_attention.num_heads
     if self.self_attention.head_dim is not None:
@@ -304,8 +346,8 @@ class ParallelFusedDecoderLayer(nn.Module, param_remapping.ParameterRemappable):
 
     # Normally a no-op unless overridden by a subclass.
     layer_input_residual, x_queries, logit_mask_queries = (
-        self._create_residuals_and_queries(layer_input, x, logit_mask,
-                                           **kwargs))
+        self._create_residuals_and_queries(layer_input, x, logit_mask, **kwargs)
+    )
     del logit_mask_queries
 
     # Use local fused Q + W_i to calculate fused results.
@@ -328,7 +370,8 @@ class ParallelFusedDecoderLayer(nn.Module, param_remapping.ParameterRemappable):
     key = jnp.squeeze(lax.dynamic_slice_in_dim(kv, 0, head_dim, -1), -2)
     # Slice out value.
     value = jnp.squeeze(
-        lax.dynamic_slice_in_dim(kv, head_dim, head_dim, -1), -2)
+        lax.dynamic_slice_in_dim(kv, head_dim, head_dim, -1), -2
+    )
     precomputed_qkv = (query, key, value)
 
     # y_att: [batch, length, heads, head_dim]
@@ -341,19 +384,23 @@ class ParallelFusedDecoderLayer(nn.Module, param_remapping.ParameterRemappable):
         enable_dropout=enable_dropout,
         decode=decode,
         prefill=prefill,
-        prefill_lengths=prefill_lengths)
+        prefill_lengths=prefill_lengths,
+    )
     # y_mlp: [batch, length, heads, mlp//heads]
     y_mlp = self.mlp(
         wi,
         decode=decode,
         prefill=prefill,
         prefill_lengths=prefill_lengths,
-        enable_dropout=enable_dropout)
+        enable_dropout=enable_dropout,
+    )
     # y_fused: [batch, length, heads, mlp//heads + head_dim]
     y_fused = jnp.concatenate([y_att, y_mlp], axis=-1)
     if self.use_aqt and self.weight_params is not None:
       weight_prec = self.weight_params.prec if self.weight_params else None
-      half_shift = self.weight_params.half_shift if self.weight_params else False
+      half_shift = (
+          self.weight_params.half_shift if self.weight_params else False
+      )
       aqt_hparams = aqt_flax_layers.DenseGeneralAqt.HParams(
           weight_prec=weight_prec,
           weight_half_shift=half_shift,
@@ -364,17 +411,19 @@ class ParallelFusedDecoderLayer(nn.Module, param_remapping.ParameterRemappable):
           **self.o_wo_fused_args,
           hparams=aqt_hparams,
           train=self.is_quant_finetune_mode,
-          possibly_use_quantized_vars=self.possibly_use_quantized_vars)(
-              y_fused)
+          possibly_use_quantized_vars=self.possibly_use_quantized_vars,
+      )(y_fused)
     else:
       y_out = dense.DenseGeneral(**self.o_wo_fused_args)(y_fused)
     # y *= 2**-0.5
     z = layer_input_residual + self.dropout(
-        y_out, deterministic=not enable_dropout)
+        y_out, deterministic=not enable_dropout
+    )
     z = activation_partitioning.with_sharding_migration(
         z,
         self.activation_partitioning_dims,
-        logical_axis_names=('batch', 'length', 'embed'))
+        logical_axis_names=('batch', 'length', 'embed'),
+    )
     if self.sow_intermediates:
       self.sow('intermediates', 'activations', z)
 

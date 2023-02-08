@@ -32,11 +32,14 @@ from flaxformer.components.attention import dense_attention
 EMBEDDING_INIT = nn.initializers.normal(stddev=1.0)
 RELPOS_BIAS_INIT = nn.initializers.variance_scaling(1.0, 'fan_avg', 'uniform')
 ATTENTION_KERNEL_INIT = nn.initializers.variance_scaling(
-    1.0, 'fan_in', 'normal')
-MLP_KERNEL_INIT = nn.initializers.variance_scaling(1.0, 'fan_in',
-                                                   'truncated_normal')
-FINAL_KERNEL_INIT = nn.initializers.variance_scaling(1.0, 'fan_in',
-                                                     'truncated_normal')
+    1.0, 'fan_in', 'normal'
+)
+MLP_KERNEL_INIT = nn.initializers.variance_scaling(
+    1.0, 'fan_in', 'truncated_normal'
+)
+FINAL_KERNEL_INIT = nn.initializers.variance_scaling(
+    1.0, 'fan_in', 'truncated_normal'
+)
 BIAS_INIT = nn.initializers.normal(stddev=1e-6)
 
 
@@ -49,7 +52,8 @@ def make_token_emb1(vocab_size, dtype, features=13):
       dtype=dtype,
       attend_dtype=jnp.float32,  # for logit training stability
       embedding_init=EMBEDDING_INIT,
-      name='token_embedder')
+      name='token_embedder',
+  )
 
 
 def make_attention1(num_attn_heads, dtype, use_rotary_embedding=False):
@@ -64,7 +68,8 @@ def make_attention1(num_attn_heads, dtype, use_rotary_embedding=False):
       use_bias=False,
       broadcast_dropout=True,
       dropout_rate=0.1,
-      use_rotary_embedding=use_rotary_embedding)
+      use_rotary_embedding=use_rotary_embedding,
+  )
 
 
 def make_mlp1(dtype):
@@ -77,23 +82,25 @@ def make_mlp1(dtype):
       bias_init=BIAS_INIT,
       intermediate_dropout_rate=0.1,
       final_dropout_rate=0.1,
-      dtype=dtype)
+      dtype=dtype,
+  )
 
 
 def _make_relative_position_bias(
-    num_attn_heads: int,
-    dtype: Any) -> relative_position_biases.RelativePositionBiases:
+    num_attn_heads: int, dtype: Any
+) -> relative_position_biases.RelativePositionBiases:
   return relative_position_biases.RelativePositionBiases(
       num_buckets=32,
       max_distance=128,
       num_heads=num_attn_heads,
       dtype=dtype,
-      embedding_init=RELPOS_BIAS_INIT)
+      embedding_init=RELPOS_BIAS_INIT,
+  )
 
 
-def make_config1(scan_layers=False,
-                 layer_remat='legacy',
-                 sow_intermediates=False) -> t5_architecture.EncoderDecoder:
+def make_config1(
+    scan_layers=False, layer_remat='legacy', sow_intermediates=False
+) -> t5_architecture.EncoderDecoder:
   """Returns an EncoderDecoder."""
   dtype = jnp.float32
   num_attn_heads = 8
@@ -108,9 +115,11 @@ def make_config1(scan_layers=False,
         dropout_factory=make_dropout,
         layer_norm_factory=make_layer_norm,
         relative_position_bias_factory=(
-            lambda: _make_relative_position_bias(num_attn_heads, dtype)),
+            lambda: _make_relative_position_bias(num_attn_heads, dtype)
+        ),
         scanned=scan_layers,
-        sow_intermediates=sow_intermediates)
+        sow_intermediates=sow_intermediates,
+    )
 
   def _make_decoder_layer(shared_relative_position_bias):
     assert shared_relative_position_bias is None
@@ -121,9 +130,11 @@ def make_config1(scan_layers=False,
         dropout_factory=make_dropout,
         layer_norm_factory=make_layer_norm,
         relative_position_bias_factory=(
-            lambda: _make_relative_position_bias(num_attn_heads, dtype)),
+            lambda: _make_relative_position_bias(num_attn_heads, dtype)
+        ),
         scanned=scan_layers,
-        sow_intermediates=sow_intermediates)
+        sow_intermediates=sow_intermediates,
+    )
 
   def _make_encoder(shared_token_embedder):
     assert shared_token_embedder is None
@@ -178,7 +189,8 @@ def make_parallel_transformer_config() -> t5_architecture.EncoderDecoder:
         dropout_factory=make_dropout,
         layer_norm_factory=make_layer_norm,
         relative_position_bias_factory=(
-            lambda: _make_relative_position_bias(num_attn_heads, dtype)),
+            lambda: _make_relative_position_bias(num_attn_heads, dtype)
+        ),
         parallel=True,
     )
 
@@ -191,7 +203,8 @@ def make_parallel_transformer_config() -> t5_architecture.EncoderDecoder:
         dropout_factory=make_dropout,
         layer_norm_factory=make_layer_norm,
         relative_position_bias_factory=(
-            lambda: _make_relative_position_bias(num_attn_heads, dtype)),
+            lambda: _make_relative_position_bias(num_attn_heads, dtype)
+        ),
         parallel=True,
     )
 
@@ -252,7 +265,8 @@ def make_parallel_fused_transformer_config(
         use_bias=False,
         broadcast_dropout=True,
         dropout_rate=0.1,
-        rescale_logits=True)
+        rescale_logits=True,
+    )
 
   def _make_fusion_mlp(dtype):
     """First test configuration for the MLP."""
@@ -267,7 +281,8 @@ def make_parallel_fused_transformer_config(
         bias_init=BIAS_INIT,
         intermediate_dropout_rate=0.1,
         final_dropout_rate=0.1,
-        dtype=dtype)
+        dtype=dtype,
+    )
 
   def _make_decoder_layer(shared_relative_position_bias):
     assert shared_relative_position_bias is None
@@ -277,11 +292,13 @@ def make_parallel_fused_transformer_config(
         dropout_factory=make_dropout,
         layer_norm_factory=make_layer_norm,
         relative_position_bias_factory=(
-            lambda: _make_relative_position_bias(num_attn_heads, dtype)),
+            lambda: _make_relative_position_bias(num_attn_heads, dtype)
+        ),
         use_aqt=use_aqt,
         weight_params=weight_params,
         possibly_use_quantized_vars=possibly_use_quantized_vars,
-        is_quant_finetune_mode=is_quant_finetune_mode)
+        is_quant_finetune_mode=is_quant_finetune_mode,
+    )
 
   def _make_output_logits():
     return dense.DenseGeneral(
@@ -289,7 +306,8 @@ def make_parallel_fused_transformer_config(
         dtype=dtype,
         kernel_init=FINAL_KERNEL_INIT,
         bias_init=BIAS_INIT,
-        use_bias=False)
+        use_bias=False,
+    )
 
   def _embedder():
     return make_token_emb1(2_000, dtype, num_features)
@@ -306,12 +324,15 @@ def make_parallel_fused_transformer_config(
         dtype=dtype,
     )
 
-  return t5_architecture.DecoderOnly(decoder_factory=_make_decoder,)
+  return t5_architecture.DecoderOnly(
+      decoder_factory=_make_decoder,
+  )
 
 
 # TODO: DRY up with above configs.
-def make_config2_shared_relative_position_bias(
-) -> t5_architecture.EncoderDecoder:
+def make_config2_shared_relative_position_bias() -> (
+    t5_architecture.EncoderDecoder
+):
   """Returns an EncoderDecoder with shared relative position biases."""
   dtype = jnp.float32
   num_attn_heads = 8
@@ -325,7 +346,8 @@ def make_config2_shared_relative_position_bias(
         mlp=make_mlp1(dtype),
         dropout_factory=make_dropout,
         layer_norm_factory=make_layer_norm,
-        shared_relative_position_bias=shared_relative_position_bias)
+        shared_relative_position_bias=shared_relative_position_bias,
+    )
 
   def _make_decoder_layer(shared_relative_position_bias):
     assert shared_relative_position_bias is not None
@@ -335,7 +357,8 @@ def make_config2_shared_relative_position_bias(
         mlp=make_mlp1(dtype),
         dropout_factory=make_dropout,
         layer_norm_factory=make_layer_norm,
-        shared_relative_position_bias=shared_relative_position_bias)
+        shared_relative_position_bias=shared_relative_position_bias,
+    )
 
   def _make_encoder(*, shared_token_embedder=None):
     assert shared_token_embedder is None
@@ -347,7 +370,8 @@ def make_config2_shared_relative_position_bias(
         output_dropout_factory=make_dropout,
         layer_norm_factory=make_layer_norm,
         shared_relative_position_bias_factory=(
-            lambda: _make_relative_position_bias(num_attn_heads, dtype)),
+            lambda: _make_relative_position_bias(num_attn_heads, dtype)
+        ),
         dtype=dtype,
     )
 
@@ -361,7 +385,8 @@ def make_config2_shared_relative_position_bias(
         layer_norm_factory=make_layer_norm,
         output_logits_factory=None,
         shared_relative_position_bias_factory=(
-            lambda: _make_relative_position_bias(num_attn_heads, dtype)),
+            lambda: _make_relative_position_bias(num_attn_heads, dtype)
+        ),
         dtype=dtype,
     )
 
@@ -390,8 +415,10 @@ def make_config3_shared_token_embedder() -> t5_architecture.EncoderDecoder:
         dropout_factory=make_dropout,
         layer_norm_factory=make_layer_norm,
         relative_position_bias_factory=(
-            lambda: _make_relative_position_bias(num_attn_heads, dtype)),
-        sow_intermediates=sow_intermediates)
+            lambda: _make_relative_position_bias(num_attn_heads, dtype)
+        ),
+        sow_intermediates=sow_intermediates,
+    )
 
   def _make_decoder_layer(shared_relative_position_bias):
     assert shared_relative_position_bias is None
@@ -402,8 +429,10 @@ def make_config3_shared_token_embedder() -> t5_architecture.EncoderDecoder:
         dropout_factory=make_dropout,
         layer_norm_factory=make_layer_norm,
         relative_position_bias_factory=(
-            lambda: _make_relative_position_bias(num_attn_heads, dtype)),
-        sow_intermediates=sow_intermediates)
+            lambda: _make_relative_position_bias(num_attn_heads, dtype)
+        ),
+        sow_intermediates=sow_intermediates,
+    )
 
   def _make_encoder(*, shared_token_embedder=None):
     return t5_architecture.Encoder(
@@ -454,7 +483,9 @@ def test_make_decoder_only1() -> t5_architecture.DecoderOnly:
         dropout_factory=make_dropout,
         layer_norm_factory=make_layer_norm,
         relative_position_bias_factory=(
-            lambda: _make_relative_position_bias(num_attn_heads, dtype)))
+            lambda: _make_relative_position_bias(num_attn_heads, dtype)
+        ),
+    )
 
   def make_output_logits():
     return dense.DenseGeneral(
@@ -462,7 +493,8 @@ def test_make_decoder_only1() -> t5_architecture.DecoderOnly:
         dtype=dtype,
         kernel_init=FINAL_KERNEL_INIT,
         bias_init=BIAS_INIT,
-        use_bias=False)
+        use_bias=False,
+    )
 
   def _make_decoder(*, shared_token_embedder=None):
     assert shared_token_embedder is None

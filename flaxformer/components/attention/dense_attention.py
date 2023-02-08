@@ -73,23 +73,25 @@ def _softmax_with_extra_logit(
   return unnormalized / denom
 
 
-#------------------------------------------------------------------------------
+# ------------------------------------------------------------------------------
 # Fast attention layers.
-#------------------------------------------------------------------------------
+# ------------------------------------------------------------------------------
 
 
-def dot_product_attention_weights(query: Array,
-                                  key: Array,
-                                  bias: Optional[Array] = None,
-                                  broadcast_dropout: bool = True,
-                                  rescale_logits: bool = False,
-                                  dropout_rng: Optional[PRNGKey] = None,
-                                  dropout_rate: float = 0.,
-                                  enable_dropout: bool = True,
-                                  dtype: DType = jnp.float32,
-                                  precision: Optional[lax.Precision] = None,
-                                  use_extra_logit: bool = False,
-                                  float32_logits: bool = False) -> Array:
+def dot_product_attention_weights(
+    query: Array,
+    key: Array,
+    bias: Optional[Array] = None,
+    broadcast_dropout: bool = True,
+    rescale_logits: bool = False,
+    dropout_rng: Optional[PRNGKey] = None,
+    dropout_rate: float = 0.0,
+    enable_dropout: bool = True,
+    dtype: DType = jnp.float32,
+    precision: Optional[lax.Precision] = None,
+    use_extra_logit: bool = False,
+    float32_logits: bool = False,
+) -> Array:
   """Computes dot-product attention weights given query and key.
 
   This is the core function for applying attention based on
@@ -122,8 +124,8 @@ def dot_product_attention_weights(query: Array,
     Attention weights of shape `[batch..., num_heads, q_length, kv_length]`.
   """
   assert query.ndim == key.ndim, 'q, k must have same rank.'
-  assert query.shape[:-3] == key.shape[:-3], ('q, k batch dims must match.')
-  assert query.shape[-2] == key.shape[-2], ('q, k num_heads must match.')
+  assert query.shape[:-3] == key.shape[:-3], 'q, k batch dims must match.'
+  assert query.shape[-2] == key.shape[-2], 'q, k num_heads must match.'
   assert query.shape[-1] == key.shape[-1], 'q, k depths must match.'
 
   # Calculate attention matrix.
@@ -141,18 +143,20 @@ def dot_product_attention_weights(query: Array,
 
   # `attn_weights` shape is (batch..., num_heads, q_length, kv_length)
   attn_weights = jnp.einsum(
-      '...qhd,...khd->...hqk', query, key, precision=precision)
+      '...qhd,...khd->...hqk', query, key, precision=precision
+  )
 
   # Apply attention bias: masking, dropout, proximity bias, etc.
   if bias is not None:
     attn_weights = attn_weights + bias.astype(attn_weights.dtype)
 
   # Normalize the attention weights.
-  attn_weights = (_softmax_with_extra_logit if use_extra_logit else
-                  jax.nn.softmax)(attn_weights).astype(dtype)
+  attn_weights = (
+      _softmax_with_extra_logit if use_extra_logit else jax.nn.softmax
+  )(attn_weights).astype(dtype)
 
   # Apply attention dropout.
-  if enable_dropout and dropout_rate > 0.:
+  if enable_dropout and dropout_rate > 0.0:
     keep_prob = 1.0 - dropout_rate
     if broadcast_dropout:
       # T5 broadcasts along the "length" dim, but unclear which one that
@@ -163,8 +167,9 @@ def dot_product_attention_weights(query: Array,
       keep = jnp.broadcast_to(keep, attn_weights.shape)
     else:
       keep = random.bernoulli(dropout_rng, keep_prob, attn_weights.shape)
-    multiplier = (
-        keep.astype(attn_weights.dtype) / jnp.asarray(keep_prob, dtype=dtype))
+    multiplier = keep.astype(attn_weights.dtype) / jnp.asarray(
+        keep_prob, dtype=dtype
+    )
     attn_weights = attn_weights * multiplier
 
   return attn_weights
@@ -173,7 +178,8 @@ def dot_product_attention_weights(query: Array,
 def apply_dot_product_attention_weights_to_values(
     attention_weights: Array,
     value: Array,
-    precision: Optional[lax.Precision] = None) -> Array:
+    precision: Optional[lax.Precision] = None,
+) -> Array:
   """Applies the attention weights to the values.
 
   Args:
@@ -187,22 +193,25 @@ def apply_dot_product_attention_weights_to_values(
     The weighted sum over values for each query position.
   """
   return jnp.einsum(
-      '...hqk,...khd->...qhd', attention_weights, value, precision=precision)
+      '...hqk,...khd->...qhd', attention_weights, value, precision=precision
+  )
 
 
-def dot_product_attention(query: Array,
-                          key: Array,
-                          value: Array,
-                          bias: Optional[Array] = None,
-                          broadcast_dropout: bool = True,
-                          rescale_logits: bool = False,
-                          dropout_rng: Optional[PRNGKey] = None,
-                          dropout_rate: float = 0.,
-                          enable_dropout: bool = True,
-                          dtype: DType = jnp.float32,
-                          precision: Optional[lax.Precision] = None,
-                          use_extra_logit: bool = False,
-                          float32_logits: bool = False):
+def dot_product_attention(
+    query: Array,
+    key: Array,
+    value: Array,
+    bias: Optional[Array] = None,
+    broadcast_dropout: bool = True,
+    rescale_logits: bool = False,
+    dropout_rng: Optional[PRNGKey] = None,
+    dropout_rate: float = 0.0,
+    enable_dropout: bool = True,
+    dtype: DType = jnp.float32,
+    precision: Optional[lax.Precision] = None,
+    use_extra_logit: bool = False,
+    float32_logits: bool = False,
+):
   """Computes dot-product attention given query, key, and value.
 
   This is the core function for applying attention based on
@@ -237,10 +246,12 @@ def dot_product_attention(query: Array,
     Output of shape `[batch..., length, num_heads, v_depth_per_head]`.
   """
   assert key.ndim == query.ndim == value.ndim, 'q, k, v must have same rank.'
-  assert query.shape[:-3] == key.shape[:-3] == value.shape[:-3], (
-      'q, k, v batch dims must match.')
-  assert query.shape[-2] == key.shape[-2] == value.shape[-2], (
-      'q, k, v num_heads must match.')
+  assert (
+      query.shape[:-3] == key.shape[:-3] == value.shape[:-3]
+  ), 'q, k, v batch dims must match.'
+  assert (
+      query.shape[-2] == key.shape[-2] == value.shape[-2]
+  ), 'q, k, v num_heads must match.'
   assert key.shape[-3] == value.shape[-3], 'k, v lengths must match.'
   assert query.shape[-1] == key.shape[-1], 'q, k depths must match.'
 
@@ -256,25 +267,29 @@ def dot_product_attention(query: Array,
       dtype=dtype,
       precision=precision,
       use_extra_logit=use_extra_logit,
-      float32_logits=float32_logits)
+      float32_logits=float32_logits,
+  )
 
   return apply_dot_product_attention_weights_to_values(
-      attn_weights, value, precision=precision)
+      attn_weights, value, precision=precision
+  )
 
 
-def dot_product_attention_multiquery(query: Array,
-                                     key: Array,
-                                     value: Array,
-                                     bias: Optional[Array] = None,
-                                     broadcast_dropout: bool = True,
-                                     rescale_logits: bool = False,
-                                     dropout_rng: Optional[PRNGKey] = None,
-                                     dropout_rate: float = 0.,
-                                     enable_dropout: bool = True,
-                                     dtype: DType = jnp.float32,
-                                     precision: Optional[lax.Precision] = None,
-                                     use_extra_logit: bool = False,
-                                     float32_logits: bool = False) -> Array:
+def dot_product_attention_multiquery(
+    query: Array,
+    key: Array,
+    value: Array,
+    bias: Optional[Array] = None,
+    broadcast_dropout: bool = True,
+    rescale_logits: bool = False,
+    dropout_rng: Optional[PRNGKey] = None,
+    dropout_rate: float = 0.0,
+    enable_dropout: bool = True,
+    dtype: DType = jnp.float32,
+    precision: Optional[lax.Precision] = None,
+    use_extra_logit: bool = False,
+    float32_logits: bool = False,
+) -> Array:
   """Computes dot-product mutiquery-attention given query, key, and value.
 
   This is a variant of the multi-head dot product attention introduced in
@@ -312,10 +327,12 @@ def dot_product_attention_multiquery(query: Array,
   Returns:
     Output of shape `[batch..., length, num_heads, v_depth_per_head]`.
   """
-  assert key.ndim == value.ndim, (
-      f'k, v must have same rank. key: {key.shape}, value: {value.shape}')
-  assert query.shape[:-3] == key.shape[:-2] == value.shape[:-2], (
-      f'q, k, v batch dims must match. query: {query.shape}')
+  assert (
+      key.ndim == value.ndim
+  ), f'k, v must have same rank. key: {key.shape}, value: {value.shape}'
+  assert (
+      query.shape[:-3] == key.shape[:-2] == value.shape[:-2]
+  ), f'q, k, v batch dims must match. query: {query.shape}'
 
   assert key.shape[-2] == value.shape[-2], 'k, v lengths must match.'
   assert query.shape[-1] == key.shape[-1], 'q, k depths must match.'
@@ -335,18 +352,20 @@ def dot_product_attention_multiquery(query: Array,
 
   # attn weight shape is (batch..., num_heads, q_length, kv_length)
   attn_weights = jnp.einsum(
-      '...qhd,...kd->...hqk', query, key, precision=precision)
+      '...qhd,...kd->...hqk', query, key, precision=precision
+  )
 
   # apply attention bias: masking, dropout, proximity bias, etc.
   if bias is not None:
     attn_weights = attn_weights + bias.astype(attn_weights.dtype)
 
   # normalize the attention weights
-  attn_weights = (_softmax_with_extra_logit if use_extra_logit else
-                  jax.nn.softmax)(attn_weights).astype(dtype)
+  attn_weights = (
+      _softmax_with_extra_logit if use_extra_logit else jax.nn.softmax
+  )(attn_weights).astype(dtype)
 
   # apply attention dropout
-  if enable_dropout and dropout_rate > 0.:
+  if enable_dropout and dropout_rate > 0.0:
     keep_prob = 1.0 - dropout_rate
     if broadcast_dropout:
       # T5 broadcasts along the "length" dim, but unclear which one that
@@ -357,13 +376,15 @@ def dot_product_attention_multiquery(query: Array,
       keep = jnp.broadcast_to(keep, attn_weights.shape)
     else:
       keep = random.bernoulli(dropout_rng, keep_prob, attn_weights.shape)
-    multiplier = (
-        keep.astype(attn_weights.dtype) / jnp.asarray(keep_prob, dtype=dtype))
+    multiplier = keep.astype(attn_weights.dtype) / jnp.asarray(
+        keep_prob, dtype=dtype
+    )
     attn_weights = attn_weights * multiplier
 
   # return weighted sum over values for each query position
   return jnp.einsum(
-      '...hqk,...kd->...qhd', attn_weights, value, precision=precision)
+      '...hqk,...kd->...qhd', attn_weights, value, precision=precision
+  )
 
 
 class DenseAttention(metaclass=abc.ABCMeta):
@@ -374,15 +395,17 @@ class DenseAttention(metaclass=abc.ABCMeta):
   """
 
   @abc.abstractmethod
-  def __call__(self,
-               inputs_q: Array,
-               inputs_kv: Array,
-               mask: Optional[Array] = None,
-               bias: Optional[Array] = None,
-               *,
-               precomputed_qkv: Optional[Array] = None,
-               decode: bool = False,
-               enable_dropout: bool = True) -> Array:
+  def __call__(
+      self,
+      inputs_q: Array,
+      inputs_kv: Array,
+      mask: Optional[Array] = None,
+      bias: Optional[Array] = None,
+      *,
+      precomputed_qkv: Optional[Array] = None,
+      decode: bool = False,
+      enable_dropout: bool = True,
+  ) -> Array:
     """Applies attention on the input data.
 
     Args:
@@ -405,41 +428,42 @@ class DenseAttention(metaclass=abc.ABCMeta):
 class MultiHeadDotProductAttention(nn.Module, DenseAttention):
   """Multi-head dot-product attention.
 
-    Attributes:
-      num_heads: number of attention heads. Features (i.e. inputs_q.shape[-1])
-        should be divisible by the number of heads.
-      use_bias: bool: whether pointwise QKVO dense transforms use bias.
-      dtype: the dtype of the computation (default: float32)
-      qkv_features: dimension of the key, query, and value.
-      head_dim: dimension of each head. If unspecified, it defaults to
-        qkv_features // num_heads.
-      out_features: dimension of the last projection
-      broadcast_dropout: bool: use a broadcasted dropout along batch dims.
-      dropout_rate: dropout rate
-      precision: numerical precision of the computation see `jax.lax.Precision`
-        for details.
-      kernel_init: initializer for the kernel of the Dense layers.
-      qkv_kernel_init: optional initializer for the fused qkv kernel. If None,
-        kernel_init will be used instead.
-      kv_kernel_init: optional initializer for the fused kv kernel. If None,
-        kernel_init will be used instead.
-      q_kernel_init: optional initializer for the query (q) kernel. If None,
-        kernel_init will be used instead.
-      bias_init: initializer for the bias of the Dense layers.
-      attention_fn: dot_product_attention or compatible function. Accepts query,
-        key, value, and returns output of shape `[bs, dim1, dim2, ..., dimN,,
-        num_heads, value_channels]``
-      use_extra_logit: whether to include a virtual extra logit equal to zero.
-      float32_logits: bool, if True then compute logits in float32 to avoid
-        numerical issues with bfloat16.
-      output_projection: Project the output of `attention_fn` to `out_features`.
-        If False, returns the output of `attention_fn` without a projection.
-      sow_intermediates: whether to track intermediates using Module.sow.
-      split_head_kernel: whether to store QKVO variables with a split head
-        dimension.
-      kernels_to_fuse: Which kernels to fuse, if any.
-      use_rotary_embedding: whether to use rotary embeddings.
+  Attributes:
+    num_heads: number of attention heads. Features (i.e. inputs_q.shape[-1])
+      should be divisible by the number of heads.
+    use_bias: bool: whether pointwise QKVO dense transforms use bias.
+    dtype: the dtype of the computation (default: float32)
+    qkv_features: dimension of the key, query, and value.
+    head_dim: dimension of each head. If unspecified, it defaults to
+      qkv_features // num_heads.
+    out_features: dimension of the last projection
+    broadcast_dropout: bool: use a broadcasted dropout along batch dims.
+    dropout_rate: dropout rate
+    precision: numerical precision of the computation see `jax.lax.Precision`
+      for details.
+    kernel_init: initializer for the kernel of the Dense layers.
+    qkv_kernel_init: optional initializer for the fused qkv kernel. If None,
+      kernel_init will be used instead.
+    kv_kernel_init: optional initializer for the fused kv kernel. If None,
+      kernel_init will be used instead.
+    q_kernel_init: optional initializer for the query (q) kernel. If None,
+      kernel_init will be used instead.
+    bias_init: initializer for the bias of the Dense layers.
+    attention_fn: dot_product_attention or compatible function. Accepts query,
+      key, value, and returns output of shape `[bs, dim1, dim2, ..., dimN,,
+      num_heads, value_channels]``
+    use_extra_logit: whether to include a virtual extra logit equal to zero.
+    float32_logits: bool, if True then compute logits in float32 to avoid
+      numerical issues with bfloat16.
+    output_projection: Project the output of `attention_fn` to `out_features`.
+      If False, returns the output of `attention_fn` without a projection.
+    sow_intermediates: whether to track intermediates using Module.sow.
+    split_head_kernel: whether to store QKVO variables with a split head
+      dimension.
+    kernels_to_fuse: Which kernels to fuse, if any.
+    use_rotary_embedding: whether to use rotary embeddings.
   """
+
   num_heads: int
   use_bias: bool
   dtype: DType = jnp.float32
@@ -447,7 +471,7 @@ class MultiHeadDotProductAttention(nn.Module, DenseAttention):
   head_dim: Optional[int] = None
   out_features: Optional[int] = None
   broadcast_dropout: bool = True
-  dropout_rate: float = 0.
+  dropout_rate: float = 0.0
   precision: Optional[lax.Precision] = None
   kernel_init: Initializer = default_kernel_init
   qkv_kernel_init: Optional[Initializer] = None
@@ -456,9 +480,11 @@ class MultiHeadDotProductAttention(nn.Module, DenseAttention):
   bias_init: Initializer = initializers.zeros
   rescale_logits: bool = False
   compute_attention_fn: Callable[..., Array] = staticmethod(
-      dot_product_attention_weights)
+      dot_product_attention_weights
+  )
   apply_attention_fn: Callable[..., Array] = staticmethod(
-      apply_dot_product_attention_weights_to_values)
+      apply_dot_product_attention_weights_to_values
+  )
   use_extra_logit: bool = False
   float32_logits: bool = False
   output_projection: bool = True
@@ -476,9 +502,13 @@ class MultiHeadDotProductAttention(nn.Module, DenseAttention):
   v_conv: Optional[nn.Module] = None
 
   def update_cache_prefill(
-      self, key: Array, value: Array, cached_key: variables.Variable,
-      cached_value: variables.Variable, cache_index: variables.Variable,
-      prefill_lengths: Array
+      self,
+      key: Array,
+      value: Array,
+      cached_key: variables.Variable,
+      cached_value: variables.Variable,
+      cache_index: variables.Variable,
+      prefill_lengths: Array,
   ) -> Tuple[Array, Array, Array, Array, Array, Array]:
     """Update the autoregressive cache for multiple timesteps at once.
 
@@ -521,25 +551,42 @@ class MultiHeadDotProductAttention(nn.Module, DenseAttention):
     # broadcasting behavior is to add singleton dims to the front but
     # we need them at the end.
     batch_first_index = jnp.reshape(
-        cur_index, (-1,) + tuple(1 for _ in range(cached_key.value.ndim - 1)))
+        cur_index, (-1,) + tuple(1 for _ in range(cached_key.value.ndim - 1))
+    )
     # Calculate a mask that will set any position past the prefix to zero
     # when applied to the key.
     key_mask = (
-        lax.broadcasted_iota(jnp.int32, cached_key.value.shape,
-                             cached_key.value.ndim - 1) < batch_first_index)
+        lax.broadcasted_iota(
+            jnp.int32, cached_key.value.shape, cached_key.value.ndim - 1
+        )
+        < batch_first_index
+    )
     value_mask = (
-        lax.broadcasted_iota(jnp.int32, cached_value.value.shape,
-                             cached_value.value.ndim - 1) < batch_first_index)
+        lax.broadcasted_iota(
+            jnp.int32, cached_value.value.shape, cached_value.value.ndim - 1
+        )
+        < batch_first_index
+    )
     # Set the caches with the calculated key and values but hide anything
     # past the prefix.
     cached_key_value = key_cached * key_mask
     cached_value_value = value_cached * value_mask
-    return (key, value, cur_index, cached_key_value, cached_value_value,
-            prefill_lengths)
+    return (
+        key,
+        value,
+        cur_index,
+        cached_key_value,
+        cached_value_value,
+        prefill_lengths,
+    )
 
   def update_cache_decode(
-      self, key: Array, value: Array, cached_key: variables.Variable,
-      cached_value: variables.Variable, cache_index: variables.Variable
+      self,
+      key: Array,
+      value: Array,
+      cached_key: variables.Variable,
+      cached_value: variables.Variable,
+      cache_index: variables.Variable,
   ) -> Tuple[Array, Array, Array, Array, Array, Array]:
     """Update the next timestep in the autoregressive cache.
 
@@ -587,7 +634,8 @@ class MultiHeadDotProductAttention(nn.Module, DenseAttention):
     # of prefixes. We need to add dims for num_heads and num_features as
     # broadcasting doesn't work for the batched version.
     one_hot_indices = jnp.expand_dims(
-        jnp.expand_dims(one_hot_indices, axis=1), axis=1)
+        jnp.expand_dims(one_hot_indices, axis=1), axis=1
+    )
     # Update key, value caches with our new 1d spatial slices.
     # We implement an efficient scatter into the cache via one-hot
     # broadcast and addition.
@@ -602,21 +650,29 @@ class MultiHeadDotProductAttention(nn.Module, DenseAttention):
     # Move the keys and values back to their original shapes.
     key = jnp.moveaxis(key, -1, -3)
     value = jnp.moveaxis(value, -1, -3)
-    return (key, value, cur_index, cached_key_value, cached_value_value,
-            cache_index_value)
+    return (
+        key,
+        value,
+        cur_index,
+        cached_key_value,
+        cached_value_value,
+        cache_index_value,
+    )
 
   @nn.compact
-  def __call__(self,
-               inputs_q: Array,
-               inputs_kv: Array,
-               mask: Optional[Array] = None,
-               bias: Optional[Array] = None,
-               *,
-               precomputed_qkv: Optional[Array] = None,
-               decode: bool = False,
-               enable_dropout: bool = True,
-               prefill: bool = False,
-               prefill_lengths: Optional[Array] = None) -> Array:
+  def __call__(
+      self,
+      inputs_q: Array,
+      inputs_kv: Array,
+      mask: Optional[Array] = None,
+      bias: Optional[Array] = None,
+      *,
+      precomputed_qkv: Optional[Array] = None,
+      decode: bool = False,
+      enable_dropout: bool = True,
+      prefill: bool = False,
+      prefill_lengths: Optional[Array] = None,
+  ) -> Array:
     """Applies multi-head dot product attention on the input data.
 
     Projects the inputs into multi-headed query, key, and value vectors,
@@ -659,18 +715,25 @@ class MultiHeadDotProductAttention(nn.Module, DenseAttention):
       features if not provided. If output_projection is False, then output of
       shape `[batch_sizes..., length, num_heads, head_dim]`.
     """
-    validate_dense_attention_call_parameter_shapes(inputs_q, inputs_kv, mask,
-                                                   bias, self.num_heads)
+    validate_dense_attention_call_parameter_shapes(
+        inputs_q, inputs_kv, mask, bias, self.num_heads
+    )
 
     qkv_kernel_init = (
         self.qkv_kernel_init
-        if self.qkv_kernel_init is not None else self.kernel_init)
+        if self.qkv_kernel_init is not None
+        else self.kernel_init
+    )
     kv_kernel_init = (
         self.kv_kernel_init
-        if self.kv_kernel_init is not None else self.kernel_init)
+        if self.kv_kernel_init is not None
+        else self.kernel_init
+    )
     q_kernel_init = (
         self.q_kernel_init
-        if self.q_kernel_init is not None else self.kernel_init)
+        if self.q_kernel_init is not None
+        else self.kernel_init
+    )
 
     if precomputed_qkv is not None:
       raise ValueError('Support for precomputed QKVO not implemented.')
@@ -684,16 +747,20 @@ class MultiHeadDotProductAttention(nn.Module, DenseAttention):
       head_dim = self.head_dim
 
     if self.kernels_to_fuse and not self.split_head_kernel:
-      raise ValueError('Un-reshaped kernels are required when using QKV fused '
-                       'kernel optimization.')
+      raise ValueError(
+          'Un-reshaped kernels are required when using QKV fused '
+          'kernel optimization.'
+      )
 
     # Is attention logit rescaling explicit or folded into initializer?
     if self.rescale_logits:
       query_init = q_kernel_init
     else:
       if self.kernels_to_fuse:
-        raise ValueError('Cannot fold in logit normalization to query '
-                         'initializer when using fused kernels.')
+        raise ValueError(
+            'Cannot fold in logit normalization to query '
+            'initializer when using fused kernels.'
+        )
       depth_scaling = jnp.sqrt(head_dim).astype(self.dtype)
       query_init = lambda *args: q_kernel_init(*args) / depth_scaling
 
@@ -714,32 +781,34 @@ class MultiHeadDotProductAttention(nn.Module, DenseAttention):
           kernel_init=query_init,
           features=(self.num_heads, head_dim),
           kernel_axis_names=['embed', 'heads', 'kv'],
-          name='query')(
-              inputs_q)
+          name='query',
+      )(inputs_q)
       key = make_dense(
           kernel_init=self.kernel_init,
           features=(self.num_heads, head_dim),
           kernel_axis_names=['embed', 'heads', 'kv'],
-          name='key')(
-              inputs_kv)
+          name='key',
+      )(inputs_kv)
       value = make_dense(
           kernel_init=self.kernel_init,
           features=(self.num_heads, head_dim),
           kernel_axis_names=['embed', 'heads', 'kv'],
-          name='value')(
-              inputs_kv)
+          name='value',
+      )(inputs_kv)
     # TODO: should we fuse/slice along depth or head dim?
     elif self.kernels_to_fuse == 'qkv':
       if inputs_q is not inputs_kv:
-        raise ValueError('qkv fusion is only supported in self-attention mode '
-                         '(when inputs_q is inputs_kv).')
+        raise ValueError(
+            'qkv fusion is only supported in self-attention mode '
+            '(when inputs_q is inputs_kv).'
+        )
       # 'qkv' fusion mode implies self-attention
       qkv = make_dense(
           kernel_init=qkv_kernel_init,
           features=(3, self.num_heads, head_dim),
           kernel_axis_names=['embed', 'stack', 'heads', 'kv'],
-          name='qkv_fused')(
-              inputs_q)
+          name='qkv_fused',
+      )(inputs_q)
       query = jnp.squeeze(lax.dynamic_slice_in_dim(qkv, 0, 1, -3), -3)
       key = jnp.squeeze(lax.dynamic_slice_in_dim(qkv, 1, 1, -3), -3)
       value = jnp.squeeze(lax.dynamic_slice_in_dim(qkv, 2, 1, -3), -3)
@@ -748,14 +817,14 @@ class MultiHeadDotProductAttention(nn.Module, DenseAttention):
           kernel_init=query_init,
           features=(self.num_heads, head_dim),
           kernel_axis_names=['embed', 'heads', 'kv'],
-          name='query')(
-              inputs_q)
+          name='query',
+      )(inputs_q)
       kv = make_dense(
           kernel_init=kv_kernel_init,
           features=(2, self.num_heads, head_dim),
           kernel_axis_names=['embed', 'stack', 'heads', 'kv'],
-          name='kv_fused')(
-              inputs_kv)
+          name='kv_fused',
+      )(inputs_kv)
       key = jnp.squeeze(lax.dynamic_slice_in_dim(kv, 0, 1, -3), -3)
       value = jnp.squeeze(lax.dynamic_slice_in_dim(kv, 1, 1, -3), -3)
     else:
@@ -764,22 +833,16 @@ class MultiHeadDotProductAttention(nn.Module, DenseAttention):
     # Multi Dconv Head Attention options:
     if self.q_conv is not None:
       query = self.q_conv(  # pylint: disable=not-callable
-          query,
-          decode=decode,
-          prefill=prefill,
-          prefill_lengths=prefill_lengths)
+          query, decode=decode, prefill=prefill, prefill_lengths=prefill_lengths
+      )
     if self.k_conv is not None:
       key = self.k_conv(  # pylint: disable=not-callable
-          key,
-          decode=decode,
-          prefill=prefill,
-          prefill_lengths=prefill_lengths)
+          key, decode=decode, prefill=prefill, prefill_lengths=prefill_lengths
+      )
     if self.v_conv is not None:
       value = self.v_conv(  # pylint: disable=not-callable
-          value,
-          decode=decode,
-          prefill=prefill,
-          prefill_lengths=prefill_lengths)
+          value, decode=decode, prefill=prefill, prefill_lengths=prefill_lengths
+      )
 
     if self.sharding_over_head_dimension:
       # Note: We don't use `activation_partitioning.with_sharding_migration`
@@ -788,11 +851,14 @@ class MultiHeadDotProductAttention(nn.Module, DenseAttention):
       # if both result in 2D sharding (which with_sharding_migration does).
       if flax_partitioning.get_axis_rules():
         query = flax_partitioning.with_sharding_constraint(
-            query, ('batch', 'length', 'heads', 'kv'))
+            query, ('batch', 'length', 'heads', 'kv')
+        )
         key = flax_partitioning.with_sharding_constraint(
-            key, ('batch', 'length', 'heads', 'kv'))
+            key, ('batch', 'length', 'heads', 'kv')
+        )
         value = flax_partitioning.with_sharding_constraint(
-            value, ('batch', 'length', 'heads', 'kv'))
+            value, ('batch', 'length', 'heads', 'kv')
+        )
       else:
         query = activation_partitioning.with_sharding(query, 2)
         key = activation_partitioning.with_sharding(key, 2)
@@ -803,12 +869,14 @@ class MultiHeadDotProductAttention(nn.Module, DenseAttention):
     value: Array = value
 
     if prefill and decode:
-      raise ValueError('prefill and decode cannot both be true at the same'
-                       'time. If you are using a prefix LM with bidirectional '
-                       'attention on the inputs, please make a call with '
-                       'prefill=True that includes an attention mask that '
-                       'covers your inputs first and then make your decoding '
-                       'calls.')
+      raise ValueError(
+          'prefill and decode cannot both be true at the same'
+          'time. If you are using a prefix LM with bidirectional '
+          'attention on the inputs, please make a call with '
+          'prefill=True that includes an attention mask that '
+          'covers your inputs first and then make your decoding '
+          'calls.'
+      )
     if prefill or decode:
       # Detect if we're initializing by absence of existing cache data.
       is_initialized = self.has_variable('cache', 'cached_key')
@@ -819,17 +887,25 @@ class MultiHeadDotProductAttention(nn.Module, DenseAttention):
       # trick, which means we do a one-hot broadcast instead of a scatter/gather
       # operations, which gives a 3-4x speedup in practice.
       swap_dims = lambda x: x[:-3] + tuple(x[i] for i in [-2, -1, -3])
-      cached_key = self.variable('cache', 'cached_key', jnp.zeros,
-                                 swap_dims(key.shape), key.dtype)
-      cached_value = self.variable('cache', 'cached_value', jnp.zeros,
-                                   swap_dims(value.shape), value.dtype)
-      cache_index = self.variable('cache', 'cache_index',
-                                  lambda: jnp.array(0, dtype=jnp.int32))
+      cached_key = self.variable(
+          'cache', 'cached_key', jnp.zeros, swap_dims(key.shape), key.dtype
+      )
+      cached_value = self.variable(
+          'cache',
+          'cached_value',
+          jnp.zeros,
+          swap_dims(value.shape),
+          value.dtype,
+      )
+      cache_index = self.variable(
+          'cache', 'cache_index', lambda: jnp.array(0, dtype=jnp.int32)
+      )
       rotary_index = cache_index.value
       if is_initialized:
         # Here we are in "apply()".
         *batch_dims, num_heads, features_per_head, length = (
-            cached_key.value.shape)
+            cached_key.value.shape
+        )
         if prefill:
           if prefill_lengths is None:
             # Figure out how far each element in the batch fills the cache based
@@ -837,24 +913,40 @@ class MultiHeadDotProductAttention(nn.Module, DenseAttention):
             # dim (because this is always set to one), and the first query
             # vector. If there is any prefix at all, the first element in the
             # prefix would be part of it.
-            prefill_lengths = jnp.sum(
-                mask[:, 0, 0, :], axis=-1).astype(cache_index.value.dtype)
-          (key, value, cur_index, cached_key_value, cached_value_value,
-           cache_index_value) = self.update_cache_prefill(
-               key, value, cached_key, cached_value, cache_index,
-               prefill_lengths)
+            prefill_lengths = jnp.sum(mask[:, 0, 0, :], axis=-1).astype(
+                cache_index.value.dtype
+            )
+          (
+              key,
+              value,
+              cur_index,
+              cached_key_value,
+              cached_value_value,
+              cache_index_value,
+          ) = self.update_cache_prefill(
+              key, value, cached_key, cached_value, cache_index, prefill_lengths
+          )
         # During fast autoregressive decoding, we feed one position at a time,
         # and cache the keys and values step by step.
         elif decode:
           # Check the shape of the cached key against the input query.
           expected_shape = tuple(batch_dims) + (1, num_heads, features_per_head)
           if expected_shape != query.shape:
-            raise ValueError('Autoregressive cache shape error, '
-                             'expected query shape %s instead got %s.' %
-                             (expected_shape, query.shape))
-          (key, value, cur_index, cached_key_value, cached_value_value,
-           cache_index_value) = self.update_cache_decode(
-               key, value, cached_key, cached_value, cache_index)
+            raise ValueError(
+                'Autoregressive cache shape error, '
+                'expected query shape %s instead got %s.'
+                % (expected_shape, query.shape)
+            )
+          (
+              key,
+              value,
+              cur_index,
+              cached_key_value,
+              cached_value_value,
+              cache_index_value,
+          ) = self.update_cache_decode(
+              key, value, cached_key, cached_value, cache_index
+          )
           # Enforcing the Causal mask over previous positions and selecting only
           # the bias value for the current index is only needed during decode
           # mode where a single example is feed at a time. In prefill mode we
@@ -875,9 +967,10 @@ class MultiHeadDotProductAttention(nn.Module, DenseAttention):
           mask = combine_masks(
               mask,
               jnp.broadcast_to(
-                  jnp.arange(length),
-                  tuple(batch_dims) +
-                  (1, 1, length)) <= jnp.reshape(cur_index, (-1, 1, 1, 1)))
+                  jnp.arange(length), tuple(batch_dims) + (1, 1, length)
+              )
+              <= jnp.reshape(cur_index, (-1, 1, 1, 1)),
+          )
           # Grab the correct relative attention bias during decoding. This is
           # only required during single step decoding.
           if bias is not None:
@@ -893,7 +986,9 @@ class MultiHeadDotProductAttention(nn.Module, DenseAttention):
 
             bias = jnp.einsum(
                 'bq, bhqk->bhk',
-                common_utils.onehot(cur_index, num_classes=length), bias)
+                common_utils.onehot(cur_index, num_classes=length),
+                bias,
+            )
             bias = jnp.expand_dims(bias, 2)
 
         # Currently, updating a variable inside of a method is not handled
@@ -911,8 +1006,9 @@ class MultiHeadDotProductAttention(nn.Module, DenseAttention):
       # attention mask in the form of attention bias
       attention_bias = lax.select(
           mask > 0,
-          jnp.full(mask.shape, 0.).astype(self.dtype),
-          jnp.full(mask.shape, -1e10).astype(self.dtype))
+          jnp.full(mask.shape, 0.0).astype(self.dtype),
+          jnp.full(mask.shape, -1e10).astype(self.dtype),
+      )
     else:
       attention_bias = None
 
@@ -921,7 +1017,7 @@ class MultiHeadDotProductAttention(nn.Module, DenseAttention):
       attention_bias = combine_biases(attention_bias, bias)
 
     dropout_rng = None
-    if enable_dropout and self.dropout_rate > 0.:
+    if enable_dropout and self.dropout_rate > 0.0:
       dropout_rng = self.make_rng('dropout')
 
     if self.use_rotary_embedding:
@@ -931,9 +1027,11 @@ class MultiHeadDotProductAttention(nn.Module, DenseAttention):
       dim = query.shape[-1]
       max_length = max(query.shape[1], key.shape[1])
       sin, cos = embedding.generate_fixed_pos_embedding(
-          dim, max_length, max_timescale=self.rotary_embedding_max_timescale)
+          dim, max_length, max_timescale=self.rotary_embedding_max_timescale
+      )
       query, key = embedding.apply_rotary_embedding(
-          query, key, cos, sin, decode=decode, rotary_index=rotary_index)
+          query, key, cos, sin, decode=decode, rotary_index=rotary_index
+      )
 
     # Compute attention.
     attn_weights = self.compute_attention_fn(
@@ -948,7 +1046,8 @@ class MultiHeadDotProductAttention(nn.Module, DenseAttention):
         dtype=self.dtype,
         precision=self.precision,
         use_extra_logit=self.use_extra_logit,
-        float32_logits=self.float32_logits)  # pytype: disable=wrong-keyword-args
+        float32_logits=self.float32_logits,
+    )  # pytype: disable=wrong-keyword-args
 
     # Save the attention weights if `intermediates` is mutable, otherwise no-op.
     if self.sow_intermediates:
@@ -971,8 +1070,10 @@ class MultiHeadDotProductAttention(nn.Module, DenseAttention):
         precision=self.precision,
         reshape_kernel=not self.split_head_kernel,
         kernel_axis_names=['heads', 'kv', 'embed'],
-        name='out')(  # pytype: disable=wrong-arg-types
-            x)
+        name='out',
+    )(  # pytype: disable=wrong-arg-types
+        x
+    )
     return out
 
 
@@ -1012,6 +1113,7 @@ class MultiQueryDotProductAttention(nn.Module, DenseAttention):
     weight_params: Parameters for weight quantization.
     act_params: Parameters for acitvation quantization.
   """
+
   num_heads: int
   use_bias: bool
   dtype: DType = jnp.float32
@@ -1019,14 +1121,15 @@ class MultiQueryDotProductAttention(nn.Module, DenseAttention):
   head_dim: Optional[int] = None
   out_features: Optional[int] = None
   broadcast_dropout: bool = True
-  dropout_rate: float = 0.
+  dropout_rate: float = 0.0
   precision: Optional[lax.Precision] = None
   kernel_init: Initializer = default_kernel_init
   q_kernel_init: Optional[Initializer] = None
   bias_init: Initializer = initializers.zeros
   rescale_logits: bool = False
-  attention_fn: Callable[[Array, Array, Array],
-                         Array] = staticmethod(dot_product_attention_multiquery)
+  attention_fn: Callable[[Array, Array, Array], Array] = staticmethod(
+      dot_product_attention_multiquery
+  )
   use_extra_logit: bool = False
   float32_logits: bool = False
   use_rotary_embedding: bool = False
@@ -1041,11 +1144,21 @@ class MultiQueryDotProductAttention(nn.Module, DenseAttention):
   possibly_use_quantized_vars: bool = False
 
   def update_cache_prefill(
-      self, key: Array, value: Array, cached_key: variables.Variable,
-      cached_value: variables.Variable, cache_index: variables.Variable,
-      prefill_lengths: Array
-  ) -> Tuple[Array, Array, Array, variables.Variable, variables.Variable,
-             variables.Variable]:
+      self,
+      key: Array,
+      value: Array,
+      cached_key: variables.Variable,
+      cached_value: variables.Variable,
+      cache_index: variables.Variable,
+      prefill_lengths: Array,
+  ) -> Tuple[
+      Array,
+      Array,
+      Array,
+      variables.Variable,
+      variables.Variable,
+      variables.Variable,
+  ]:
     """Update the autoregressive cache for multiple timesteps at once.
 
     This is useful for things like a prefix-lm where the encoder section of the
@@ -1081,27 +1194,50 @@ class MultiQueryDotProductAttention(nn.Module, DenseAttention):
     # broadcasting behavior is to add singleton dims to the front but
     # we need them at the end.
     batch_first_index = jnp.reshape(
-        cur_index, (-1,) + tuple(1 for _ in range(cached_key.value.ndim - 1)))
+        cur_index, (-1,) + tuple(1 for _ in range(cached_key.value.ndim - 1))
+    )
     # Calculate a mask that will set any position past the prefix to zero
     # when applied to the key.
     key_mask = (
-        lax.broadcasted_iota(jnp.int32, cached_key.value.shape,
-                             cached_key.value.ndim - 1) < batch_first_index)
+        lax.broadcasted_iota(
+            jnp.int32, cached_key.value.shape, cached_key.value.ndim - 1
+        )
+        < batch_first_index
+    )
     value_mask = (
-        lax.broadcasted_iota(jnp.int32, cached_value.value.shape,
-                             cached_value.value.ndim - 1) < batch_first_index)
+        lax.broadcasted_iota(
+            jnp.int32, cached_value.value.shape, cached_value.value.ndim - 1
+        )
+        < batch_first_index
+    )
     # Set the caches with the calculated key and values but hide anything
     # past the prefix.
     cached_key_value = key_cached * key_mask
     cached_value_value = value_cached * value_mask
-    return (key, value, cur_index, cached_key_value, cached_value_value,
-            prefill_lengths)
+    return (
+        key,
+        value,
+        cur_index,
+        cached_key_value,
+        cached_value_value,
+        prefill_lengths,
+    )
 
   def update_cache_decode(
-      self, key: Array, value: Array, cached_key: variables.Variable,
-      cached_value: variables.Variable, cache_index: variables.Variable
-  ) -> Tuple[Array, Array, Array, variables.Variable, variables.Variable,
-             variables.Variable]:
+      self,
+      key: Array,
+      value: Array,
+      cached_key: variables.Variable,
+      cached_value: variables.Variable,
+      cache_index: variables.Variable,
+  ) -> Tuple[
+      Array,
+      Array,
+      Array,
+      variables.Variable,
+      variables.Variable,
+      variables.Variable,
+  ]:
     """Update the next timestep in the autoregressive cache.
 
     This is used during step by step decoding where each key and value we get
@@ -1154,21 +1290,29 @@ class MultiQueryDotProductAttention(nn.Module, DenseAttention):
     # Move the keys and values back to their original shapes.
     key = jnp.moveaxis(key, -1, -2)
     value = jnp.moveaxis(value, -1, -2)
-    return (key, value, cur_index, cached_key_value, cached_value_value,
-            cache_index_value)
+    return (
+        key,
+        value,
+        cur_index,
+        cached_key_value,
+        cached_value_value,
+        cache_index_value,
+    )
 
   @nn.compact
-  def __call__(self,
-               inputs_q: Array,
-               inputs_kv: Array,
-               mask: Optional[Array] = None,
-               bias: Optional[Array] = None,
-               *,
-               precomputed_qkv=None,
-               decode: bool = False,
-               enable_dropout: bool = True,
-               prefill: bool = False,
-               prefill_lengths: Optional[Array] = None) -> Array:
+  def __call__(
+      self,
+      inputs_q: Array,
+      inputs_kv: Array,
+      mask: Optional[Array] = None,
+      bias: Optional[Array] = None,
+      *,
+      precomputed_qkv=None,
+      decode: bool = False,
+      enable_dropout: bool = True,
+      prefill: bool = False,
+      prefill_lengths: Optional[Array] = None,
+  ) -> Array:
     """Applies multi-query dot product attention on the input data.
 
     Projects the inputs into multi-headed query and single-headed key and value
@@ -1193,11 +1337,14 @@ class MultiQueryDotProductAttention(nn.Module, DenseAttention):
     Returns:
       output of shape `[batch_sizes..., length, features]`.
     """
-    validate_dense_attention_call_parameter_shapes(inputs_q, inputs_kv, mask,
-                                                   bias, self.num_heads)
+    validate_dense_attention_call_parameter_shapes(
+        inputs_q, inputs_kv, mask, bias, self.num_heads
+    )
     q_kernel_init = (
         self.q_kernel_init
-        if self.q_kernel_init is not None else self.kernel_init)
+        if self.q_kernel_init is not None
+        else self.kernel_init
+    )
 
     rotary_index = None
     features = self.out_features or inputs_q.shape[-1]
@@ -1233,9 +1380,12 @@ class MultiQueryDotProductAttention(nn.Module, DenseAttention):
         # the AQT library. Currently we make that decision here, because the AQT
         # library doesn't support DenseGeneral.
         aqt_context = aqt_config.DynamicContext(
-            update_bounds=False, collect_acts_stats=False)
+            update_bounds=False, collect_acts_stats=False
+        )
         weight_prec = self.weight_params.prec if self.weight_params else None
-        half_shift = self.weight_params.half_shift if self.weight_params else False
+        half_shift = (
+            self.weight_params.half_shift if self.weight_params else False
+        )
         aqt_hparams = aqt_flax_layers.DenseAqt.HParams(
             weight_prec=weight_prec,
             weight_half_shift=half_shift,
@@ -1273,8 +1423,8 @@ class MultiQueryDotProductAttention(nn.Module, DenseAttention):
             precision=self.precision,
             kernel_axis_names=kernel_axis_names,
             reshape_kernel=reshape_kernel,
-            name=name)(
-                inputs)
+            name=name,
+        )(inputs)
 
     # Project inputs_q to multi-headed q and single-headed k and v
     # query dimension is then [batch..., length, num_heads, features_per_head]
@@ -1296,42 +1446,41 @@ class MultiQueryDotProductAttention(nn.Module, DenseAttention):
           kernel_init=self.kernel_init,
           kernel_axis_names=['embed', 'kv'],
           name='key',
-          inputs=inputs_kv)
+          inputs=inputs_kv,
+      )
       value = dense_output(
           features=head_dim,
           axis=-1,
           kernel_init=self.kernel_init,
           kernel_axis_names=['embed', 'kv'],
           name='value',
-          inputs=inputs_kv)
+          inputs=inputs_kv,
+      )
     else:
       query, key, value = precomputed_qkv
 
     # Multi Dconv Head Attention options:
     if self.q_conv is not None:
       query = self.q_conv(  # pylint: disable=not-callable
-          query,
-          decode=decode,
-          prefill=prefill,
-          prefill_lengths=prefill_lengths)
+          query, decode=decode, prefill=prefill, prefill_lengths=prefill_lengths
+      )
     if self.k_conv is not None:
       key = self.k_conv(  # pylint: disable=not-callable
-          key,
-          decode=decode,
-          prefill=prefill,
-          prefill_lengths=prefill_lengths)
+          key, decode=decode, prefill=prefill, prefill_lengths=prefill_lengths
+      )
     if self.v_conv is not None:
       value = self.v_conv(  # pylint: disable=not-callable
-          value,
-          decode=decode,
-          prefill=prefill,
-          prefill_lengths=prefill_lengths)
+          value, decode=decode, prefill=prefill, prefill_lengths=prefill_lengths
+      )
 
     sharding_prefix = 'attn_decode' if decode else 'attn_encode'
 
-    bias_sharding = (f'{sharding_prefix}_batch', f'{sharding_prefix}_heads',
-                     f'{sharding_prefix}_q_length',
-                     f'{sharding_prefix}_kv_length')
+    bias_sharding = (
+        f'{sharding_prefix}_batch',
+        f'{sharding_prefix}_heads',
+        f'{sharding_prefix}_q_length',
+        f'{sharding_prefix}_kv_length',
+    )
 
     # Note: We don't use `activation_partitioning.with_sharding_migration` here
     # because we do often want this 2D sharded. However, if rules are valid,
@@ -1339,17 +1488,20 @@ class MultiQueryDotProductAttention(nn.Module, DenseAttention):
     # result in 2D sharding (which with_sharding_migration does).
     if flax_partitioning.get_axis_rules():
       query = flax_partitioning.with_sharding_constraint(
-          query, ('batch', 'length', 'heads', 'kv'))
+          query, ('batch', 'length', 'heads', 'kv')
+      )
     else:
       query = activation_partitioning.with_sharding(query, 2)
 
     if prefill and decode:
-      raise ValueError('prefill and decode cannot both be true at the same'
-                       'time. If you are using a prefix LM with bidirectional '
-                       'attention on the inputs, please make a call with '
-                       'prefill=True that includes an attention mask that '
-                       'covers your inputs first and then make your decoding '
-                       'calls.')
+      raise ValueError(
+          'prefill and decode cannot both be true at the same'
+          'time. If you are using a prefix LM with bidirectional '
+          'attention on the inputs, please make a call with '
+          'prefill=True that includes an attention mask that '
+          'covers your inputs first and then make your decoding '
+          'calls.'
+      )
     # During fast autoregressive decoding, we feed one position at a time,
     # and cache the keys and values step by step.
     if prefill or decode:
@@ -1369,7 +1521,8 @@ class MultiQueryDotProductAttention(nn.Module, DenseAttention):
           swap_dims(key.shape),
           key.dtype,
           axes=('cache_batch', 'cache_kv', 'cache_length'),
-          fallback=RulesFallback.NO_CONSTRAINT)
+          fallback=RulesFallback.NO_CONSTRAINT,
+      )
       cached_value = flax_partitioning.variable_with_axes(
           'cache',
           'cached_value',
@@ -1377,7 +1530,8 @@ class MultiQueryDotProductAttention(nn.Module, DenseAttention):
           swap_dims(value.shape),
           value.dtype,
           axes=('cache_batch', 'cache_kv', 'cache_length'),
-          fallback=RulesFallback.NO_CONSTRAINT)
+          fallback=RulesFallback.NO_CONSTRAINT,
+      )
       cache_index = flax_partitioning.variable_with_axes(
           'cache',
           'cache_index',
@@ -1385,7 +1539,8 @@ class MultiQueryDotProductAttention(nn.Module, DenseAttention):
           query.shape[0],
           jnp.int32,
           axes=('cache_batch',),
-          fallback=RulesFallback.NO_CONSTRAINT)
+          fallback=RulesFallback.NO_CONSTRAINT,
+      )
       rotary_index = cache_index.value
 
       if is_initialized:
@@ -1400,38 +1555,61 @@ class MultiQueryDotProductAttention(nn.Module, DenseAttention):
           # of batch size so that each example can start just after it's
           # prefix which can be different lengths for different examples.
           if prefill_lengths is None:
-            prefill_lengths = jnp.sum(
-                mask[:, 0, 0, :], axis=-1).astype(cache_index.value.dtype)
-          (key, value, cur_index, cached_key_value, cached_value_value,
-           cache_index_value) = self.update_cache_prefill(
-               key, value, cached_key, cached_value, cache_index,
-               prefill_lengths)
+            prefill_lengths = jnp.sum(mask[:, 0, 0, :], axis=-1).astype(
+                cache_index.value.dtype
+            )
+          (
+              key,
+              value,
+              cur_index,
+              cached_key_value,
+              cached_value_value,
+              cache_index_value,
+          ) = self.update_cache_prefill(
+              key, value, cached_key, cached_value, cache_index, prefill_lengths
+          )
 
         # During fast autoregressive decoding, we feed one position at a time,
         # and cache the keys and values step by step.
         elif decode:
           # Check the shape of the cached key against the input query.
-          expected_query_shape = tuple(batch_dims) + (1, self.num_heads,
-                                                      features_per_head)
+          expected_query_shape = tuple(batch_dims) + (
+              1,
+              self.num_heads,
+              features_per_head,
+          )
           if expected_query_shape != query.shape:
-            raise ValueError('Autoregressive cache shape error, '
-                             'expected query shape %s instead got %s.' %
-                             (expected_query_shape, query.shape))
+            raise ValueError(
+                'Autoregressive cache shape error, '
+                'expected query shape %s instead got %s.'
+                % (expected_query_shape, query.shape)
+            )
 
           expected_key_shape = tuple(batch_dims) + (1, features_per_head)
           if expected_key_shape != key.shape:
-            raise ValueError('Autoregressive cache shape error, '
-                             'expected key shape %s instead got %s.' %
-                             (expected_key_shape, key.shape))
+            raise ValueError(
+                'Autoregressive cache shape error, '
+                'expected key shape %s instead got %s.'
+                % (expected_key_shape, key.shape)
+            )
 
           # value and key should have the same shape.
           if expected_key_shape != value.shape:
-            raise ValueError('Autoregressive cache shape error, '
-                             'expected value shape %s instead got %s.' %
-                             (expected_key_shape, value.shape))
-          (key, value, cur_index, cached_key_value, cached_value_value,
-           cache_index_value) = self.update_cache_decode(
-               key, value, cached_key, cached_value, cache_index)
+            raise ValueError(
+                'Autoregressive cache shape error, '
+                'expected value shape %s instead got %s.'
+                % (expected_key_shape, value.shape)
+            )
+          (
+              key,
+              value,
+              cur_index,
+              cached_key_value,
+              cached_value_value,
+              cache_index_value,
+          ) = self.update_cache_decode(
+              key, value, cached_key, cached_value, cache_index
+          )
           # Enforcing the Causal mask over previous positions and selecting only
           # the bias value for the current index is only needed during decode
           # mode where a single example is feed at a time. In prefill mode we
@@ -1452,13 +1630,16 @@ class MultiQueryDotProductAttention(nn.Module, DenseAttention):
           mask = combine_masks(
               mask,
               jnp.broadcast_to(
-                  jnp.arange(length),
-                  tuple(batch_dims) +
-                  (1, 1, length)) <= jnp.reshape(cur_index, (-1, 1, 1, 1)))
+                  jnp.arange(length), tuple(batch_dims) + (1, 1, length)
+              )
+              <= jnp.reshape(cur_index, (-1, 1, 1, 1)),
+          )
 
           mask = flax_partitioning.with_sharding_constraint(
-              mask, (f'{sharding_prefix}_batch', None, None, None),
-              fallback=RulesFallback.NO_CONSTRAINT)
+              mask,
+              (f'{sharding_prefix}_batch', None, None, None),
+              fallback=RulesFallback.NO_CONSTRAINT,
+          )
 
           # Grab the correct relative attention bias during decoding.
           if bias is not None:
@@ -1474,10 +1655,13 @@ class MultiQueryDotProductAttention(nn.Module, DenseAttention):
 
             bias = jnp.einsum(
                 'bq, bhqk->bhk',
-                common_utils.onehot(cur_index, num_classes=length), bias)
+                common_utils.onehot(cur_index, num_classes=length),
+                bias,
+            )
             bias = jnp.expand_dims(bias, 2)
             bias = flax_partitioning.with_sharding_constraint(
-                bias, bias_sharding, fallback=RulesFallback.NO_CONSTRAINT)
+                bias, bias_sharding, fallback=RulesFallback.NO_CONSTRAINT
+            )
 
         # Currently, updating a variable inside of a method is not handled
         # in flax, so we return the actual values and assign them in the main
@@ -1494,10 +1678,12 @@ class MultiQueryDotProductAttention(nn.Module, DenseAttention):
       # attention mask in the form of attention bias
       attention_bias = lax.select(
           mask > 0,
-          jnp.full(mask.shape, 0.).astype(self.dtype),
-          jnp.full(mask.shape, -1e10).astype(self.dtype))
+          jnp.full(mask.shape, 0.0).astype(self.dtype),
+          jnp.full(mask.shape, -1e10).astype(self.dtype),
+      )
       attention_bias = flax_partitioning.with_sharding_constraint(
-          attention_bias, bias_sharding, fallback=RulesFallback.NO_CONSTRAINT)
+          attention_bias, bias_sharding, fallback=RulesFallback.NO_CONSTRAINT
+      )
     else:
       attention_bias = None
 
@@ -1505,26 +1691,36 @@ class MultiQueryDotProductAttention(nn.Module, DenseAttention):
     if bias is not None:
       attention_bias = combine_biases(attention_bias, bias)
       attention_bias = flax_partitioning.with_sharding_constraint(
-          attention_bias, bias_sharding, fallback=RulesFallback.NO_CONSTRAINT)
+          attention_bias, bias_sharding, fallback=RulesFallback.NO_CONSTRAINT
+      )
 
     dropout_rng = None
-    if enable_dropout and self.dropout_rate > 0.:
+    if enable_dropout and self.dropout_rate > 0.0:
       dropout_rng = self.make_rng('dropout')
 
     # During decode we typically want to reshard at this point from sharding by
     # by head to sharding by batch. Give new names to the sharding axes to allow
     # this reshard.
     query = flax_partitioning.with_sharding_constraint(
-        query, (f'{sharding_prefix}_batch', f'{sharding_prefix}_q_length',
-                f'{sharding_prefix}_heads', 'kv'),
-        fallback=RulesFallback.NO_CONSTRAINT)
+        query,
+        (
+            f'{sharding_prefix}_batch',
+            f'{sharding_prefix}_q_length',
+            f'{sharding_prefix}_heads',
+            'kv',
+        ),
+        fallback=RulesFallback.NO_CONSTRAINT,
+    )
     key = flax_partitioning.with_sharding_constraint(
-        key, (f'{sharding_prefix}_batch', f'{sharding_prefix}_kv_length', 'kv'),
-        fallback=RulesFallback.NO_CONSTRAINT)
+        key,
+        (f'{sharding_prefix}_batch', f'{sharding_prefix}_kv_length', 'kv'),
+        fallback=RulesFallback.NO_CONSTRAINT,
+    )
     value = flax_partitioning.with_sharding_constraint(
         value,
         (f'{sharding_prefix}_batch', f'{sharding_prefix}_kv_length', 'kv'),
-        fallback=RulesFallback.NO_CONSTRAINT)
+        fallback=RulesFallback.NO_CONSTRAINT,
+    )
 
     if self.use_rotary_embedding:
       # use rotary embeddings before attention
@@ -1533,9 +1729,11 @@ class MultiQueryDotProductAttention(nn.Module, DenseAttention):
       dim = query.shape[-1]
       max_length = max(query.shape[1], key.shape[1])
       sin, cos = embedding.generate_fixed_pos_embedding(
-          dim, max_length, max_timescale=self.rotary_embedding_max_timescale)
+          dim, max_length, max_timescale=self.rotary_embedding_max_timescale
+      )
       query, key = embedding.apply_rotary_embedding(
-          query, key, cos, sin, decode=decode, rotary_index=rotary_index)
+          query, key, cos, sin, decode=decode, rotary_index=rotary_index
+      )
 
     # Apply attention.
     x = self.attention_fn(
@@ -1551,18 +1749,27 @@ class MultiQueryDotProductAttention(nn.Module, DenseAttention):
         dtype=self.dtype,
         precision=self.precision,
         use_extra_logit=self.use_extra_logit,
-        float32_logits=self.float32_logits)  # pytype: disable=wrong-keyword-args
+        float32_logits=self.float32_logits,
+    )  # pytype: disable=wrong-keyword-args
 
     # During decode we typically want to reshard at this point from sharding by
     # batch to sharding by head. Return to the old names of the sharding axes to
     # allow this reshard.
     x = flax_partitioning.with_sharding_constraint(
-        x, (f'{sharding_prefix}_batch', f'{sharding_prefix}_q_length',
-            f'{sharding_prefix}_heads', 'kv'),
-        fallback=RulesFallback.NO_CONSTRAINT)
+        x,
+        (
+            f'{sharding_prefix}_batch',
+            f'{sharding_prefix}_q_length',
+            f'{sharding_prefix}_heads',
+            'kv',
+        ),
+        fallback=RulesFallback.NO_CONSTRAINT,
+    )
     x = flax_partitioning.with_sharding_constraint(
-        x, ('batch', 'length', 'heads', 'kv'),
-        fallback=RulesFallback.NO_CONSTRAINT)
+        x,
+        ('batch', 'length', 'heads', 'kv'),
+        fallback=RulesFallback.NO_CONSTRAINT,
+    )
 
     if precomputed_qkv is None:
       kernel_axis_names = ['heads', 'kv', 'embed']
@@ -1570,7 +1777,9 @@ class MultiQueryDotProductAttention(nn.Module, DenseAttention):
       # here.
       if self.use_aqt and self.weight_params is not None:
         weight_prec = self.weight_params.prec if self.weight_params else None
-        half_shift = self.weight_params.half_shift if self.weight_params else False
+        half_shift = (
+            self.weight_params.half_shift if self.weight_params else False
+        )
         aqt_hparams = aqt_flax_layers.DenseGeneralAqt.HParams(
             weight_prec=weight_prec,
             weight_half_shift=half_shift,
@@ -1590,8 +1799,10 @@ class MultiQueryDotProductAttention(nn.Module, DenseAttention):
             precision=self.precision,
             kernel_axis_names=kernel_axis_names,
             reshape_kernel=not self.split_head_kernel,
-            name='out')(  # pytype: disable=wrong-arg-types
-                x)
+            name='out',
+        )(  # pytype: disable=wrong-arg-types
+            x
+        )
       else:
         # Back to the original inputs dimensions.
         out = dense.DenseGeneral(
@@ -1604,8 +1815,10 @@ class MultiQueryDotProductAttention(nn.Module, DenseAttention):
             precision=self.precision,
             kernel_axis_names=kernel_axis_names,
             reshape_kernel=not self.split_head_kernel,
-            name='out')(  # pytype: disable=wrong-arg-types
-                x)
+            name='out',
+        )(  # pytype: disable=wrong-arg-types
+            x
+        )
     else:
       # in fused parallel layer, fused outer dense operation is external
       out = x
@@ -1637,6 +1850,7 @@ class LocalAttentionLayer(nn.Module, DenseAttention):
     first_position_attends_to_all: Should the `inputs_q`'s first position be
       able to attend to all positions within the `inputs_q`?
   """
+
   localized_attention: DenseAttention
   q_chunk_width: int
   q_chunk_stride: int
@@ -1647,11 +1861,15 @@ class LocalAttentionLayer(nn.Module, DenseAttention):
 
   def setup(self) -> None:
     if self.q_chunk_stride > self.q_chunk_width:
-      raise ValueError('`q_chunk_stride` < `q_chunk_width` '
-                       'would cause `inputs_q` positions to get skipped.')
+      raise ValueError(
+          '`q_chunk_stride` < `q_chunk_width` '
+          'would cause `inputs_q` positions to get skipped.'
+      )
     if self.kv_chunk_stride > self.kv_chunk_width:
-      raise ValueError('`kv_chunk_stride` > `kv_chunk_width` '
-                       'would cause `inputs_kv` positions to get skipped.')
+      raise ValueError(
+          '`kv_chunk_stride` > `kv_chunk_width` '
+          'would cause `inputs_kv` positions to get skipped.'
+      )
 
   def __call__(
       self,
@@ -1691,8 +1909,9 @@ class LocalAttentionLayer(nn.Module, DenseAttention):
     if mask is not None:
       chex.assert_shape(mask, (*batch_sizes, None, q_len, kv_len))
     if bias is not None:
-      chex.assert_shape(bias,
-                        (*({b, 1} for b in batch_sizes), None, q_len, kv_len))
+      chex.assert_shape(
+          bias, (*({b, 1} for b in batch_sizes), None, q_len, kv_len)
+      )
 
     if decode:
       raise ValueError(f'{type(self).__name__} does not support decoding mode')
@@ -1721,7 +1940,8 @@ class LocalAttentionLayer(nn.Module, DenseAttention):
     if len(q_chunks) != len(kv_chunks):
       raise ValueError(
           f'Expected to have same number of `q_chunks` ({q_chunks}) and '
-          f'`kv_chunks` ({kv_chunks}). Check strides.')
+          f'`kv_chunks` ({kv_chunks}). Check strides.'
+      )
 
     # TODO: Can we save a bit of extra compute by slicing the Q/K/V
     # projected versions of these instead of recomputing those projections?
@@ -1757,23 +1977,27 @@ class LocalAttentionLayer(nn.Module, DenseAttention):
           inputs_kv=inputs_kv_chunk,
           mask=mask_chunk if mask is not None else None,
           bias=bias_chunk if bias is not None else None,
-          enable_dropout=enable_dropout)
-      chex.assert_shape(attention_output_chunk,
-                        (*inputs_q_chunk.shape[:-1], ...))
+          enable_dropout=enable_dropout,
+      )
+      chex.assert_shape(
+          attention_output_chunk, (*inputs_q_chunk.shape[:-1], ...)
+      )
       attention_output_chunks.append(attention_output_chunk)
 
     # Concatenate along the length dim (which directly follows the batch dims).
     return jnp.concatenate(attention_output_chunks, axis=num_batch_dims)
 
 
-#------------------------------------------------------------------------------
+# ------------------------------------------------------------------------------
 # Mask-making utility functions.
-#------------------------------------------------------------------------------
-def make_attention_mask(query_input: Array,
-                        key_input: Array,
-                        pairwise_fn: Callable = jnp.multiply,
-                        extra_batch_dims: int = 0,
-                        dtype: DType = jnp.float32) -> Array:
+# ------------------------------------------------------------------------------
+def make_attention_mask(
+    query_input: Array,
+    key_input: Array,
+    pairwise_fn: Callable = jnp.multiply,
+    extra_batch_dims: int = 0,
+    dtype: DType = jnp.float32,
+) -> Array:
   """Mask-making helper for attention weights.
 
   In case of 1d inputs (i.e., `[batch..., len_q]`, `[batch..., len_kv]`, the
@@ -1796,7 +2020,8 @@ def make_attention_mask(query_input: Array,
       # [batch..., len_q] -> [batch..., len_q, 1]
       jnp.expand_dims(query_input, axis=-1),
       # [batch..., len_q] -> [batch..., 1, len_kv]
-      jnp.expand_dims(key_input, axis=-2))
+      jnp.expand_dims(key_input, axis=-2),
+  )
 
   # [batch..., 1, len_q, len_kv]. This creates the head dim.
   mask = jnp.expand_dims(mask, axis=-3)
@@ -1804,9 +2029,9 @@ def make_attention_mask(query_input: Array,
   return mask.astype(dtype)
 
 
-def make_causal_mask(x: Array,
-                     extra_batch_dims: int = 0,
-                     dtype: DType = jnp.float32) -> Array:
+def make_causal_mask(
+    x: Array, extra_batch_dims: int = 0, dtype: DType = jnp.float32
+) -> Array:
   """Make a causal mask for self-attention.
 
   In case of 1d inputs (i.e., `[batch..., len]`, the self-attention weights
@@ -1832,7 +2057,8 @@ def make_causal_mask(x: Array,
       idxs,
       jnp.greater_equal,
       extra_batch_dims=extra_batch_dims,
-      dtype=dtype)
+      dtype=dtype,
+  )
 
 
 def combine_masks(*masks: Optional[Array], dtype: DType = jnp.float32):
@@ -1848,8 +2074,9 @@ def combine_masks(*masks: Optional[Array], dtype: DType = jnp.float32):
   masks = [m for m in masks if m is not None]
   if not masks:
     return None
-  assert all(map(lambda x: x.ndim == masks[0].ndim, masks)), (
-      f'masks must have same rank: {tuple(map(lambda x: x.ndim, masks))}')
+  assert all(
+      map(lambda x: x.ndim == masks[0].ndim, masks)
+  ), f'masks must have same rank: {tuple(map(lambda x: x.ndim, masks))}'
   mask, *other_masks = masks
   for other_mask in other_masks:
     mask = jnp.logical_and(mask, other_mask)
@@ -1868,18 +2095,21 @@ def combine_biases(*masks: Optional[Array]):
   masks = [m for m in masks if m is not None]
   if not masks:
     return None
-  assert all(map(lambda x: x.ndim == masks[0].ndim, masks)), (
-      f'masks must have same rank: {tuple(map(lambda x: x.ndim, masks))}')
+  assert all(
+      map(lambda x: x.ndim == masks[0].ndim, masks)
+  ), f'masks must have same rank: {tuple(map(lambda x: x.ndim, masks))}'
   mask, *other_masks = masks
   for other_mask in other_masks:
     mask = mask + other_mask
   return mask
 
 
-def make_decoder_mask(decoder_target_tokens: Array,
-                      dtype: DType,
-                      decoder_causal_attention: Optional[Array] = None,
-                      decoder_segment_ids: Optional[Array] = None) -> Array:
+def make_decoder_mask(
+    decoder_target_tokens: Array,
+    dtype: DType,
+    decoder_causal_attention: Optional[Array] = None,
+    decoder_segment_ids: Optional[Array] = None,
+) -> Array:
   """Compute the self-attention mask for a decoder.
 
   Decoder mask is formed by combining a causal mask, a padding mask and an
@@ -1956,7 +2186,8 @@ def make_decoder_mask(decoder_target_tokens: Array,
         decoder_causal_attention,
         decoder_causal_attention,
         jnp.logical_and,
-        dtype=dtype)
+        dtype=dtype,
+    )
     masks.append(jnp.logical_or(causal_mask, inputs_mask).astype(dtype))
   else:
     masks.append(causal_mask)
@@ -1964,75 +2195,101 @@ def make_decoder_mask(decoder_target_tokens: Array,
   # Padding mask.
   masks.append(
       make_attention_mask(
-          decoder_target_tokens > 0, decoder_target_tokens > 0, dtype=dtype))
+          decoder_target_tokens > 0, decoder_target_tokens > 0, dtype=dtype
+      )
+  )
 
   # Packing mask
   if decoder_segment_ids is not None:
     masks.append(
         make_attention_mask(
-            decoder_segment_ids, decoder_segment_ids, jnp.equal, dtype=dtype))
+            decoder_segment_ids, decoder_segment_ids, jnp.equal, dtype=dtype
+        )
+    )
 
   return combine_masks(*masks, dtype=dtype)
 
 
-def validate_dense_attention_call_parameter_shapes(inputs_q: Array,
-                                                   inputs_kv: Array,
-                                                   mask: Optional[Array],
-                                                   bias: Optional[Array],
-                                                   num_heads: Optional[int]):
+def validate_dense_attention_call_parameter_shapes(
+    inputs_q: Array,
+    inputs_kv: Array,
+    mask: Optional[Array],
+    bias: Optional[Array],
+    num_heads: Optional[int],
+):
   """Validates the shapes of parameters to DenseAttention call methods."""
   if inputs_q.ndim != inputs_kv.ndim:
-    raise ValueError(f'Mismatched inputs rank: expected '
-                     f'inputs_q.ndim ({inputs_q.ndim}) == '
-                     f'inputs_kv.ndim ({inputs_kv.ndim})')
+    raise ValueError(
+        'Mismatched inputs rank: expected '
+        f'inputs_q.ndim ({inputs_q.ndim}) == '
+        f'inputs_kv.ndim ({inputs_kv.ndim})'
+    )
   if inputs_q.ndim < 3:
     raise ValueError(f'Expected rank of inputs >= 3, was {inputs_q.ndim}')
   if inputs_q.shape[:-3] != inputs_kv.shape[:-3]:
-    raise ValueError(f'Mismatched batch dims: expected '
-                     f'inputs_q.shape[:-3] ({inputs_q.shape[:-3]}) == '
-                     f'inputs_kv.shape[:-3] ({inputs_kv.shape[:-3]})')
+    raise ValueError(
+        'Mismatched batch dims: expected '
+        f'inputs_q.shape[:-3] ({inputs_q.shape[:-3]}) == '
+        f'inputs_kv.shape[:-3] ({inputs_kv.shape[:-3]})'
+    )
   if mask is not None:
     if mask.ndim != inputs_q.ndim + 1:
-      raise ValueError(f'Mismatched ranks: expected '
-                       f'mask.ndim ({mask.ndim}) to be one more than '
-                       f'inputs_q.ndim ({inputs_q.ndim})')
+      raise ValueError(
+          'Mismatched ranks: expected '
+          f'mask.ndim ({mask.ndim}) to be one more than '
+          f'inputs_q.ndim ({inputs_q.ndim})'
+      )
     if num_heads is not None:
       if mask.shape[-3] not in (1, num_heads):
-        raise ValueError(f'Mismatched num_heads: expected '
-                         f'mask.shape[-3] ({mask.shape[-3]}) == '
-                         f'num_heads ({num_heads}), or 1')
+        raise ValueError(
+            'Mismatched num_heads: expected '
+            f'mask.shape[-3] ({mask.shape[-3]}) == '
+            f'num_heads ({num_heads}), or 1'
+        )
     else:
       num_heads = mask.shape[-3]
     if mask.shape[-2] not in (1, inputs_q.shape[-2]):
-      raise ValueError(f'Mismatched q_length: expected '
-                       f'mask.shape[-2] ({mask.shape[-2]}) == '
-                       f'inputs_q.shape[-2] ({inputs_q.shape[-2]}), or 1')
+      raise ValueError(
+          'Mismatched q_length: expected '
+          f'mask.shape[-2] ({mask.shape[-2]}) == '
+          f'inputs_q.shape[-2] ({inputs_q.shape[-2]}), or 1'
+      )
     if mask.shape[-1] != inputs_kv.shape[-2]:
-      raise ValueError(f'Mismatched kv_length: expected '
-                       f'mask.shape[-1] ({mask.shape[-1]}) == '
-                       f'inputs_kv.shape[-2] ({inputs_kv.shape[-2]})')
+      raise ValueError(
+          'Mismatched kv_length: expected '
+          f'mask.shape[-1] ({mask.shape[-1]}) == '
+          f'inputs_kv.shape[-2] ({inputs_kv.shape[-2]})'
+      )
   if bias is not None:
     if bias.ndim != inputs_q.ndim + 1:
-      raise ValueError(f'Mismatched ranks: expected '
-                       f'bias.ndim ({bias.ndim}) to be one less than '
-                       f'inputs_q.ndim ({inputs_q.ndim})')
+      raise ValueError(
+          'Mismatched ranks: expected '
+          f'bias.ndim ({bias.ndim}) to be one less than '
+          f'inputs_q.ndim ({inputs_q.ndim})'
+      )
     if num_heads is not None:
       if bias.shape[-3] not in (1, num_heads):
-        raise ValueError(f'Mismatched num_heads: expected '
-                         f'bias.shape[-3] ({bias.shape[-3]}) == '
-                         f'num_heads ({num_heads}), or 1')
+        raise ValueError(
+            'Mismatched num_heads: expected '
+            f'bias.shape[-3] ({bias.shape[-3]}) == '
+            f'num_heads ({num_heads}), or 1'
+        )
     else:
       num_heads = bias.shape[-3]
     if bias.shape[-2] != inputs_q.shape[-2]:
       if inputs_q.shape[-2] != 1:  # TODO: Remove this exception?
-        raise ValueError(f'Mismatched q_length: expected '
-                         f'bias.shape[-2] ({bias.shape[-2]}) == '
-                         f'inputs_q.shape[-2] ({inputs_q.shape[-2]})')
+        raise ValueError(
+            'Mismatched q_length: expected '
+            f'bias.shape[-2] ({bias.shape[-2]}) == '
+            f'inputs_q.shape[-2] ({inputs_q.shape[-2]})'
+        )
     if bias.shape[-1] != inputs_kv.shape[-2]:
       if inputs_kv.shape[-2] != 1:  # TODO: Remove this exception?
-        raise ValueError(f'Mismatched kv_length: expected '
-                         f'bias.shape[-1] ({bias.shape[-1]}) == '
-                         f'inputs_kv.shape[-2] ({inputs_kv.shape[-2]})')
+        raise ValueError(
+            'Mismatched kv_length: expected '
+            f'bias.shape[-1] ({bias.shape[-1]}) == '
+            f'inputs_kv.shape[-2] ({inputs_kv.shape[-2]})'
+        )
 
 
 def shift_left(x, axis=-1):
@@ -2040,7 +2297,8 @@ def shift_left(x, axis=-1):
   pad_widths = [(0, 0)] * len(x.shape)
   pad_widths[axis] = (0, 1)
   padded = jnp.pad(
-      x, pad_widths, mode='constant', constant_values=x.dtype.type(0))
+      x, pad_widths, mode='constant', constant_values=x.dtype.type(0)
+  )
   return jax.lax.slice_in_dim(padded, 1, x.shape[axis] + 1, axis=axis)
 
 
@@ -2086,14 +2344,21 @@ def get_decoder_logit_mask(decoder_input_tokens, dtype):
     logit mask with zeros and ones with a shape [batch, length, 1]
   """
   # We don't want to mask the initial shifted '0-BOS' logit of decoder inputs.
-  decoder_input_tokens_0 = jax.lax.broadcasted_iota(
-      jnp.int32, decoder_input_tokens.shape, decoder_input_tokens.ndim - 1) == 0
+  decoder_input_tokens_0 = (
+      jax.lax.broadcasted_iota(
+          jnp.int32, decoder_input_tokens.shape, decoder_input_tokens.ndim - 1
+      )
+      == 0
+  )
 
   return jnp.expand_dims(
       jnp.array(
-          (decoder_input_tokens > 0) | (shift_left(decoder_input_tokens) > 0)
+          (decoder_input_tokens > 0)
+          | (shift_left(decoder_input_tokens) > 0)
           | decoder_input_tokens_0,
-          dtype=dtype),
-      axis=-1)
+          dtype=dtype,
+      ),
+      axis=-1,
+  )
 
 

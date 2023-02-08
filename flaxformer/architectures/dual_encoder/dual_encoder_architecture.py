@@ -88,6 +88,8 @@ class DualEncoderOutput:
   logits: Union[Array, Dict[str, Array]]
 
 
+
+
 class MakeEncoderFn(Protocol):
   """Signature for functions that will make a low-level Encoder."""
 
@@ -332,11 +334,16 @@ class DualEncoder(nn.Module, param_remapping.ParameterRemappable):
           right_negative_encoder_input_tokens,
           encoder_segment_ids=right_negative_encoder_segment_ids,
           encoder_positions=right_negative_encoder_positions,
-          enable_dropout=enable_dropout)
+          enable_dropout=enable_dropout,
+      )
 
-    if self.similarity_layer_factory is None and self.multi_logit_layer_factories is None:
+    if (
+        self.similarity_layer_factory is None
+        and self.multi_logit_layer_factories is None
+    ):
       raise ValueError(
-          'DualEncoder instances without a similarity layer or logit creation layer may only be used for encoding inputs, not comparing them.'
+          'DualEncoder instances without a similarity layer or logit creation'
+          ' layer may only be used for encoding inputs, not comparing them.'
       )
 
     if right_negative_encoded is not None:
