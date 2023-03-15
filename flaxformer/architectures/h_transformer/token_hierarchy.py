@@ -680,7 +680,7 @@ class OneDimTokenHierarchy(TokenHierarchy):
       else:
         cumulative_sum += current_level_coarse_y
       cumulative_sum = interpolation_fn(cumulative_sum)
-    return cumulative_sum
+    return cumulative_sum  # pytype: disable=bad-return-type  # jax-ndarray
 
   def _coarsen_padding_mask(
       self,
@@ -701,8 +701,9 @@ class OneDimTokenHierarchy(TokenHierarchy):
          value: <float>[batch, seq_len[level], 1]
     """
     if padding_mask is None:
-      return CoarsenPaddingMaskResults(
-          aggregated_padding_mask=padding_mask, denominator=None)
+      return CoarsenPaddingMaskResults(  # pytype: disable=wrong-arg-types  # jax-ndarray
+          aggregated_padding_mask=padding_mask, denominator=None
+      )
 
     coarsening_fn = OneDimTokenCoarsening(
         method=TokenCoarseningMethod.SUM,

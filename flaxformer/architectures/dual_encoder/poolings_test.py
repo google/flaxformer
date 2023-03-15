@@ -36,21 +36,61 @@ class PoolingsTest(parameterized.TestCase):
       ('max_pooling', poolings.MaxPooling()),
       ('mean_pooling', poolings.MeanPooling()),
       ('attention_pooling', poolings.AttentionPooling()),
-      ('multihead_attention_pooling',
-       poolings.MultiHeadAttentionPooling(
-           num_heads=2, head_dim=2, layer_norm_factory=layer_norm.T5LayerNorm)))
+      (
+          'multihead_attention_pooling',
+          poolings.MultiHeadAttentionPooling(
+              num_heads=2, head_dim=2, layer_norm_factory=layer_norm.T5LayerNorm
+          ),
+      ),
+      ('last_token_pooling', poolings.LastTokenPooling()),
+  )
   def test_poolings(self, pooler):
     """Test if the pooling layers have correct shapes and types."""
     rng = random.PRNGKey(0)
     key1, key2 = random.split(rng, 2)
     encoded_inputs = random.normal(
-        key1, (self.batch_size, self.seq_len, self.hidden_size))
+        key1, (self.batch_size, self.seq_len, self.hidden_size)
+    )
 
     rngs = {'params': rng, 'dropout': key2}
-    encodings, _ = pooler.init_with_output(rngs, encoded_inputs,
-                                           self.input_masks)
+    encodings, _ = pooler.init_with_output(
+        rngs, encoded_inputs, self.input_masks
+    )
     self.assertEqual(encodings.shape, (self.batch_size, self.hidden_size))
     self.assertEqual(encodings.dtype, jnp.float32)
+
+  def test_last_token_poolings(self):
+    rngs = {'params': random.PRNGKey(0)}
+    encoded_inputs = jnp.array(
+        [
+            [[0.2, 0.4], [0.22, 0.42], [0.23, 0.43], [0.24, 0.44]],
+            [[0.3, 0.6], [-0.32, 0.62], [0.33, -0.63], [-0.34, -0.64]],
+            [[-0.4, 0.8], [0.42, -0.82], [-0.43, 0.83], [0.44, -0.84]],
+        ],
+        dtype=jnp.float32,
+    )
+    input_masks = jnp.array(
+        [
+            [1, 1, 1, 0],
+            [1, 1, 1, 1],
+            [1, 1, 0, 0],
+        ],
+        dtype=jnp.int32,
+    )
+    encodings, _ = poolings.LastTokenPooling().init_with_output(
+        rngs, encoded_inputs, input_masks
+    )
+    np.testing.assert_array_equal(
+        encodings,
+        jnp.array(
+            [
+                [0.23, 0.43],
+                [-0.34, -0.64],
+                [0.42, -0.82],
+            ],
+            dtype=jnp.float32,
+        ),
+    )
 
 
 if __name__ == '__main__':

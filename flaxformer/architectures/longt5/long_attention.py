@@ -17,7 +17,7 @@
 
 import abc
 import functools
-from typing import Any, Optional, Tuple, Union
+from typing import Any, Callable, Optional, Tuple, Union
 from flax import linen as nn
 
 from flax.linen import initializers

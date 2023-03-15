@@ -1,0 +1,27 @@
+# Example config for adding LSA to a T5 encoder-decoder without scanned layers.
+from __gin__ import dynamic_registration
+
+from flaxformer.architectures.fido import fido_architecture
+from flaxformer.architectures.t5 import t5_architecture
+from flaxformer.components import dense
+from flaxformer.components import layer_norm
+from flaxformer.components import relative_position_biases
+
+include 'flaxformer/t5x/configs/t5/models/t5_1_1_base.gin'
+
+ENCODER_DECODER_ATTENTION_PERIOD = %gin.REQUIRED
+
+t5_architecture.EncoderDecoder:
+  decoder_factory = @fido_architecture.Decoder
+
+# Decoder
+fido_architecture.Decoder:
+  num_layers = %NUM_DECODER_LAYERS
+  layer_factory = @t5_architecture.DecoderLayer
+  dropout_factory = %DROPOUT_FACTORY
+  layer_norm_factory = @layer_norm.T5LayerNorm
+  position_embedder_factory = None
+  shared_relative_position_bias_factory = @relative_position_biases.RelativePositionBiases
+  output_logits_factory = @output_logits/dense.DenseGeneral
+  dtype = %ACTIVATION_DTYPE
+  encoder_decoder_attention_period = %ENCODER_DECODER_ATTENTION_PERIOD

@@ -172,7 +172,9 @@ class HAttention1DTest(parameterized.TestCase):
         num_clusters=num_clusters,
         use_rpb=True,
         use_multihead_rpb=True,
-        split_head_kernel=True)
+        split_head_kernel=True,
+        enable_param_axes=True,
+    )
     result, variables = attention_module.init_with_output(
         rng, inputs_q, padding_mask=None)
     expected_shape = inputs_q.shape
@@ -287,7 +289,6 @@ class HAttention1DTest(parameterized.TestCase):
     out = attn.apply(variables, x, mask)
 
     self.assertTrue(jnp.allclose(out, target_out, rtol=5e-5))
-
 
 
 if __name__ == '__main__':

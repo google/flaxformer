@@ -19,12 +19,10 @@ networks.
 """
 
 import inspect
-from typing import Callable, Dict, Iterable, Mapping, Optional, Sequence, Union
+from typing import Callable, Dict, Mapping, Optional, Sequence, Union
 
 from flax import linen as nn
 import flax.struct
-from jax import lax
-from jax import random
 import jax.numpy as jnp
 from typing_extensions import Protocol
 
@@ -39,44 +37,6 @@ from flaxformer.types import DType
 def check_use_negative_inputs(logit_creation_layer: nn.Module) -> bool:
   call_args = inspect.signature(logit_creation_layer).parameters
   return 'right_additional_encodings' in call_args
-
-
-class NonRepeatingDropout(nn.Module):
-  """Add non-repeating dropout layer.
-
-  Different from linen's nn.Dropout, this dropout module keeps a "use counter"
-  so that it can automatically changing dropout mask based on the counter. This
-  requires setting the new dropout variable collection mutable, e.g. in
-  model.apply(..., mutable='dropout').
-  """
-  rate: float
-  broadcast_dims: Iterable[int] = ()
-  deterministic: Optional[bool] = None
-
-  @nn.compact
-  def __call__(self, inputs, deterministic: Optional[bool] = None, rng=None):
-    deterministic = nn.merge_param('deterministic', self.deterministic,
-                                   deterministic)
-    if self.rate == 0.:
-      return inputs
-    keep_prob = 1. - self.rate
-    if deterministic:
-      return inputs
-    else:
-      if rng is None:
-        rng = self.make_rng('dropout')
-        cntr = self.variable(
-            'dropout', 'counter',
-            lambda: jnp.array(0))  # <--- autoincrements dropout
-        rng = random.fold_in(
-            rng, cntr.value)  # requires that we set mutable='dropout' in apply
-        cntr.value += 1  #
-      broadcast_shape = list(inputs.shape)
-      for dim in self.broadcast_dims:
-        broadcast_shape[dim] = 1
-      mask = random.bernoulli(rng, p=keep_prob, shape=broadcast_shape)
-      mask = jnp.broadcast_to(mask, inputs.shape)
-      return lax.select(mask, inputs / keep_prob, jnp.zeros_like(inputs))
 
 
 @flax.struct.dataclass

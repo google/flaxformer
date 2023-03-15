@@ -444,10 +444,10 @@ class LongEncoder(nn.Module, param_remapping.ParameterRemappable):
       if inputs_positions is None:
         seq_length = inputs.shape[-1]
         inputs_positions = jnp.arange(seq_length)[None, :]
-      embedded_inputs = self.embedder(
+      embedded_inputs = self.embedder(  # pytype: disable=wrong-arg-types  # jax-ndarray
           token_ids=inputs, position_ids=inputs_positions)
     else:
-      embedded_inputs = self.embedder(token_ids=inputs)
+      embedded_inputs = self.embedder(token_ids=inputs)  # pytype: disable=wrong-arg-types  # jax-ndarray
 
     embedded_inputs = self.input_dropout(
         embedded_inputs, deterministic=not enable_dropout)

@@ -1,0 +1,28 @@
+# Example config for adding LSA to a T5 encoder-decoder with scanned layers.
+# The total number of decoder layers is the product of NUM_LAYER_BLOCKS and
+# ENCODER_DECODER_ATTENTION_PERIOD.
+from __gin__ import dynamic_registration
+
+from flaxformer.architectures.fido import fido_architecture
+from flaxformer.architectures.t5 import t5_architecture
+from flaxformer.components import dense
+from flaxformer.components import layer_norm
+from flaxformer.components import relative_position_biases
+
+include 'flaxformer/t5x/configs/t5/models/t5_1_1_base.gin'
+
+ENCODER_DECODER_ATTENTION_PERIOD = %gin.REQUIRED
+NUM_LAYER_BLOCKS = %gin.REQUIRED
+SCANNED = True
+
+# Decoder
+t5_architecture.Decoder:
+  num_layers = %NUM_LAYER_BLOCKS
+  layer_factory = @fido_architecture.DecoderLayerBlock
+  shared_relative_position_bias_factory = None
+  scan_layers = %SCANNED
+
+fido_architecture.DecoderLayerBlock:
+  num_layers = %ENCODER_DECODER_ATTENTION_PERIOD
+  layer_factory = @t5_architecture.DecoderLayer
+  scanned = %SCANNED

@@ -34,6 +34,9 @@ from t5x import optimizers
 from flaxformer.architectures.perceiver_ar import slicing
 
 
+PyTree = Any
+
+
 def _crop_sequences(sequences: jnp.ndarray,
                     lengths: jnp.ndarray) -> jnp.ndarray:
   """Crop sequences by replacing positions beyond length with padding."""
@@ -238,7 +241,7 @@ class PerceiverARModel(models.DecoderOnlyModel):
 
   def eval_fn(
       self,
-      params: models.PyTreeDef,
+      params: PyTree,
       batch: Mapping[str, jnp.ndarray],
   ) -> Tuple[jnp.ndarray, models.MetricsMap]:
     """Computes loss and metrics during the evaluation.
@@ -260,11 +263,13 @@ class PerceiverARModel(models.DecoderOnlyModel):
         is_eval=True,
     )
 
-  def loss_fn(self,
-              params: models.PyTreeDef,
-              batch: Mapping[str, jnp.ndarray],
-              dropout_rng: Optional[jax.random.KeyArray],
-              is_eval: bool = False) -> Tuple[jnp.ndarray, models.MetricsMap]:
+  def loss_fn(
+      self,
+      params: PyTree,
+      batch: Mapping[str, jnp.ndarray],
+      dropout_rng: Optional[jax.random.KeyArray],
+      is_eval: bool = False,
+  ) -> Tuple[jnp.ndarray, models.MetricsMap]:
     """Loss function used for training with a cross-entropy loss."""
     if dropout_rng is None:
       # TODO: Add RNG ability to T5X during eval.
@@ -324,7 +329,7 @@ class PerceiverARModel(models.DecoderOnlyModel):
   def _compute_logits_from_slice(
       self,
       decoding_state: decoding.DecodingState,
-      params: models.PyTreeDef,
+      params: PyTree,
       decoder_causal_attention: jnp.ndarray,
       max_decode_length: int,
   ) -> Tuple[jnp.ndarray, Mapping[str, jnp.ndarray]]:
@@ -471,7 +476,7 @@ class PerceiverARModel(models.DecoderOnlyModel):
 
   def predict_batch_with_aux(
       self,
-      params: models.PyTreeDef,
+      params: PyTree,
       batch: Mapping[str, jnp.ndarray],
       rng: Optional[jax.random.KeyArray] = None,
       *,
@@ -570,13 +575,8 @@ class PerceiverARModel(models.DecoderOnlyModel):
       raise ValueError(
           'Batch does not have the right format for text generation: probably '
           'because `task_feature_lengths` passed to the feature converter does '
-          'not have both `inputs` and `targets`.')
-    # We can use the decoder causal attention mask to tell how long the inputs
-    # are. The causal mask has a 1 for all the input tokens (and one more to
-    # cover the original BOS token, created by shifting the inputs one to the
-    # right) so we need to delete one.
-    inputs_lengths = jnp.sum(batch['decoder_causal_attention'], axis=1) - 1
-
+          'not have both `inputs` and `targets`.'
+      )
     # since decoder_input_tokens is shifted to the right and
     # `decoder_causal_attention` has one more 1 than the number of inputs
     # tokens, this masks out targets portion of the decoder_input_tokens.
@@ -587,8 +587,9 @@ class PerceiverARModel(models.DecoderOnlyModel):
     # not immediately trigger a cache reset step if the sequence length is
     # already longer than self._num_latents.
 
-    prefilled_cache = self._compute_kv_cache(params, inputs, inputs_lengths,
-                                             batch['decoder_causal_attention'])
+    prefilled_cache, initial_index = self._compute_kv_cache(
+        params, inputs, batch['decoder_causal_attention']
+    )
 
     target_shape = batch['decoder_input_tokens'].shape
     max_decode_length = target_shape[1]
@@ -625,9 +626,10 @@ class PerceiverARModel(models.DecoderOnlyModel):
         cache=prefilled_cache,
         tokens_to_logits=tokens_ids_to_logits,
         num_decodes=num_decodes,
-        initial_index=inputs_lengths,
+        initial_index=initial_index,
         cache_offset=1 if scanned else 0,
-        **decoder_params)
+        **decoder_params,
+    )
 
     if not return_all_decodes:
       # Search returns [n_batch, n_beam/decodes, n_length] with the beam/decode
@@ -641,12 +643,14 @@ class PerceiverARModel(models.DecoderOnlyModel):
       # We return all samples and scores, rather than just the top ones.
       aux = {'scores': scores}
 
-    return models.remove_prefix(decoded_sequences, inputs_lengths), aux
+    return models.remove_prefix(decoded_sequences, initial_index), aux
 
-  def score_batch(self,
-                  params: models.PyTreeDef,
-                  batch: Mapping[str, jnp.ndarray],
-                  return_intermediates: bool = False) -> jnp.ndarray:
+  def score_batch(
+      self,
+      params: PyTree,
+      batch: Mapping[str, jnp.ndarray],
+      return_intermediates: bool = False,
+  ) -> jnp.ndarray:
     """Compute log likelihood score on a batch.
 
     Perceiver AR will return only num_latents outputs for a given forward pass,

@@ -232,8 +232,9 @@ class BatchDotProduct(nn.Module):
       **params: Hyperparameters dict.
 
     Returns:
-      A 2-D tensor of dot product similarities with shape
-      [batch size, batch size].
+      A 2-D tensor of dot product similarities with either shape
+      [batch size, 2 * batch size] if right_additional_encodings are provided
+      or [batch size, batch size] otherwise.
     """
     if right_additional_encodings is not None:
       right_encodings = jnp.concatenate(

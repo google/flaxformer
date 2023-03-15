@@ -37,7 +37,10 @@ class RpbTest(parameterized.TestCase):
   )
   def test_rpb_1d(self, block_coord: int):
     rpb_1d_module = h_rpb.OneDimHierarchicalRelativePositionBias(
-        num_cluster=self.num_cluster, num_head=self.num_head)
+        num_cluster=self.num_cluster,
+        num_head=self.num_head,
+        enable_param_axes=True,
+    )
     rng = random.PRNGKey(0)
     result, variables = rpb_1d_module.init_with_output(rng, block_coord)
     expected_shape = (1, 1, self.num_cluster, self.num_cluster, self.num_head)

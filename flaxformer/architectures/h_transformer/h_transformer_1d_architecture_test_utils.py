@@ -68,7 +68,9 @@ def _encoder_self_attention_factory(num_heads, num_clusters, qkv_features,
       kernel_init=_ATTENTION_KERNEL_INIT,
       bias_init=_BIAS_INIT,
       use_rpb=use_rpb,
-      use_multihead_rpb=use_multihead_rpb)
+      use_multihead_rpb=use_multihead_rpb,
+      enable_param_axes=True,
+  )
 
 
 def _decoder_self_attention_factory(num_heads, num_clusters, qkv_features,
@@ -81,7 +83,9 @@ def _decoder_self_attention_factory(num_heads, num_clusters, qkv_features,
       kernel_init=_ATTENTION_KERNEL_INIT,
       bias_init=_BIAS_INIT,
       use_rpb=use_rpb,
-      use_multihead_rpb=use_multihead_rpb)
+      use_multihead_rpb=use_multihead_rpb,
+      enable_param_axes=True,
+  )
 
 
 def _cross_attention_factory(num_heads, qkv_features):

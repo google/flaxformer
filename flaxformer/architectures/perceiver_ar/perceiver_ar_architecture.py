@@ -402,18 +402,18 @@ def create_residuals_and_queries(
     sequence_lengths: Array) -> Tuple[Array, Array, Optional[Array], Array]:
   """Slice layer inputs to get versions to use as queries."""
   if x.shape[-2] > num_latents:
-    layer_input_residuals = slicing.slice_sequences_xmap(
+    layer_input_residuals = slicing.slice_sequences_xmap(  # pytype: disable=wrong-arg-types  # jax-ndarray
         layer_input, sequence_lengths, num_latents, axis_within_xmap=0)
-    x_queries = slicing.slice_sequences_xmap(
+    x_queries = slicing.slice_sequences_xmap(  # pytype: disable=wrong-arg-types  # jax-ndarray
         x, sequence_lengths, num_latents, axis_within_xmap=0)
-    query_offset = slicing.sequence_slice_start(sequence_lengths, num_latents)
+    query_offset = slicing.sequence_slice_start(sequence_lengths, num_latents)  # pytype: disable=wrong-arg-types  # jax-ndarray
   else:
     layer_input_residuals = layer_input
     x_queries = x
     query_offset = None
 
   if logit_mask.shape[-2] > num_latents:
-    logit_mask_queries = slicing.slice_sequences_vmap(
+    logit_mask_queries = slicing.slice_sequences_vmap(  # pytype: disable=wrong-arg-types  # jax-ndarray
         logit_mask, sequence_lengths, num_latents, axis_within_vmap=0)
   else:
     logit_mask_queries = logit_mask

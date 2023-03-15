@@ -85,7 +85,7 @@ class SparseEncoderLayer(EncoderLayer):
         enable_dropout=enable_dropout)
 
     if self.extra_mlp is None:
-      return y
+      return y  # pytype: disable=bad-return-type  # jax-ndarray
 
     z = self.pre_extra_mlp_layer_norm(y)
     z = activation_partitioning.with_sharding_migration(
@@ -106,7 +106,7 @@ class SparseEncoderLayer(EncoderLayer):
     if self.sow_intermediates:
       self.sow('intermediates', 'extra_mlp_activations', z)
 
-    return z
+    return z  # pytype: disable=bad-return-type  # jax-ndarray
 
 
 class SparseDecoderLayer(DecoderLayer):
@@ -182,7 +182,7 @@ class SparseDecoderLayer(DecoderLayer):
         prefill_lengths=prefill_lengths)
 
     if self.extra_mlp is None:
-      return y
+      return y  # pytype: disable=bad-return-type  # always-use-return-annotations
 
     z = self.pre_extra_mlp_layer_norm(
         y, decode=decode, prefill=prefill, prefill_lengths=prefill_lengths)
@@ -209,7 +209,7 @@ class SparseDecoderLayer(DecoderLayer):
     if self.sow_intermediates:
       self.sow('intermediates', 'extra_mlp_activations', z)
 
-    return z
+    return z  # pytype: disable=bad-return-type  # always-use-return-annotations
 
 
 class MoeEncoderScanBlock(nn.Module, param_remapping.ParameterRemappable):
@@ -232,7 +232,7 @@ class MoeEncoderScanBlock(nn.Module, param_remapping.ParameterRemappable):
   sparse_layout: LayerLayout
 
   def setup(self) -> None:
-    self.subblock: Sequence[EncoderLayer] = _scan_block_factory(
+    self.subblock: Sequence[EncoderLayer] = _scan_block_factory(  # pytype: disable=wrong-arg-types  # re-none
         self.dense_layer_factory, self.sparse_layer_factory, self.num_layers,
         self.num_sparse_layers, self.sparse_layout)
 
@@ -261,7 +261,7 @@ class MoeEncoderScanBlock(nn.Module, param_remapping.ParameterRemappable):
           logit_mask=logit_mask,
           enable_dropout=enable_dropout)
     # scan expects functions to have a signature: fn(carry, in) --> carry, out
-    return hidden_state, None
+    return hidden_state, None  # pytype: disable=bad-return-type  # jax-ndarray
 
 
 class MoeDecoderScanBlock(nn.Module, param_remapping.ParameterRemappable):
@@ -284,7 +284,7 @@ class MoeDecoderScanBlock(nn.Module, param_remapping.ParameterRemappable):
   sparse_layout: LayerLayout
 
   def setup(self) -> None:
-    self.subblock: Sequence[DecoderLayer] = _scan_block_factory(
+    self.subblock: Sequence[DecoderLayer] = _scan_block_factory(  # pytype: disable=wrong-arg-types  # re-none
         self.dense_layer_factory, self.sparse_layer_factory, self.num_layers,
         self.num_sparse_layers, self.sparse_layout)
 
@@ -340,7 +340,7 @@ class MoeDecoderScanBlock(nn.Module, param_remapping.ParameterRemappable):
           prefill=prefill,
           prefill_lengths=prefill_lengths)
     # scan expects functions to have a signature: fn(carry, in) --> carry, out
-    return hidden_state, None
+    return hidden_state, None  # pytype: disable=bad-return-type  # always-use-return-annotations
 
 
 class SparseEncoder(t5_architecture.Encoder):

@@ -14,6 +14,7 @@
 
 """Layers for pooling operations."""
 
+import functools
 from typing import Callable
 
 from flax import linen as nn
@@ -34,6 +35,22 @@ NEG_INF = -1e10
 EPSILON = 1e-10
 
 
+@functools.partial(jax.vmap, in_axes=[0, 0], out_axes=0)
+def batch_gather(x: Array, idx: Array) -> Array:
+  """Performs a batched gather of the data.
+
+  Args:
+    x: A [batch, num_in, ...] Array of data to gather from.
+    idx: A [batch, num_out] Array of dtype int32 or int64 specifying which
+      elements to gather. Every value is expected to be in the range of [0,
+      num_in].
+
+  Returns:
+    A [batch, num_out, ...] Array of gathered data.
+  """
+  return x[idx]
+
+
 class AttentionPooling(nn.Module):
   """Self attention pooling given a sequence of encodings.
 
@@ -44,6 +61,7 @@ class AttentionPooling(nn.Module):
     dtype: The dtype of the computation (default: float32).
     act_fn: activation function.
   """
+
   kernel_init: Initializer = default_kernel_init
   dtype: DType = jnp.float32
   act_fn: str = 'linear'
@@ -70,8 +88,8 @@ class AttentionPooling(nn.Module):
         dtype=self.dtype,
         kernel_init=self.kernel_init,
         kernel_axis_names=['embed', 'affinity'],
-        name='attention_hidden')(
-            encoded_inputs)
+        name='attention_hidden',
+    )(encoded_inputs)
     if self.act_fn != 'linear':
       attention_hidden = getattr(nn, self.act_fn)(attention_hidden)
     attention_logits = dense.DenseGeneral(
@@ -80,14 +98,15 @@ class AttentionPooling(nn.Module):
         dtype=self.dtype,
         kernel_init=self.kernel_init,
         kernel_axis_names=['embed', 'affinity'],
-        name='attention_logits')(
-            attention_hidden)
+        name='attention_logits',
+    )(attention_hidden)
     # Broadcast to the `hidden_size` dimension.
     input_masks = jnp.expand_dims(input_masks, axis=-1)
     attention_bias = lax.select(
         input_masks > 0,
-        jnp.full(input_masks.shape, 0.).astype(self.dtype),
-        jnp.full(input_masks.shape, NEG_INF).astype(self.dtype))
+        jnp.full(input_masks.shape, 0.0).astype(self.dtype),
+        jnp.full(input_masks.shape, NEG_INF).astype(self.dtype),
+    )
     logits = attention_logits + attention_bias
     weights = jax.nn.softmax(logits, axis=1)
     encodings = jnp.sum(encoded_inputs * weights, axis=1)
@@ -112,6 +131,7 @@ class MultiHeadAttentionPooling(nn.Module):
     dropout_rate: dropout rate
     dtype: The dtype of the computation (default: float32).
   """
+
   num_heads: int
   head_dim: int
   layer_norm_factory: Callable[[], nn.Module]
@@ -121,10 +141,12 @@ class MultiHeadAttentionPooling(nn.Module):
   dtype: DType = jnp.float32
 
   @nn.compact
-  def __call__(self,
-               encoded_inputs: Array,
-               input_masks: Array,
-               deterministic: bool = False):
+  def __call__(
+      self,
+      encoded_inputs: Array,
+      input_masks: Array,
+      deterministic: bool = False,
+  ):
     """Apply attention pooling to the encoder output embeddings.
 
     Args:
@@ -145,29 +167,33 @@ class MultiHeadAttentionPooling(nn.Module):
     # [batch_size, 1 embedding_size]
     query_3d = jnp.tile(query, (batch_size, 1, 1))
     query_3d = activation_partitioning.with_sharding(
-        query_3d, self.activation_partitioning_dims)
+        query_3d, self.activation_partitioning_dims
+    )
     x = self.layer_norm_factory()(query_3d)
-    x = activation_partitioning.with_sharding(x,
-                                              self.activation_partitioning_dims)
+    x = activation_partitioning.with_sharding(
+        x, self.activation_partitioning_dims
+    )
 
     # Also see the `attention_layer` function defined in
     # flaxformer/architectures/t5/t5_common_layers.
     encoder_masks = dense_attention.make_attention_mask(
-        jnp.ones([batch_size, 1], dtype=input_masks.dtype), input_masks)
+        jnp.ones([batch_size, 1], dtype=input_masks.dtype), input_masks
+    )
     y = t5_common_layers.attention_layer(
         num_heads=self.num_heads,
         head_dim=self.head_dim,
         dropout_rate=self.dropout_rate,
-        dtype=self.dtype)(
-            x, encoded_inputs, encoder_masks, enable_dropout=not deterministic)
+        dtype=self.dtype,
+    )(x, encoded_inputs, encoder_masks, enable_dropout=not deterministic)
 
-    y = nn.Dropout(
-        rate=self.dropout_rate, broadcast_dims=[])(
-            y, deterministic=deterministic)
+    y = nn.Dropout(rate=self.dropout_rate, broadcast_dims=[])(
+        y, deterministic=deterministic
+    )
 
     # [batch_size, 1, embedding_size]
-    y = activation_partitioning.with_sharding(y,
-                                              self.activation_partitioning_dims)
+    y = activation_partitioning.with_sharding(
+        y, self.activation_partitioning_dims
+    )
     return jnp.reshape(y, (batch_size, encoding_size))
 
 
@@ -219,5 +245,33 @@ class MaxPooling(nn.Module):
     input_masks = jnp.expand_dims(input_masks, axis=-1)
     encodings = encoded_inputs * input_masks + (1 - input_masks) * -1e9
     encodings = jnp.max(encodings, 1)
+
+    return encodings
+
+
+class LastTokenPooling(nn.Module):
+  """Outputs the encodings from the last (non-padding) tokens from each sequence."""
+
+  @nn.compact
+  def __call__(self, encoded_inputs: Array, input_masks: Array, **kwargs):
+    """Apply last token pooling to the encoder output embeddings.
+
+    Args:
+      encoded_inputs: The inputs (e.g., token's embeddings) that come from the
+        final layer of the encoder. <float32>[batch_size, seq_length,
+        hidden_size].
+      input_masks: The input masks that indicate the non padding position of the
+        sequences. <float32>[batch_size, seq_length].
+     **kwargs: Keyward based arguments, currently unused.
+
+    Returns:
+      An array of logits <float32>[batch_size, hidden_size].
+    """
+    # Compute the length of each sequence by counting the indicator tokens
+    lengths = jnp.sum(input_masks, axis=1, dtype=jnp.int32)
+    # Find the position of the last token in each sequence
+    last_idx = jnp.asarray(jnp.maximum(lengths - 1, 0), dtype=jnp.int32)
+    # Get the embeddings from the last token
+    encodings = batch_gather(encoded_inputs, last_idx)
 
     return encodings

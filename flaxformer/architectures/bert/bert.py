@@ -142,7 +142,7 @@ class EmbedderBlock(nn.Module):
       chex.assert_shape(segment_ids, (*batch_sizes, seq_len))
       chex.assert_type(segment_ids, int)
 
-    embeddings = self.embedder(
+    embeddings = self.embedder(  # pytype: disable=wrong-arg-types  # jax-ndarray
         input_ids=input_ids,
         position_ids=position_ids,
         segment_ids=segment_ids,
@@ -594,8 +594,9 @@ class BertEncoder(nn.Module):
   def embed_and_combine_inputs(self, token_ids: Array, position_ids: Array,
                                segment_ids: Array) -> Array:
     """Embeds the inputs and combines them for further processing."""
-    embedded_inputs = self.embedder(
-        token_ids=token_ids, position_ids=position_ids, segment_ids=segment_ids)
+    embedded_inputs = self.embedder(  # pytype: disable=wrong-arg-types  # jax-ndarray
+        token_ids=token_ids, position_ids=position_ids, segment_ids=segment_ids
+    )
     return embedded_inputs
 
   def finalize_embeddings(self,

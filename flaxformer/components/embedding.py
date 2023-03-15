@@ -128,14 +128,18 @@ class DictEmbedder(nn.Module, InspectableMultiEmbedder[Mapping[str, Any]]):
       individual embedders should be combined.
   """
   embedders: Mapping[str, Embedder[Any]]
-  embeddings_combiner: Callable[[Sequence[Array]], Array] = sum
+  embeddings_combiner: Callable[[Sequence[Array]], Array] = (
+      sum  # pytype: disable=annotation-type-mismatch  # jax-ndarray
+  )
 
-  def get_individual_embeddings(self,
-                                inputs: Mapping[str, Any],
-                                *,
-                                segment_ids: Optional[Array] = None,
-                                decode: bool = False,
-                                enable_dropout: bool = True) -> Sequence[Array]:
+  def get_individual_embeddings(
+      self,  # pytype: disable=signature-mismatch  # jax-ndarray
+      inputs: Mapping[str, Any],
+      *,
+      segment_ids: Optional[Array] = None,
+      decode: bool = False,
+      enable_dropout: bool = True,
+  ) -> Sequence[Array]:
     """Embeds each keyword argument with its corresponding embedder.
 
     Args:
@@ -451,7 +455,7 @@ class FixedEmbed(nn.Module, EmbedderWithDecode[Array]):
   def setup(self):
     # The key is set to None because sinusoid init is deterministic.
     shape = (self.max_length, self.features)
-    self.embedding = self.embedding_init(None, shape, self.dtype)
+    self.embedding = self.embedding_init(None, shape, self.dtype)  # pytype: disable=wrong-arg-types  # jax-ndarray
 
   @nn.compact
   def __call__(self,

@@ -96,8 +96,8 @@ class HierarchicalAttention(nn.Module, metaclass=abc.ABCMeta):
       different among multihead. If False, the same relative position bias is
       shared among all heads. Default to True so the bias array is stored in 2D
       shape for the compatibility with Adafactor optimizer.
-    conv_kernel_size: Convolution kernel size used for interpolation.
-      This is not used during interpolation if the attribute
+    conv_kernel_size: Convolution kernel size used for interpolation. This is
+      not used during interpolation if the attribute
       interpolation_kernel_type=ConvKernelType.LINEAR since the kernel size is
       fixed at 3.
     interpolation_kernel_type: Type of interpolation convolution kernels.
@@ -105,15 +105,17 @@ class HierarchicalAttention(nn.Module, metaclass=abc.ABCMeta):
     max_similarity_mode: Name of the mode to find max similarity.
     max_similarity_factor: This is a buffer factor to amplify the max similariy
       found for the anchor similarity block. We need a larger-than-one factor to
-      approximate the gloabl maximum similarity. This factor can be adjusted
+      approximate the global maximum similarity. This factor can be adjusted
       upward if we get a NAN runtime error which usually indicates the overflow
       in attention=exp(similarity). But excessively large offset could lead to
       underflow.
     use_row_sum: Indicates if row sum is used to compute softmax partition.
-    multihead_projection: Indicates if the multihead projection is performed.
-      In unit tests, turning this off avoids randomness in projection.
+    multihead_projection: Indicates if the multihead projection is performed. In
+      unit tests, turning this off avoids randomness in projection.
     output_projection: Project the output of `attention_fn` to `out_features`.
       If False, returns the output of `attention_fn` without a projection.
+    softmax_temperature: Temperature parameter in softmax. Default=1.0. A larger
+      temperature smooths the output distribution of the softmax.
   """
 
   num_heads: int = 8
@@ -141,6 +143,8 @@ class HierarchicalAttention(nn.Module, metaclass=abc.ABCMeta):
   use_row_sum: bool = False
   multihead_projection: bool = True
   output_projection: bool = True
+  softmax_temperature: float = 1.0
+  enable_param_axes: bool = True
 
   @nn.compact
   def __call__(self,
@@ -202,7 +206,7 @@ class HierarchicalAttention(nn.Module, metaclass=abc.ABCMeta):
     if self.output_projection:
       # The updated_value no longer has multihead shape due to interpolation.
       # So it is a simple 2D projection. This means reshape_kernel=False.
-      return dense.DenseGeneral(
+      kwargs = dict(
           features=self.out_features or inputs_q.shape[-1],
           axis=-1,
           kernel_init=self.kernel_init,
@@ -210,10 +214,14 @@ class HierarchicalAttention(nn.Module, metaclass=abc.ABCMeta):
           use_bias=self.use_bias,
           dtype=self.dtype,
           precision=self.precision,
-          reshape_kernel=False,
-          kernel_axis_names=['kv', 'embed'],
-          name='out')(  # pytype: disable=wrong-arg-types
-              updated_value)
+          name='out',
+      )
+      if self.enable_param_axes:
+        kwargs['reshape_kernel'] = False
+        kwargs['kernel_axis_names'] = ['kv', 'embed']
+        return dense.DenseGeneral(**kwargs)(updated_value)
+      else:
+        return nn.DenseGeneral(**kwargs)(updated_value)
     else:
       return updated_value
 
@@ -338,17 +346,22 @@ class HierarchicalAttention(nn.Module, metaclass=abc.ABCMeta):
     qkv_features = self.qkv_features or inputs_q.shape[-1]
     head_dim = qkv_features // self.num_heads
     if self.multihead_projection:
-      make_dense = functools.partial(
-          dense.DenseGeneral,
+      kwargs = dict(
           axis=-1,
           features=(self.num_heads, head_dim),
-          kernel_axis_names=['embed', 'heads', 'kv'],
           bias_init=self.bias_init,
           use_bias=self.use_bias,
           dtype=self.dtype,
           precision=self.precision,
-          reshape_kernel=not self.split_head_kernel,
       )
+      if self.enable_param_axes:
+        dense_module = dense.DenseGeneral
+        kwargs['kernel_axis_names'] = ['embed', 'heads', 'kv']
+        kwargs['reshape_kernel'] = not self.split_head_kernel
+      else:
+        dense_module = nn.DenseGeneral
+
+      make_dense = functools.partial(dense_module, **kwargs)
       key = make_dense(
           kernel_init=self.kernel_init, name='key_multihead_projection')(
               inputs_kv)
@@ -385,14 +398,16 @@ class HierarchicalAttention(nn.Module, metaclass=abc.ABCMeta):
 
     return query, key, value
 
-  def _hierarchical_attention_fn(self,
-                                 query: Array,
-                                 key: Array,
-                                 value: Array,
-                                 query_padding_mask: Optional[Array] = None,
-                                 key_padding_mask: Optional[Array] = None,
-                                 dropout_rng: PRNGKey = None,
-                                 is_self_attention: bool = True) -> Array:
+  def _hierarchical_attention_fn(
+      self,  # pytype: disable=annotation-type-mismatch  # jax-ndarray
+      query: Array,
+      key: Array,
+      value: Array,
+      query_padding_mask: Optional[Array] = None,
+      key_padding_mask: Optional[Array] = None,
+      dropout_rng: PRNGKey = None,
+      is_self_attention: bool = True,
+  ) -> Array:
     r"""Applies hierarchical attention given query, key, and value.
 
     Args:
@@ -437,7 +452,7 @@ class HierarchicalAttention(nn.Module, metaclass=abc.ABCMeta):
     # Attention dropout should follow the computation of softmax_partition,
     # according to the implementation in flax.nn.attention.
     if dropout_rng is not None:
-      attention = self._attention_dropout(attention, hierarchy, dropout_rng)
+      attention = self._attention_dropout(attention, hierarchy, dropout_rng)  # pytype: disable=wrong-arg-types  # jax-ndarray
 
     coarse_value = hierarchy.hierarchical_coarsen(
         value, input_array_name=th.InputArrayName.VALUE)
@@ -572,8 +587,11 @@ class HierarchicalAttention(nn.Module, metaclass=abc.ABCMeta):
       same shape as that of similarity.
     """
     attention = {}
+    assert self.softmax_temperature > 1e-10, 'Softmax temperature too small.'
     for block_name in hierarchy.block_names:
-      attention[block_name] = jnp.exp(similarity[block_name])
+      attention[block_name] = jnp.exp(
+          similarity[block_name] / self.softmax_temperature
+      )
 
     # This is to correct the overlapping between attention blocks for the
     # adjacent levels
@@ -865,7 +883,9 @@ class OneDimHierarchicalAttention(HierarchicalAttention):
     return h_rpb.OneDimHierarchicalRelativePositionBias(
         num_cluster=hierarchy.num_cluster,
         num_head=num_heads,
-        name='1d_relative_position_bias')
+        enable_param_axes=self.enable_param_axes,
+        name='1d_relative_position_bias',
+    )
 
   def _gen_correction_mask(
       self, hierarchy: th.TokenHierarchy) -> Dict[th.TokenBlockName, Array]:

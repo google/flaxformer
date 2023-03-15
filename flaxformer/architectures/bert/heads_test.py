@@ -154,7 +154,7 @@ class BertHeadsTest(parameterized.TestCase):
                       dtype=np.float32)
     indices = np.array([[0, 1], [1, 2], [0, 2]], dtype=np.int32)
     expected = np.array([[[0], [1]], [[4], [5]], [[6], [8]]], dtype=np.float32)
-    result = heads.gather_indices(inputs, indices)
+    result = heads.gather_indices(inputs, indices)  # pytype: disable=wrong-arg-types  # jax-ndarray
     np.testing.assert_array_equal(result, expected)
 
   @parameterized.named_parameters(

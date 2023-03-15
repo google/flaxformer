@@ -468,7 +468,7 @@ def make_config3_shared_token_embedder() -> t5_architecture.EncoderDecoder:
 
 
 def test_make_decoder_only1() -> t5_architecture.DecoderOnly:
-  """Returns an DecoderOnly."""
+  """Returns a DecoderOnly."""
   dtype = jnp.float32
   num_attn_heads = 8
   make_dropout = lambda: nn.Dropout(rate=0.1, broadcast_dims=(-2,))

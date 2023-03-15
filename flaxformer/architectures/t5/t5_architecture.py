@@ -20,8 +20,9 @@ networks.
 
 from __future__ import annotations
 
+import enum
 import inspect
-from typing import Callable, Optional, Any, Tuple
+from typing import Any, Callable, Optional, Tuple, Union
 
 from flax import linen as nn
 import jax
@@ -60,7 +61,6 @@ class MakeEncoderLayerFn(Protocol):
     Returns:
       Encoder layer.
     """
-    pass
 
 
 class MakeDecoderLayerFn(Protocol):
@@ -81,7 +81,6 @@ class MakeDecoderLayerFn(Protocol):
     Returns:
       Decoder layer.
     """
-    pass
 
 
 class MakeEncoderFn(Protocol):
@@ -104,7 +103,6 @@ class MakeEncoderFn(Protocol):
     Returns:
       Encoder instance.
     """
-    pass
 
 
 class MakeDecoderFn(Protocol):
@@ -127,45 +125,67 @@ class MakeDecoderFn(Protocol):
     Returns:
       Decoder instance.
     """
-    pass
 
 
-def maybe_remat(lyrf: Callable[[],
-                               nn.Module], layer_remat: str, scan_layers: bool,
-                static_argnums: Tuple[int, ...]) -> Callable[[], nn.Module]:
+@enum.unique
+class LayerRemat(enum.Enum):
+  """How to apply per-layer jax.remat for recomputation in the backward pass.
+
+  Attributes:
+    NONE: No use of jax.remat.
+    LEGACY: Reverts to prior behavior for compatibility with existing configs,
+      i.e., use FULL when scanning over layers and NONE otherwise.
+    FULL: Recompute the whole layer in backprop.
+    MINIMAL: Recompute only non-matmul ops in backprop.
+  """
+
+  NONE = 'none'
+  LEGACY = 'legacy'
+  FULL = 'full'
+  MINIMAL = 'minimal'
+
+
+_LayerRematOrStr = Union[LayerRemat, str]
+
+
+def maybe_remat(
+    lyrf: Callable[[], nn.Module],
+    layer_remat: _LayerRematOrStr,
+    scan_layers: bool,
+    static_argnums: Tuple[int, ...],
+) -> Callable[[], nn.Module]:
   """Maybe apply jax.remat with the indicated policy to a layer factory.
 
   Args:
     lyrf: Encoder or decoder layer factory.
-    layer_remat: Config for per-layer remat. Options are "none" for no use of
-      jax.remat, "minimal" for recomputing only non-matmul ops in backprop,
-      "full" for recomputing the whole layer in backprop, and "legacy" for
-      compatibility with existing configs (previously, scan_layers=False implied
-      "none" while scan_layers=True implied "full).
+    layer_remat: Config for per-layer remat.
     scan_layers: Whether to use jax.lax.scan for the stack of layers.
     static_argnums: The static_argnums to use for the jax.remat call.
 
   Returns:
     Potentially remat-wrapped layer factory.
   """
-  if layer_remat == 'legacy':
-    layer_remat = 'full' if scan_layers else 'none'
-  if layer_remat == 'none':
-    pass
+  # TODO: remove this conversion after all callers use the enum
+  layer_remat = LayerRemat(layer_remat)
+
+  if layer_remat == LayerRemat.LEGACY:
+    layer_remat = LayerRemat.FULL if scan_layers else LayerRemat.NONE
+  if layer_remat == LayerRemat.NONE:
+    return lyrf
+
+  if layer_remat == LayerRemat.FULL:
+    remat_policy = None
+  elif layer_remat == LayerRemat.MINIMAL:
+    remat_policy = jax.checkpoint_policies.checkpoint_dots_with_no_batch_dims
   else:
-    if layer_remat == 'full':
-      remat_policy = None
-    elif layer_remat == 'minimal':
-      remat_policy = jax.checkpoint_policies.checkpoint_dots_with_no_batch_dims
-    else:
-      raise ValueError("layer_remat must be 'none', 'minimal', or 'full'")
-    lyrf = transforms.factory_remat(
-        lyrf,
-        concrete=False,
-        prevent_cse=False,
-        static_argnums=static_argnums,
-        policy=remat_policy)
-  return lyrf
+    raise ValueError(f'Unknown LayerRemat value: {layer_remat}')
+  return transforms.factory_remat(
+      lyrf,
+      concrete=False,
+      prevent_cse=False,
+      static_argnums=static_argnums,
+      policy=remat_policy,
+  )
 
 
 class EncoderLayer(nn.Module, param_remapping.ParameterRemappable):
@@ -205,8 +225,10 @@ class EncoderLayer(nn.Module, param_remapping.ParameterRemappable):
     if (self.relative_position_bias_factory is not None and
         self.shared_relative_position_bias is not None):
       raise ValueError(
-          'Please set at most one of relative_position_bias_factory and shared_relative_position_bias. '
-          '(They can both be None however, e.g. for absolute position embeds.)')
+          'Please set at most one of relative_position_bias_factory and'
+          ' shared_relative_position_bias. (They can both be None however, e.g.'
+          ' for absolute position embeds.)'
+      )
     self.relpos_bias = (
         self.relative_position_bias_factory()
         if self.relative_position_bias_factory is not None else
@@ -222,20 +244,26 @@ class EncoderLayer(nn.Module, param_remapping.ParameterRemappable):
       self.post_mlp_dropout = self.dropout_factory()
 
   def get_bias(self, layer_input: Array) -> Optional[Array]:
-    encoder_bias = None
-    if self.relpos_bias:
-      if isinstance(self.relpos_bias,
-                    relative_position_biases.RelativePositionBiases):
-        encoder_bias = self.relpos_bias(
-            layer_input.shape[-2], layer_input.shape[-2], bidirectional=True)
-      elif isinstance(self.relpos_bias,
-                      rich_attention_position_scores.RichAttentionApi):
-        encoder_bias = self.relpos_bias(
-            layer_input, layer_input, bidirectional=True)
-      else:
-        raise TypeError(
-            f'{type(self.relpos_bias)} is not a supported relative position '
-            f'bias factory.\nInstance value: {self.relpos_bias}')
+    if not self.relpos_bias:
+      return None
+
+    if isinstance(
+        self.relpos_bias, relative_position_biases.RelativePositionBiases
+    ):
+      encoder_bias = self.relpos_bias(
+          layer_input.shape[-2], layer_input.shape[-2], bidirectional=True
+      )
+    elif isinstance(
+        self.relpos_bias, rich_attention_position_scores.RichAttentionApi
+    ):
+      encoder_bias = self.relpos_bias(
+          layer_input, layer_input, bidirectional=True
+      )
+    else:
+      raise TypeError(
+          f'{type(self.relpos_bias)} is not a supported relative position '
+          f'bias factory.\nInstance value: {self.relpos_bias}'
+      )
     return encoder_bias
 
   def __call__(self,
@@ -317,6 +345,7 @@ class EncoderLayer(nn.Module, param_remapping.ParameterRemappable):
       # [batch, length, emb_dim] -> [batch, length, emb_dim]
       y = self.mlp(y, enable_dropout=enable_dropout)
       y = x + self.post_mlp_dropout(y, deterministic=not enable_dropout)
+
     y = activation_partitioning.with_sharding_migration(
         y,
         self.activation_partitioning_dims,
@@ -371,8 +400,10 @@ class DecoderLayer(nn.Module, param_remapping.ParameterRemappable):
     if (self.relative_position_bias_factory is not None and
         self.shared_relative_position_bias is not None):
       raise ValueError(
-          'Please set at most one of relative_position_bias_factory and shared_relative_position_bias. '
-          '(They can both be None however, e.g. for absolute position embeds.)')
+          'Please set at most one of relative_position_bias_factory and'
+          ' shared_relative_position_bias. (They can both be None however, e.g.'
+          ' for absolute position embeds.)'
+      )
     self.relpos_bias = (
         self.relative_position_bias_factory()
         if self.relative_position_bias_factory is not None else
@@ -392,39 +423,46 @@ class DecoderLayer(nn.Module, param_remapping.ParameterRemappable):
   def get_bias(self, max_decode_length: Optional[int], decode: bool,
                layer_input: Array,
                encoded: Array) -> Tuple[Optional[Array], Optional[Array]]:
-    decoder_bias = None
-    encoder_decoder_bias = None
-    if self.relpos_bias:
-      if isinstance(self.relpos_bias,
-                    relative_position_biases.RelativeAttentionAPI):
-        if max_decode_length:
-          relpos_length = max_decode_length
-        else:
-          relpos_length = layer_input.shape[-2]
+    if not self.relpos_bias:
+      return None, None
 
-        # during decoding, the layer will be called with decode=True first to
-        # initialize the decoder cache, including a cached relpos bias cache.
-        # the prefill codepath will call this once again with decode=False,
-        # which is slightly wasteful but generally harmless. During subsequent
-        # decode steps, this will be called with decode=True and will reuse the
-        # cached bias. this significantly improves performance during decoding
-        # with many decode steps.
-        decoder_bias = self.relpos_bias(
-            relpos_length, relpos_length, False, decode=decode)
-
-      elif isinstance(self.relpos_bias,
-                      rich_attention_position_scores.RichAttentionApi):
-        decoder_bias = self.relpos_bias(
-            layer_input,
-            layer_input,
-            bidirectional=False,
-            is_cross_attention=False)
-        encoder_decoder_bias = self.relpos_bias(
-            layer_input, encoded, bidirectional=False, is_cross_attention=True)
+    if isinstance(
+        self.relpos_bias, relative_position_biases.RelativeAttentionAPI
+    ):
+      if max_decode_length:
+        relpos_length = max_decode_length
       else:
-        raise TypeError(
-            f'{type(self.relpos_bias)} is not a supported relative position '
-            f'bias factory.\nInstance value: {self.relpos_bias}')
+        relpos_length = layer_input.shape[-2]
+
+      # during decoding, the layer will be called with decode=True first to
+      # initialize the decoder cache, including a cached relpos bias cache.
+      # the prefill codepath will call this once again with decode=False,
+      # which is slightly wasteful but generally harmless. During subsequent
+      # decode steps, this will be called with decode=True and will reuse the
+      # cached bias. this significantly improves performance during decoding
+      # with many decode steps.
+      decoder_bias = self.relpos_bias(
+          relpos_length, relpos_length, False, decode=decode
+      )
+      encoder_decoder_bias = None
+
+    elif isinstance(
+        self.relpos_bias, rich_attention_position_scores.RichAttentionApi
+    ):
+      decoder_bias = self.relpos_bias(
+          layer_input,
+          layer_input,
+          bidirectional=False,
+          is_cross_attention=False,
+      )
+      encoder_decoder_bias = self.relpos_bias(
+          layer_input, encoded, bidirectional=False, is_cross_attention=True
+      )
+    else:
+      raise TypeError(
+          f'{type(self.relpos_bias)} is not a supported relative position '
+          f'bias factory.\nInstance value: {self.relpos_bias}'
+      )
     return decoder_bias, encoder_decoder_bias
 
   def _create_residuals_and_queries(self, layer_input: Array, x: Array,
@@ -666,12 +704,7 @@ class Encoder(nn.Module, param_remapping.ParameterRemappable):
     num_layers: Number of layers to generate.
     dtype: DType to cast the embedded inputs.
     layer_remat: whether and how to apply jax.remat to each layer to perform
-      recomputation in the backward pass. Supported values are 'none', for no
-      use of jax.remat; 'minimal', for a policy that recomputes only non-matmul
-      operations (typically optimal); and 'full', for full recomputation of each
-      layer. The (legacy) default is to use 'none' when `scan_layers=False` and
-      and 'full' when `scan_layers=True`.
-    scan_layers: whether to scan over layers.
+      recomputation in the backward pass. See documentation for LayerRemat enum.
     spmd_annotations: spmd annotations needed for scanned layers.
     shared_relative_position_bias_factory: A callable that returns a relative
       position bias instance which will be shared for all encoder layers. Only
@@ -694,7 +727,7 @@ class Encoder(nn.Module, param_remapping.ParameterRemappable):
   layer_norm_factory: Callable[[], nn.Module]
   num_layers: int
   dtype: DType = jnp.float32
-  layer_remat: str = 'legacy'
+  layer_remat: _LayerRematOrStr = LayerRemat.LEGACY
   scan_layers: bool = False
   spmd_annotations: Any = None
   shared_relative_position_bias_factory: Optional[Callable[[],
@@ -894,11 +927,7 @@ class Decoder(nn.Module, param_remapping.ParameterRemappable):
     num_layers: Number of layers to generate.
     dtype: DType to cast the embedded inputs.
     layer_remat: whether and how to apply jax.remat to each layer to perform
-      recomputation in the backward pass. Supported values are 'none', for no
-      use of jax.remat; 'minimal', for a policy that recomputes only non-matmul
-      operations (typically optimal); and 'full', for full recomputation of each
-      layer. The (legacy) default is to use 'none' when `scan_layers=False` and
-      and 'full' when `scan_layers=True`.
+      recomputation in the backward pass. See documentation for LayerRemat enum.
     scan_layers: whether to scan over layers.
     spmd_annotations: spmd annotations needed for scanned layers.
     shared_relative_position_bias_factory: A callable that returns a relative
@@ -921,7 +950,7 @@ class Decoder(nn.Module, param_remapping.ParameterRemappable):
   layer_norm_factory: Callable[[], nn.Module]
   num_layers: int
   dtype: DType = jnp.float32
-  layer_remat: str = 'legacy'
+  layer_remat: _LayerRematOrStr = LayerRemat.LEGACY
   scan_layers: bool = False
   spmd_annotations: Any = None
   shared_relative_position_bias_factory: Optional[Callable[[],
@@ -1202,11 +1231,6 @@ class Decoder(nn.Module, param_remapping.ParameterRemappable):
     return logits
 
 
-def _call_optional(
-    fn: Optional[Callable[[], nn.Module]]) -> Optional[nn.Module]:
-  return fn() if fn else None
-
-
 class EncoderDecoder(nn.Module, param_remapping.ParameterRemappable):
   """Transformer Model for sequence to sequence translation.
 
@@ -1483,19 +1507,21 @@ class DecoderOnly(nn.Module, param_remapping.ParameterRemappable):
   def setup(self):
     self.decoder = self.decoder_factory(shared_token_embedder=None)
 
-  def __call__(self,
-               decoder_input_tokens,
-               decoder_target_tokens,
-               decoder_segment_ids=None,
-               decoder_positions=None,
-               decoder_causal_attention=None,
-               *,
-               enable_dropout: bool = True,
-               decode: bool = False,
-               max_decode_length: Optional[int] = None,
-               prefill: bool = False,
-               prefill_lengths: Optional[Array] = None,
-               **kwargs):
+  def __call__(
+      self,
+      decoder_input_tokens: Array,
+      decoder_target_tokens: Optional[Array],
+      decoder_segment_ids: Optional[Array] = None,
+      decoder_positions: Optional[Array] = None,
+      decoder_causal_attention: Optional[Array] = None,
+      *,
+      enable_dropout: bool = True,
+      decode: bool = False,
+      max_decode_length: Optional[int] = None,
+      prefill: bool = False,
+      prefill_lengths: Optional[Array] = None,
+      **kwargs,
+  ):
     """Applies LanguageModel on the inputs.
 
     This method requires both decoder_target_tokens and decoder_input_tokens,
@@ -1519,7 +1545,11 @@ class DecoderOnly(nn.Module, param_remapping.ParameterRemappable):
       prefill: Whether to run a partial sequence to prefill the cache.
       prefill_lengths: The length of each partial sequence we are filling in the
         cache, lengths are inferred from the mask if not provided.
-      **kwargs: Additional keyword arguments to pass on to the decoder.
+      **kwargs: Additional keyword arguments to pass on to the decoder. This may
+        include `decoder_attention_mask`, which overrides the decoder attention
+        mask. If specified, this must be broadcastable to `[batch, head,
+        target_length, target_length]`. Meanwhile, `decoder_target_tokens` will
+        be ignored and `decoder_causal_attention` should not be set.
 
     Returns:
       logits array from LanguageModel.
@@ -1531,11 +1561,21 @@ class DecoderOnly(nn.Module, param_remapping.ParameterRemappable):
     if decode:
       decoder_mask = None
     else:
-      decoder_mask = dense_attention.make_decoder_mask(
-          decoder_target_tokens=decoder_target_tokens,
-          dtype=self.dtype,
-          decoder_causal_attention=decoder_causal_attention,
-          decoder_segment_ids=decoder_segment_ids)
+      if 'decoder_attention_mask' in kwargs:
+        decoder_attention_mask = kwargs.pop('decoder_attention_mask')
+        if decoder_causal_attention is not None:
+          raise ValueError(
+              'Only one of `decoder_causal_attention` and '
+              '`decoder_attention_mask` can be set.'
+          )
+        decoder_mask = jnp.asarray(decoder_attention_mask, dtype=self.dtype)
+      else:
+        decoder_mask = dense_attention.make_decoder_mask(
+            decoder_target_tokens=decoder_target_tokens,
+            dtype=self.dtype,
+            decoder_causal_attention=decoder_causal_attention,
+            decoder_segment_ids=decoder_segment_ids,
+        )
 
     # We reuse Decoder class, which can optionally takes in encoded and
     # encoder_decoder_mask. These are used when Decoder is used in the context

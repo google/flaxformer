@@ -120,7 +120,7 @@ def abstract_init(
     inputs: Mapping[str, Any],
     static_kwargs: Mapping[str, Any] = types.MappingProxyType({}),
     rngs: Optional[Union[PRNGKey, Dict[str, PRNGKey]]] = None,
-) -> jax.tree_util.PyTreeDef:
+) -> Any:
   """Runs abstract initialization for a Flax module.
 
   Args:

@@ -1214,7 +1214,7 @@ class MultiQueryDotProductAttention(nn.Module, DenseAttention):
     # past the prefix.
     cached_key_value = key_cached * key_mask
     cached_value_value = value_cached * value_mask
-    return (
+    return (  # pytype: disable=bad-return-type  # jax-ndarray
         key,
         value,
         cur_index,
@@ -2207,7 +2207,7 @@ def make_decoder_mask(
         )
     )
 
-  return combine_masks(*masks, dtype=dtype)
+  return combine_masks(*masks, dtype=dtype)  # pytype: disable=bad-return-type  # jax-ndarray
 
 
 def validate_dense_attention_call_parameter_shapes(

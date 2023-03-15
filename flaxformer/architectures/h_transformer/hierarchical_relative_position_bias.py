@@ -46,6 +46,7 @@ class HierarchicalRelativePositionBias(nn.Module):
   position_bias_init: Initializer = nn.initializers.normal(stddev=0.1)
   num_cluster: int = 2
   num_head: int = 1
+  enable_param_axes: bool = True
 
   def _create_1d_relative_position_bias(
       self, param_name: str = '1d_relative_position_bias') -> jnp.ndarray:
@@ -72,11 +73,18 @@ class HierarchicalRelativePositionBias(nn.Module):
     # such that the smallest index is zero.
     relative_positions -= jnp.min(relative_positions)
     total_positions = query_length + key_length - 1
-    bias_params = partitioning.param_with_axes(
-        param_name,
-        self.position_bias_init, (total_positions, self.num_head),
-        jnp.float32,
-        axes=('relpos_buckets', 'heads'))
+    if self.enable_param_axes:
+      bias_params = partitioning.param_with_axes(
+          param_name,
+          self.position_bias_init,
+          (total_positions, self.num_head),
+          jnp.float32,
+          axes=('relpos_buckets', 'heads'),
+      )
+    else:
+      bias_params = self.param(
+          param_name, self.position_bias_init, (total_positions, self.num_head)
+      )
     relative_pos_bias = jnp.take(bias_params, relative_positions, axis=0)
     return relative_pos_bias
 

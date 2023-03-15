@@ -523,7 +523,8 @@ class DecoderOnlyTest(absltest.TestCase):
             # Batch 2.
             [392, 19, 7],
         ],
-        dtype=np.int32)
+        dtype=np.int32,
+    )
     output, variables = decoder.init_with_output(
         random.PRNGKey(0),
         decoder_input_tokens=inputs,
@@ -546,6 +547,43 @@ class DecoderOnlyTest(absltest.TestCase):
     output = output.astype(np.float32)
     output2 = output2.astype(np.float32)
     np.testing.assert_allclose(output, output2, rtol=1e-8)
+
+  def test_decoder_shapes_explicit_attention_map(self):
+    """Tests if the decoder parameter have the expected shapes."""
+    decoder = t5_test_utils.make_parallel_fused_transformer_config()
+    inputs = np.array(
+        [
+            # Batch 1.
+            [183, 20, 75],
+            # Batch 2.
+            [392, 19, 7],
+        ],
+        dtype=np.int32,
+    )
+    output, variables = decoder.init_with_output(
+        random.PRNGKey(0),
+        decoder_input_tokens=inputs,
+        decoder_target_tokens=None,  # not needed if attention mask is provided.
+        # By specifying the attention mask explicitly we can mix e.g., prefix
+        # LM with bidirectional LM, as done below.
+        decoder_attention_mask=[
+            [[
+                [1, 1, 0],
+                [1, 1, 0],
+                [1, 1, 1],
+            ]],
+            [[
+                [1, 0, 1],
+                [1, 1, 0],
+                [1, 1, 1],
+            ]],
+        ],
+        enable_dropout=False,
+    )
+    params = variables['params']
+    reformatted = decoder.apply({}, params, method=decoder.to_save_format)
+    check_params(reformatted, 'decoder_shapes_fused_parallel.json')
+    self.assertEqual(output.shape, (2, 3, 4))
 
 
 

@@ -347,7 +347,7 @@ class MultiHeadDotProductAttention(dense_attention.MultiHeadDotProductAttention
         cached_value.value = cached_value_value
 
     if only_propagate_state:
-      return
+      return  # pytype: disable=bad-return-type  # jax-ndarray
 
     # Convert the boolean attention mask to an attention bias.
     if mask is not None:

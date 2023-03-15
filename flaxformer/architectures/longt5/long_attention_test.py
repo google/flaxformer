@@ -19,6 +19,7 @@ from typing import Optional
 
 from absl.testing import absltest
 from absl.testing import parameterized
+from flax.core import frozen_dict
 import jax
 from jax import random
 import jax.numpy as jnp

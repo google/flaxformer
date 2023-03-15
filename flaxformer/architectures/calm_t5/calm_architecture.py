@@ -584,10 +584,12 @@ class Decoder(nn.Module, param_remapping.ParameterRemappable):
     embedded_inputs = embedded_inputs.astype(self.dtype)
     return embedded_inputs
 
-  def compute_logits(self,
-                     decoder_outputs: Array,
-                     logit_mask: Array = None,
-                     enable_dropout: bool = True) -> Array:
+  def compute_logits(
+      self,  # pytype: disable=annotation-type-mismatch  # jax-ndarray
+      decoder_outputs: Array,
+      logit_mask: Array = None,
+      enable_dropout: bool = True,
+  ) -> Array:
     # Post-process final decoder layer outputs.
     decoder_outputs = self.decoder_norm(decoder_outputs)
     decoder_outputs = self.output_dropout(
@@ -819,10 +821,12 @@ class EncoderDecoder(nn.Module, param_remapping.ParameterRemappable):
       self.decoder = self.decoder_factory(
           shared_token_embedder=self.token_embedder)
 
-  def compute_logits(self,
-                     decoder_outputs: Array,
-                     logit_mask: Array = None,
-                     enable_dropout: bool = True) -> Array:
+  def compute_logits(
+      self,  # pytype: disable=annotation-type-mismatch  # jax-ndarray
+      decoder_outputs: Array,
+      logit_mask: Array = None,
+      enable_dropout: bool = True,
+  ) -> Array:
     return self.decoder.compute_logits(
         decoder_outputs=decoder_outputs,
         logit_mask=logit_mask,

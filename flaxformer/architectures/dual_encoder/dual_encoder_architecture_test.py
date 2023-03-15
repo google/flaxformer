@@ -17,7 +17,6 @@
 import dataclasses
 import functools
 from typing import Any, Optional, Sequence
-from absl import logging
 from absl.testing import absltest
 from absl.testing import parameterized
 from flax import linen as nn
@@ -208,43 +207,6 @@ def make_test_dual_encoder(
   )
 
 
-
-
-def make_test_call_twice_dropout():
-
-  class DropoutLayer(nn.Module):
-
-    @nn.compact
-    def __call__(self, x):
-      return dual_encoder_architecture.NonRepeatingDropout(
-          0.5, deterministic=False)(
-              x)
-
-  class CallTwiceDropoutLayer(nn.Module):
-
-    @nn.compact
-    def __call__(self, x):
-      dropout = DropoutLayer()
-      # call once
-      x0 = dropout(x)
-      # call a second time
-      x1 = dropout(x)
-      # return the difference
-      return x0 - x1
-
-  return CallTwiceDropoutLayer()
-
-
-class NonRepeatingDropoutTest(parameterized.TestCase):
-
-  def test_non_repeating_dropout(self):
-    rnd_seed = random.PRNGKey(0)
-    inputs = jnp.ones((5, 5))
-    inputs_diff, _ = make_test_call_twice_dropout().apply(
-        {}, inputs, rngs={'dropout': rnd_seed},
-        mutable='dropout')  # have to increment the counters
-    logging.info('inputs diff: %s', inputs_diff)
-    self.assertNotEqual(jnp.sum(inputs_diff), 0)
 
 
 class DualEncoderTest(parameterized.TestCase):

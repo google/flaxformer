@@ -751,7 +751,7 @@ class MultiQueryDotProductAttention(nn.Module, dense_attention.DenseAttention):
     # past the prefix.
     cached_key_value = key_cached * key_mask
     cached_value_value = value_cached * value_mask
-    return (key, value, cur_index, cached_key_value, cached_value_value,
+    return (key, value, cur_index, cached_key_value, cached_value_value,  # pytype: disable=bad-return-type  # jax-ndarray
             prefill_lengths)
 
   def update_cache_decode(

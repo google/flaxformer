@@ -1,0 +1,94 @@
+{
+  "decoder_norm": {
+    "scale": [13]
+  },
+  "layers_0": {
+    "mlp": {
+      "wi_0": {
+        "kernel": [13, 32]
+      },
+      "wi_1": {
+        "kernel": [13, 32]
+      },
+      "wo": {
+        "kernel": [32, 13]
+      }
+    },
+    "pre_mlp_layer_norm": {
+      "scale": [13]
+    },
+    "pre_self_attention_layer_norm": {
+      "scale": [13]
+    },
+    "self_attention": {
+      "key": {
+        "kernel": [13, 24]
+      },
+      "out": {
+        "kernel": [24, 13]
+      },
+      "query": {
+        "kernel": [13, 24]
+      },
+      "value": {
+        "kernel": [13, 24]
+      }
+    }
+  },
+  "layers_1": {
+    "encoder_decoder_attention": {
+      "key": {
+        "kernel": [13, 24]
+      },
+      "out": {
+        "kernel": [24, 13]
+      },
+      "query": {
+        "kernel": [13, 24]
+      },
+      "value": {
+        "kernel": [13, 24]
+      }
+    },
+    "mlp": {
+      "wi_0": {
+        "kernel": [13, 32]
+      },
+      "wi_1": {
+        "kernel": [13, 32]
+      },
+      "wo": {
+        "kernel": [32, 13]
+      }
+    },
+    "pre_cross_attention_layer_norm": {
+      "scale": [13]
+    },
+    "pre_mlp_layer_norm": {
+      "scale": [13]
+    },
+    "pre_self_attention_layer_norm": {
+      "scale": [13]
+    },
+    "self_attention": {
+      "key": {
+        "kernel": [13, 24]
+      },
+      "out": {
+        "kernel": [24, 13]
+      },
+      "query": {
+        "kernel": [13, 24]
+      },
+      "value": {
+        "kernel": [13, 24]
+      }
+    }
+  },
+  "relpos_bias": {
+    "rel_embedding": [8, 32]
+  },
+  "token_embedder": {
+    "embedding": [4, 13]
+  }
+}

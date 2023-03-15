@@ -377,6 +377,6 @@ class DecoderLayer(nn.Module, param_remapping.ParameterRemappable):
     # scan expects functions to have a signature: fn(carry, in) --> carry, out
     # TODO: automate this detail.
     if self.scanned:
-      return z, None
+      return z, None  # pytype: disable=bad-return-type  # jax-ndarray
     else:
       return z
