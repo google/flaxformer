@@ -1,4 +1,4 @@
-# Copyright 2022 Google LLC.
+# Copyright 2023 Google LLC.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -32,7 +32,7 @@ MLP_KERNEL_INIT = nn.initializers.variance_scaling(1.0, 'fan_in',
 
 def attention_layer(num_heads, head_dim, dropout_rate, dtype=jnp.bfloat16):
   """Create an dense_attention layer for T5-style architectures."""
-  return dense_attention.MultiHeadDotProductAttention(
+  return dense_attention.MultiHeadDotProductAttention(  # pytype: disable=wrong-arg-types  # jax-types
       num_heads=num_heads,
       head_dim=head_dim,
       qkv_features=None,
@@ -70,7 +70,7 @@ def relative_position_bias(num_heads, dtype=jnp.bfloat16):
 
 def embedding(vocabulary_size, embedding_dim, dtype=jnp.bfloat16):
   """Create a standard embedding layer for T5-style architectures."""
-  return embedding_layers.Embed(
+  return embedding_layers.Embed(  # pytype: disable=wrong-arg-types  # jax-types
       num_embeddings=vocabulary_size,
       features=embedding_dim,
       cast_input_dtype=jnp.int32,

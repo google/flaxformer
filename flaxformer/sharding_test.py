@@ -1,4 +1,4 @@
-# Copyright 2022 Google LLC.
+# Copyright 2023 Google LLC.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -16,6 +16,7 @@
 
 from absl.testing import absltest
 from flax import linen as nn
+from flax.core import unfreeze
 from flax.linen import partitioning
 import jax
 from jax import numpy as jnp
@@ -49,13 +50,17 @@ class ShardingTest(absltest.TestCase):
 
     # Check the initial axes annotations.
     variables = module.init(jax.random.PRNGKey(0), jnp.array([[6, 7]]))
-    self.assertDictEqual(variables["params_axes"].unfreeze(),
-                         {"x_axes": sharding.axis_names("heads", "unmodeled")})
+    self.assertDictEqual(
+        unfreeze(variables["params_axes"]),
+        {"x_axes": sharding.axis_names("heads", "unmodeled")},
+    )
 
     # Re-run and make sure that axes are the same.
     _, variables = module.apply(variables, jnp.array([[6, 7]]), mutable=True)
-    self.assertDictEqual(variables["params_axes"].unfreeze(),
-                         {"x_axes": sharding.axis_names("heads", "unmodeled")})
+    self.assertDictEqual(
+        unfreeze(variables["params_axes"]),
+        {"x_axes": sharding.axis_names("heads", "unmodeled")},
+    )
 
   def test_check_params_and_axis_names_match_matches(self):
     sharding.check_params_and_axis_names_match(

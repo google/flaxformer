@@ -1,4 +1,4 @@
-# Copyright 2022 Google LLC.
+# Copyright 2023 Google LLC.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -36,7 +36,7 @@ _BIAS_INIT = nn.initializers.normal(stddev=1e-6)
 
 
 def _token_embedder_factory(vocab_size: int, embed_size: int) -> nn.Module:
-  return embedding.Embed(
+  return embedding.Embed(  # pytype: disable=wrong-arg-types  # jax-types
       num_embeddings=vocab_size,
       features=embed_size,
       cast_input_dtype=jnp.int32,
@@ -60,7 +60,7 @@ def _mlp_factory(dropout_rate: float = 0.1, embed_size: int = 13) -> nn.Module:
 
 def _encoder_self_attention_factory(num_heads, num_clusters, qkv_features,
                                     use_rpb, use_multihead_rpb) -> nn.Module:
-  return h_attention.OneDimEncoderSelfAttention(
+  return h_attention.OneDimEncoderSelfAttention(  # pytype: disable=wrong-arg-types  # jax-types
       num_heads=num_heads,
       num_clusters=num_clusters,
       qkv_features=qkv_features,
@@ -69,13 +69,12 @@ def _encoder_self_attention_factory(num_heads, num_clusters, qkv_features,
       bias_init=_BIAS_INIT,
       use_rpb=use_rpb,
       use_multihead_rpb=use_multihead_rpb,
-      enable_param_axes=True,
   )
 
 
 def _decoder_self_attention_factory(num_heads, num_clusters, qkv_features,
                                     use_rpb, use_multihead_rpb):
-  return h_attention.OneDimDecoderSelfAttention(
+  return h_attention.OneDimDecoderSelfAttention(  # pytype: disable=wrong-arg-types  # jax-types
       num_heads=num_heads,
       num_clusters=num_clusters,
       qkv_features=qkv_features,
@@ -84,12 +83,11 @@ def _decoder_self_attention_factory(num_heads, num_clusters, qkv_features,
       bias_init=_BIAS_INIT,
       use_rpb=use_rpb,
       use_multihead_rpb=use_multihead_rpb,
-      enable_param_axes=True,
   )
 
 
 def _cross_attention_factory(num_heads, qkv_features):
-  return dense_attention.MultiHeadDotProductAttention(
+  return dense_attention.MultiHeadDotProductAttention(  # pytype: disable=wrong-arg-types  # jax-types
       num_heads=num_heads,
       qkv_features=qkv_features,
       dtype=jnp.float32,

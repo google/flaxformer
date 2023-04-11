@@ -1,4 +1,4 @@
-# Copyright 2022 Google LLC.
+# Copyright 2023 Google LLC.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -173,7 +173,6 @@ class HAttention1DTest(parameterized.TestCase):
         use_rpb=True,
         use_multihead_rpb=True,
         split_head_kernel=True,
-        enable_param_axes=True,
     )
     result, variables = attention_module.init_with_output(
         rng, inputs_q, padding_mask=None)

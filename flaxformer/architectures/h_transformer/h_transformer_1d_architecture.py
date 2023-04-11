@@ -1,4 +1,4 @@
-# Copyright 2022 Google LLC.
+# Copyright 2023 Google LLC.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -25,6 +25,7 @@ from typing_extensions import Protocol
 from flaxformer import transformer_common as common
 from flaxformer.architectures.common import param_remapping
 from flaxformer.architectures.h_transformer import h_transformer_utils as utils
+from flaxformer.architectures.h_transformer import partitioning
 from flaxformer.components import embedding
 from flaxformer.components import transforms
 from flaxformer.components.attention import dense_attention
@@ -55,11 +56,6 @@ class MakeEncoderFn(Protocol):
     """
 
 
-def _activation_partitioning_fn(y):
-  return nn.partitioning.with_sharding_constraint(y,
-                                                  ('batch', 'length', 'embed'))
-
-
 class EncoderLayer(nn.Module, param_remapping.ParameterRemappable):
   """H-Transformer encoder layer.
 
@@ -78,6 +74,7 @@ class EncoderLayer(nn.Module, param_remapping.ParameterRemappable):
   mlp: nn.Module
   dropout_factory: Callable[[], nn.Module]
   layer_norm_factory: Callable[[], nn.Module]
+  partitioner_factory: Callable[[], Any] = partitioning.Partitioner1D
   parallel: bool = False
   sow_intermediates: bool = False
   scanned: bool = False
@@ -85,6 +82,7 @@ class EncoderLayer(nn.Module, param_remapping.ParameterRemappable):
   def setup(self):
     self.pre_attention_layer_norm = self.layer_norm_factory()
     self.post_attention_dropout = self.dropout_factory()
+    self.partitioner = self.partitioner_factory()
     if not self.parallel:
       self.pre_mlp_layer_norm = self.layer_norm_factory()
       self.post_mlp_dropout = self.dropout_factory()
@@ -92,9 +90,6 @@ class EncoderLayer(nn.Module, param_remapping.ParameterRemappable):
   def _validate_inputs(self, inputs):
     if inputs.ndim != 3:
       raise ValueError(f'Expect inputs.ndim=3, but inputs.ndim={inputs.ndim}')
-
-  def _activation_partitioning_fn(self, y):
-    return _activation_partitioning_fn(y)
 
   def __call__(self,
                inputs: Array,
@@ -117,9 +112,9 @@ class EncoderLayer(nn.Module, param_remapping.ParameterRemappable):
     """
     self._validate_inputs(inputs)
 
-    layer_input = self._activation_partitioning_fn(inputs)
+    layer_input = self.partitioner.annotate_layer_activation(inputs)
     layer_input = self.pre_attention_layer_norm(layer_input)
-    layer_input = self._activation_partitioning_fn(layer_input)
+    layer_input = self.partitioner.annotate_layer_activation(layer_input)
     if self.parallel:
       y = (
           self.attention(
@@ -139,13 +134,13 @@ class EncoderLayer(nn.Module, param_remapping.ParameterRemappable):
           layer_input, inputs_mask, enable_dropout=enable_dropout)
       x = layer_input + self.post_attention_dropout(
           x, deterministic=not enable_dropout)
-      x = self._activation_partitioning_fn(x)
+      x = self.partitioner.annotate_layer_activation(x)
       # MLP block.
       y = self.pre_mlp_layer_norm(x)
-      y = self._activation_partitioning_fn(y)
+      y = self.partitioner.annotate_layer_activation(y)
       y = self.mlp(y, enable_dropout=enable_dropout)
       y = x + self.post_mlp_dropout(y, deterministic=not enable_dropout)
-    y = self._activation_partitioning_fn(y)
+    y = self.partitioner.annotate_layer_activation(y)
 
     if self.sow_intermediates:
       self.sow('intermediates', 'activations', y)
@@ -474,12 +469,14 @@ class DecoderLayer(nn.Module, param_remapping.ParameterRemappable):
   mlp: nn.Module
   dropout_factory: Callable[[], nn.Module]
   layer_norm_factory: Callable[[], nn.Module]
+  partitioner_factory: Callable[[], Any] = partitioning.Partitioner1D
   parallel: bool = False
   sow_intermediates: bool = False
   scanned: bool = False
 
   def setup(self):
     self.pre_self_attention_layer_norm = self.layer_norm_factory()
+    self.partitioner = self.partitioner_factory()
     if self.parallel:
       self.dropout = self.dropout_factory()
     else:
@@ -488,9 +485,6 @@ class DecoderLayer(nn.Module, param_remapping.ParameterRemappable):
       self.post_cross_attention_dropout = self.dropout_factory()
       self.pre_mlp_layer_norm = self.layer_norm_factory()
       self.post_mlp_dropout = self.dropout_factory()
-
-  def _activation_partitioning_fn(self, y):
-    return _activation_partitioning_fn(y)
 
   def __call__(self,
                decoder_inputs: Array,
@@ -531,9 +525,9 @@ class DecoderLayer(nn.Module, param_remapping.ParameterRemappable):
     if encoder_outputs is not None and self.encoder_decoder_attention is None:
       raise ValueError('Expected encoder_decoder_attention to be populated.')
 
-    layer_inputs = self._activation_partitioning_fn(decoder_inputs)
+    layer_inputs = self.partitioner.annotate_layer_activation(decoder_inputs)
     x = self.pre_self_attention_layer_norm(layer_inputs)
-    x = self._activation_partitioning_fn(x)
+    x = self.partitioner.annotate_layer_activation(x)
     if self.parallel:
       y = (
           self.self_attention(
@@ -555,7 +549,7 @@ class DecoderLayer(nn.Module, param_remapping.ParameterRemappable):
           x, decoder_inputs_mask, enable_dropout=enable_dropout)
       x = layer_inputs + self.post_self_attention_dropout(
           x, deterministic=not enable_dropout)
-      x = self._activation_partitioning_fn(x)
+      x = self.partitioner.annotate_layer_activation(x)
 
       # Encoder-Decoder block.
       if encoder_outputs is None:
@@ -564,7 +558,7 @@ class DecoderLayer(nn.Module, param_remapping.ParameterRemappable):
         y = x
       else:
         y = self.pre_cross_attention_layer_norm(x)
-        y = self._activation_partitioning_fn(y)
+        y = self.partitioner.annotate_layer_activation(y)
 
         if logit_mask is not None:
           y = logit_mask * y
@@ -576,11 +570,11 @@ class DecoderLayer(nn.Module, param_remapping.ParameterRemappable):
             enable_dropout=enable_dropout)
         y = x + self.post_cross_attention_dropout(
             y, deterministic=not enable_dropout)
-        y = self._activation_partitioning_fn(y)
+        y = self.partitioner.annotate_layer_activation(y)
 
       # MLP block.
       z = self.pre_mlp_layer_norm(y)
-      z = self._activation_partitioning_fn(z)
+      z = self.partitioner.annotate_layer_activation(z)
 
       if logit_mask is not None:
         z = logit_mask * z
@@ -588,7 +582,7 @@ class DecoderLayer(nn.Module, param_remapping.ParameterRemappable):
       z = self.mlp(z, enable_dropout=enable_dropout)
       z = y + self.post_mlp_dropout(z, deterministic=not enable_dropout)
 
-    z = self._activation_partitioning_fn(z)
+    z = self.partitioner.annotate_layer_activation(z)
 
     if self.sow_intermediates:
       self.sow('intermediates', 'activations', z)

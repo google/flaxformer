@@ -1,4 +1,4 @@
-# Copyright 2022 Google LLC.
+# Copyright 2023 Google LLC.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -378,7 +378,7 @@ class MoeLayer(nn.Module):
         router_indices.combine_weights.sum() / num_tokens_dispatched
     )
 
-    self._sow_expert_metrics(
+    self._sow_expert_metrics(  # pytype: disable=wrong-arg-types  # jax-types
         router_indices.auxiliary_loss,
         router_indices.router_z_loss,
         fraction_tokens_left_behind,

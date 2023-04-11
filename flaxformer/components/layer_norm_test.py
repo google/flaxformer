@@ -1,4 +1,4 @@
-# Copyright 2022 Google LLC.
+# Copyright 2023 Google LLC.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -17,6 +17,7 @@
 from absl.testing import absltest
 import chex
 from flax import linen as nn
+from flax.core import unfreeze
 from jax import numpy as jnp
 from jax import random
 
@@ -42,14 +43,17 @@ class T5LayerNormTest(absltest.TestCase):
     rng = random.PRNGKey(0)
     variables = module.init(rng, jnp.zeros([2, 3, 4], dtype=jnp.float32))
     chex.assert_trees_all_equal_shapes(
-        variables["params"], nn.FrozenDict({
+        unfreeze(variables["params"]),
+        {
             "scale": jnp.zeros([4]),
-        }))
+        },
+    )
     chex.assert_trees_all_equal(
-        variables["params_axes"],
-        nn.FrozenDict({
+        unfreeze(variables["params_axes"]),
+        {
             "scale_axes": nn.partitioning.AxisMetadata(names=("embed",)),
-        }))
+        },
+    )
 
 if __name__ == "__main__":
   absltest.main()

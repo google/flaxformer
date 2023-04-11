@@ -1,4 +1,4 @@
-# Copyright 2022 Google LLC.
+# Copyright 2023 Google LLC.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -72,7 +72,7 @@ class PointwiseFFNN(nn.Module):
   features: Union[Iterable[int], int]
   use_bias: bool = False
   dtype: DType = jnp.float32
-  kernel_init: Initializer = default_kernel_init
+  kernel_init: Initializer = default_kernel_init  # pytype: disable=annotation-type-mismatch  # jax-types
   bias_init: Initializer = nn.initializers.zeros
   precision: Any = None
   act_fn: str = 'relu'

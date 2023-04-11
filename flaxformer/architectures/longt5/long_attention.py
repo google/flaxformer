@@ -1,4 +1,4 @@
-# Copyright 2022 Google LLC.
+# Copyright 2023 Google LLC.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -165,7 +165,7 @@ class EncoderLocalSelfAttention(nn.Module, LongSelfAttention):
   broadcast_dropout: bool = True
   dropout_rate: float = 0.
   precision: Any = None
-  kernel_init: Initializer = default_kernel_init
+  kernel_init: Initializer = default_kernel_init  # pytype: disable=annotation-type-mismatch  # jax-types
   bias_init: Initializer = initializers.zeros
   use_bias: bool = True
   rescale_logits: bool = False
@@ -531,7 +531,7 @@ class EtcTransientGlobalSelfAttention(nn.Module, LongSelfAttention):
   broadcast_dropout: bool = True
   dropout_rate: float = 0.
   precision: Any = None
-  kernel_init: Initializer = default_kernel_init
+  kernel_init: Initializer = default_kernel_init  # pytype: disable=annotation-type-mismatch  # jax-types
   bias_init: Initializer = initializers.zeros
   use_bias: bool = True
   rescale_logits: bool = False

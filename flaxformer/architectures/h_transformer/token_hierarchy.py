@@ -1,4 +1,4 @@
-# Copyright 2022 Google LLC.
+# Copyright 2023 Google LLC.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -15,9 +15,10 @@
 r"""Token Hierarchy classes for the h-attention algorithm."""
 
 import abc
+import collections
 import dataclasses
 import enum
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, OrderedDict
 from absl import logging
 import gin
 from jax import lax
@@ -316,8 +317,9 @@ class TokenHierarchy(metaclass=abc.ABCMeta):
     self._num_coarse_block = 0
     self._total_num_block = 0
     self._level_end_coarse_block_idx = []
-    self._block_coord = {}
+    self._block_coord = OrderedDict()
     self._causal_block_names = []
+    self._neighbor_block_names = []
 
   @abc.abstractmethod
   def hierarchical_coarsen(
@@ -364,7 +366,7 @@ class TokenHierarchy(metaclass=abc.ABCMeta):
     """
 
   @property
-  def block_coord(self) -> Dict[TokenBlockName, int]:
+  def block_coord(self) -> OrderedDict[TokenBlockName, int]:
     return self._block_coord
 
   @property
@@ -375,7 +377,15 @@ class TokenHierarchy(metaclass=abc.ABCMeta):
       return list(self._block_coord.keys())
 
   @property
+  def neighbor_block_names(self) -> List[TokenBlockName]:
+    return self._neighbor_block_names
+
+  @property
   def num_cluster(self) -> int:
+    return self._num_cluster
+
+  @property
+  def num_block_cluster(self) -> int:
     return self._num_cluster
 
   @property
@@ -524,12 +534,14 @@ class OneDimTokenHierarchy(TokenHierarchy):
     self._total_num_block = sum(self._num_block)
 
     # This is used to access h-attention blocks.
-    self._block_coord = {
+    self._block_coord = collections.OrderedDict({
         TokenBlockName.ANCHOR: 0,
         TokenBlockName.LEFT: -1,
-        TokenBlockName.RIGHT: 1
-    }
-    self._causal_block_names = [TokenBlockName.LEFT, TokenBlockName.ANCHOR]
+        TokenBlockName.RIGHT: 1,
+    })
+    self._causal_block_names = [TokenBlockName.ANCHOR, TokenBlockName.LEFT]
+    self._neighbor_block_names = list(self.block_names)
+    self._neighbor_block_names.remove(TokenBlockName.ANCHOR)
 
     # This is used to unpack multilevel blocks.
     self._level_end_coarse_block_idx = [0] * self._num_level

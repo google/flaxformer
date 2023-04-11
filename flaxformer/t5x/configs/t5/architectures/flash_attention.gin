@@ -1,0 +1,11 @@
+from __gin__ import dynamic_registration
+
+from flaxformer.components.attention import dense_attention
+from flaxformer.components.attention import memory_efficient_attention
+
+
+dense_attention.MultiQueryDotProductAttention:
+  attention_fn = @memory_efficient_attention.dot_product_attention_multiquery
+
+# Note that this attention function only works when the sequence length is
+# less than, or a multiple of dot_product_attention_multiquery.key_chunk_size.

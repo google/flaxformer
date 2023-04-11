@@ -1,4 +1,4 @@
-# Copyright 2022 Google LLC.
+# Copyright 2023 Google LLC.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -18,6 +18,7 @@ import json
 import pathlib
 
 from absl.testing import absltest
+from flax.core import unfreeze
 import jax
 from jax import random
 import jax.numpy as jnp
@@ -329,7 +330,7 @@ class AttentionBlockTest(absltest.TestCase):
     self.assertEqual(input_shape, result.shape)
 
     # Note: The layernorm has no axes annotations.
-    params = variables['params'].unfreeze()
+    params = unfreeze(variables['params'])
     del params['layer_norm']
     self.assertDictEqual(
         testing_utils.param_dtypes_shapes_axes(params,
@@ -413,7 +414,7 @@ class MlpBlockTest(absltest.TestCase):
     self.assertEqual(input_shape, result.shape)
 
     # Note: The layernorm has no axes annotations.
-    params = variables['params'].unfreeze()
+    params = unfreeze(variables['params'])
     del params['layer_norm']
     self.assertDictEqual(
         testing_utils.param_dtypes_shapes_axes(params,

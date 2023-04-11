@@ -1,4 +1,4 @@
-# Copyright 2022 Google LLC.
+# Copyright 2023 Google LLC.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -25,6 +25,7 @@ from absl.testing import parameterized
 from aqt.jax_legacy.jax import quantization as aqt
 from flax import linen as nn
 from flax.core import freeze
+from flax.core import unfreeze
 from flax.linen import partitioning as flax_partitioning
 import jax
 from jax import dtypes
@@ -1473,7 +1474,7 @@ class AttentionTest(parameterized.TestCase):
       }
 
     self.assertDictEqual(
-        jax.tree_map(lambda a: a.tolist(), params['params'].unfreeze()),
+        jax.tree_map(lambda a: a.tolist(), unfreeze(params['params'])),
         expected_params,
     )
 
@@ -1633,7 +1634,7 @@ class QuantizedAttentionTest(parameterized.TestCase):
         dtype=np.float32,
     )
 
-    expected_params = freeze({
+    expected_params = {
         'params': {
             'query': {
                 'kernel': jnp.array(
@@ -1687,13 +1688,13 @@ class QuantizedAttentionTest(parameterized.TestCase):
                 'bias_axes': AxisMetadata(names=('embed',)),
             },
         },
-    })
+    }
     result, params = module.init_with_output(
         random.PRNGKey(0), inputs_q, inputs_kv, enable_dropout=False
     )
     jax.tree_map(
         functools.partial(np.testing.assert_allclose, rtol=1e-6),
-        params,
+        unfreeze(params),
         expected_params,
     )
 
@@ -1754,7 +1755,7 @@ class QuantizedAttentionTest(parameterized.TestCase):
         random.PRNGKey(0), inputs_q, inputs_kv, enable_dropout=False
     )
 
-    expected_params = freeze({
+    expected_params = {
         'params': {
             'query': {
                 'qkernel': jnp.array([[[0], [0]], [[0], [0]]], dtype=jnp.int8),
@@ -1811,10 +1812,10 @@ class QuantizedAttentionTest(parameterized.TestCase):
                 'bias_axes': AxisMetadata(names=('embed',)),
             },
         },
-    })
+    }
     jax.tree_map(
         functools.partial(np.testing.assert_allclose, rtol=1e-6),
-        params,
+        unfreeze(params),
         expected_params,
     )
     self.assertDictEqual(

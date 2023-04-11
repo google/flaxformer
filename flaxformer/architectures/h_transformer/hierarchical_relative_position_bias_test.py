@@ -1,4 +1,4 @@
-# Copyright 2022 Google LLC.
+# Copyright 2023 Google LLC.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -39,7 +39,6 @@ class RpbTest(parameterized.TestCase):
     rpb_1d_module = h_rpb.OneDimHierarchicalRelativePositionBias(
         num_cluster=self.num_cluster,
         num_head=self.num_head,
-        enable_param_axes=True,
     )
     rng = random.PRNGKey(0)
     result, variables = rpb_1d_module.init_with_output(rng, block_coord)

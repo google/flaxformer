@@ -1,4 +1,4 @@
-# Copyright 2022 Google LLC.
+# Copyright 2023 Google LLC.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -62,7 +62,7 @@ class AttentionPooling(nn.Module):
     act_fn: activation function.
   """
 
-  kernel_init: Initializer = default_kernel_init
+  kernel_init: Initializer = default_kernel_init  # pytype: disable=annotation-type-mismatch  # jax-types
   dtype: DType = jnp.float32
   act_fn: str = 'linear'
 

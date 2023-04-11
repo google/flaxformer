@@ -1,4 +1,4 @@
-# Copyright 2022 Google LLC.
+# Copyright 2023 Google LLC.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -45,7 +45,7 @@ BIAS_INIT = nn.initializers.normal(stddev=1e-6)
 
 def make_token_emb1(vocab_size, dtype, features=13):
   """First test configuration for token embeddings."""
-  return embedding.Embed(
+  return embedding.Embed(  # pytype: disable=wrong-arg-types  # jax-types
       num_embeddings=vocab_size,
       features=features,
       cast_input_dtype=jnp.int32,
@@ -58,7 +58,7 @@ def make_token_emb1(vocab_size, dtype, features=13):
 
 def make_attention1(num_attn_heads, dtype, use_rotary_embedding=False):
   """First test configuration for attention."""
-  return dense_attention.MultiHeadDotProductAttention(
+  return dense_attention.MultiHeadDotProductAttention(  # pytype: disable=wrong-arg-types  # jax-types
       num_heads=num_attn_heads,
       dtype=dtype,
       qkv_features=512,
@@ -254,7 +254,7 @@ def make_parallel_fused_transformer_config(
 
   def _make_mq_attention(num_attn_heads, dtype):
     """First test configuration for attention."""
-    return dense_attention.MultiQueryDotProductAttention(
+    return dense_attention.MultiQueryDotProductAttention(  # pytype: disable=wrong-arg-types  # jax-types
         num_heads=num_attn_heads,
         dtype=dtype,
         qkv_features=512,
@@ -301,7 +301,7 @@ def make_parallel_fused_transformer_config(
     )
 
   def _make_output_logits():
-    return dense.DenseGeneral(
+    return dense.DenseGeneral(  # pytype: disable=wrong-arg-types  # jax-types
         4,
         dtype=dtype,
         kernel_init=FINAL_KERNEL_INIT,
@@ -488,7 +488,7 @@ def test_make_decoder_only1() -> t5_architecture.DecoderOnly:
     )
 
   def make_output_logits():
-    return dense.DenseGeneral(
+    return dense.DenseGeneral(  # pytype: disable=wrong-arg-types  # jax-types
         4,
         dtype=dtype,
         kernel_init=FINAL_KERNEL_INIT,

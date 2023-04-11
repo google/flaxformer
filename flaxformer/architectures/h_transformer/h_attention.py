@@ -1,4 +1,4 @@
-# Copyright 2022 Google LLC.
+# Copyright 2023 Google LLC.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -16,25 +16,26 @@ r"""Hierarchical attention classes."""
 import abc
 import enum
 import functools
-from typing import Dict, Optional
+from typing import Any, Callable, Dict, Optional, Union, Tuple
 
 from absl import logging
 
 from flax import linen as nn
-from flax.linen import partitioning as flax_partitioning
 import gin
 import jax
 from jax import lax
 from jax import random
 import jax.numpy as jnp
 import numpy as np
-from flaxformer import activation_partitioning
 from flaxformer.architectures.h_transformer import hierarchical_relative_position_bias as h_rpb
+from flaxformer.architectures.h_transformer import partitioning
 from flaxformer.architectures.h_transformer import token_hierarchy as th
 from flaxformer.components import dense
 from flaxformer.types import Array
 from flaxformer.types import Initializer
 from flaxformer.types import PRNGKey
+
+AXES = partitioning.AxisName
 
 
 @gin.constants_from_enum
@@ -127,11 +128,11 @@ class HierarchicalAttention(nn.Module, metaclass=abc.ABCMeta):
   broadcast_dropout: bool = True
   dropout_rate: float = 0.1
   precision: Optional[jax.lax.Precision] = None
-  kernel_init: Initializer = nn.linear.default_kernel_init
+  kernel_init: Initializer = nn.linear.default_kernel_init  # pytype: disable=annotation-type-mismatch  # jax-types
   bias_init: Initializer = nn.initializers.zeros
   use_bias: bool = True
   split_head_kernel: bool = False
-  rescale_logits: bool = False
+  rescale_logits: bool = True
   sharding_over_head_dimension: bool = True
   use_rpb: bool = True
   use_multihead_rpb: bool = True
@@ -145,6 +146,10 @@ class HierarchicalAttention(nn.Module, metaclass=abc.ABCMeta):
   output_projection: bool = True
   softmax_temperature: float = 1.0
   enable_param_axes: bool = True
+  partitioner_factory: Callable[[], Any] = partitioning.Partitioner1D
+
+  def setup(self):
+    self.partitioner = self.partitioner_factory()
 
   @nn.compact
   def __call__(self,
@@ -177,6 +182,9 @@ class HierarchicalAttention(nn.Module, metaclass=abc.ABCMeta):
                                    key_padding_mask)
     is_self_attention = inputs_q is inputs_kv
 
+    inputs_q = self.partitioner.annotate_layer_activation(inputs_q)
+    inputs_kv = self.partitioner.annotate_layer_activation(inputs_kv)
+
     # Applies padding_mask.
     if query_padding_mask is not None:
       if query_padding_mask.ndim == inputs_q.ndim - 1:
@@ -189,6 +197,10 @@ class HierarchicalAttention(nn.Module, metaclass=abc.ABCMeta):
 
     # Performs Multihead projections.
     query, key, value = self._multihead_projection(inputs_q, inputs_kv)
+    if self.sharding_over_head_dimension:
+      query = self.partitioner.annotate_multihead_qkv(query)
+      key = self.partitioner.annotate_multihead_qkv(key)
+      value = self.partitioner.annotate_multihead_qkv(value)
 
     # Computes hierarchical attention and applies it to Value.
     dropout_rng = None
@@ -202,6 +214,7 @@ class HierarchicalAttention(nn.Module, metaclass=abc.ABCMeta):
         key_padding_mask=key_padding_mask,
         dropout_rng=dropout_rng,
         is_self_attention=is_self_attention)
+    updated_value = self.partitioner.annotate_layer_activation(updated_value)
 
     if self.output_projection:
       # The updated_value no longer has multihead shape due to interpolation.
@@ -218,7 +231,7 @@ class HierarchicalAttention(nn.Module, metaclass=abc.ABCMeta):
       )
       if self.enable_param_axes:
         kwargs['reshape_kernel'] = False
-        kwargs['kernel_axis_names'] = ['kv', 'embed']
+        kwargs['kernel_axis_names'] = [AXES.KV, AXES.EMBED]
         return dense.DenseGeneral(**kwargs)(updated_value)
       else:
         return nn.DenseGeneral(**kwargs)(updated_value)
@@ -274,12 +287,16 @@ class HierarchicalAttention(nn.Module, metaclass=abc.ABCMeta):
     qkv_features = self.qkv_features or inputs_q.shape[-1]
     if qkv_features % self.num_heads != 0:
       raise ValueError(
-          f'The features dimension {qkv_features} is not divisible by number of '
-          f'heads {self.num_heads}.')
+          f'The features dimension {qkv_features} is not divisible by number '
+          f'of heads {self.num_heads}.'
+      )
 
   @abc.abstractmethod
-  def _setup_hierarchy(self, features: int,
-                       for_self_attention: bool) -> th.TokenHierarchy:
+  def _setup_hierarchy(
+      self,
+      features: Union[int, Tuple[int, int]],
+      for_self_attention: bool,
+  ) -> th.TokenHierarchy:
     """Sets up token hierarchy.
 
     Args:
@@ -301,35 +318,6 @@ class HierarchicalAttention(nn.Module, metaclass=abc.ABCMeta):
     Returns:
        Instance of HierarchicalRelativePositionBias.
     """
-
-  @abc.abstractmethod
-  def _get_qkv_axis_names(self):
-    """Get partitioning axis names for Query/Key/Value.
-
-    Returns:
-       Tuple with axis names.
-    """
-
-  def _shard_over_head_dimension(self, qkv: Array) -> Array:
-    """Shards multihead projections.
-
-    Args:
-      qkv: Projected Query/Key/Value  with shape <float>[batch, length,
-        num_heads, head_dim].
-
-    Returns:
-       Sharded projection of Query/Key/Value.
-    """
-    if flax_partitioning.get_axis_rules():
-      axis_names = self._get_qkv_axis_names()
-      qkv = flax_partitioning.with_sharding_constraint(qkv, axis_names)
-    else:
-      # Only partitions along data axis because the partitioner does not handle
-      # array with ndim=5 for both data and model partition. This is less
-      # desirable. So callers should try to make the axis rules valid so the
-      # if-branch above is taken. The default t5x setting guarantees this.
-      qkv = activation_partitioning.with_sharding(qkv, 1)
-    return qkv
 
   def _multihead_projection(self, inputs_q, inputs_kv):
     """Project inputs_q/kv to multi-headed query, key and value.
@@ -356,7 +344,7 @@ class HierarchicalAttention(nn.Module, metaclass=abc.ABCMeta):
       )
       if self.enable_param_axes:
         dense_module = dense.DenseGeneral
-        kwargs['kernel_axis_names'] = ['embed', 'heads', 'kv']
+        kwargs['kernel_axis_names'] = [AXES.EMBED, AXES.HEADS, AXES.KV]
         kwargs['reshape_kernel'] = not self.split_head_kernel
       else:
         dense_module = nn.DenseGeneral
@@ -370,7 +358,8 @@ class HierarchicalAttention(nn.Module, metaclass=abc.ABCMeta):
               inputs_kv)
       depth_scaling = jnp.sqrt(head_dim).astype(self.dtype)
       if self.rescale_logits:
-        # The rescaling is done explicitly.
+        # The rescaling is done explicitly. This takes more memory but is
+        # numerically more stable.
         inputs_q /= depth_scaling
         query_kernel_init = self.kernel_init
       else:
@@ -390,11 +379,6 @@ class HierarchicalAttention(nn.Module, metaclass=abc.ABCMeta):
       query = inputs_q.reshape(projected_shape)
       key = inputs_kv.reshape(projected_shape)
       value = key
-
-    if self.sharding_over_head_dimension:
-      query = self._shard_over_head_dimension(query)
-      key = self._shard_over_head_dimension(key)
-      value = self._shard_over_head_dimension(value)
 
     return query, key, value
 
@@ -425,40 +409,66 @@ class HierarchicalAttention(nn.Module, metaclass=abc.ABCMeta):
     Returns:
       Updated Value with shape <float>[batch..., length, features]`.
     """
-    seq_length = query.shape[1]
     head_dim = query.shape[-1]
-    hierarchy = self._setup_hierarchy(
-        seq_length, for_self_attention=is_self_attention)
+    if query.ndim == 5:
+      seq_length_x = query.shape[-3]
+      seq_length_y = query.shape[-4]
+      hierarchy = self._setup_hierarchy(
+          features=(seq_length_x, seq_length_y),
+          for_self_attention=is_self_attention,
+      )
+    else:
+      seq_length = query.shape[-3]
+      hierarchy = self._setup_hierarchy(
+          seq_length, for_self_attention=is_self_attention
+      )
     coarse_query = hierarchy.hierarchical_coarsen(
         query,
         input_array_name=th.InputArrayName.QUERY,
         padding_mask=query_padding_mask)
-    coarse_query = coarse_query.packed_coarse_qkv
+    packed_coarse_q = coarse_query.packed_coarse_qkv
+    if self.sharding_over_head_dimension:
+      packed_coarse_q = self.partitioner.annotate_coarse_qkv(packed_coarse_q)
     coarse_key = hierarchy.hierarchical_coarsen(
         key,
         input_array_name=th.InputArrayName.KEY,
         padding_mask=key_padding_mask)
     aggregated_key_padding_mask = coarse_key.packed_aggregated_key_padding_mask
-    coarse_key = coarse_key.packed_coarse_qkv
+    packed_coarse_k = coarse_key.packed_coarse_qkv
+    if self.sharding_over_head_dimension:
+      packed_coarse_k = self.partitioner.annotate_coarse_qkv(packed_coarse_k)
 
-    similarity = self._compute_hierarchical_similarity(coarse_query, coarse_key,
-                                                       hierarchy)
+    similarity = self._compute_hierarchical_similarity(
+        packed_coarse_q, packed_coarse_k, hierarchy
+    )
+    if self.sharding_over_head_dimension:
+      similarity = self.partitioner.annotate_similarity(similarity)
     attention = self._compute_hierarchical_attention(similarity, hierarchy)
+    if self.sharding_over_head_dimension:
+      attention = self.partitioner.annotate_attention(attention)
     softmax_partition = self._compute_softmax_partition(
         attention, hierarchy, head_dim, query_padding_mask,
         aggregated_key_padding_mask)
+    softmax_partition = self.partitioner.annotate_softmax_partition(
+        softmax_partition
+    )
 
     # Note:
     # Attention dropout should follow the computation of softmax_partition,
     # according to the implementation in flax.nn.attention.
     if dropout_rng is not None:
       attention = self._attention_dropout(attention, hierarchy, dropout_rng)  # pytype: disable=wrong-arg-types  # jax-ndarray
+    if self.sharding_over_head_dimension:
+      attention = self.partitioner.annotate_attention(attention)
 
     coarse_value = hierarchy.hierarchical_coarsen(
         value, input_array_name=th.InputArrayName.VALUE)
     coarse_value = coarse_value.packed_coarse_qkv
+    if self.sharding_over_head_dimension:
+      coarse_value = self.partitioner.annotate_coarse_qkv(coarse_value)
     updated_value = self._multiply_attention_value(attention, coarse_value,
                                                    hierarchy)
+    updated_value = self.partitioner.annotate_layer_activation(updated_value)
     updated_value /= softmax_partition
 
     if query_padding_mask is not None:
@@ -467,6 +477,7 @@ class HierarchicalAttention(nn.Module, metaclass=abc.ABCMeta):
       # corresponding to these rows in updated_value should be zeros.
       updated_value *= query_padding_mask
 
+    updated_value = self.partitioner.annotate_layer_activation(updated_value)
     return updated_value
 
   def _compute_hierarchical_similarity(
@@ -505,11 +516,14 @@ class HierarchicalAttention(nn.Module, metaclass=abc.ABCMeta):
     similarity = {}
     for block_name in hierarchy.block_names:
       similarity[block_name] = _matmult(query[block_name], key[block_name])
+      if self.sharding_over_head_dimension:
+        similarity[block_name] = self.partitioner.annotate_similarity(
+            similarity[block_name]
+        )
       if self.use_rpb:
         block_coord = hierarchy.block_coord[block_name]
         position_bias = position_bias_fn(block_coord)
-        # Explicitly duplicates along batch. This is potentially useful for
-        # GPU training.
+        # Explicitly duplicates along batch. This is useful for model partition.
         batch = query[block_name].shape[0]
         position_bias = jnp.repeat(position_bias, batch, axis=0)
         if block_name == th.TokenBlockName.ANCHOR:
@@ -570,6 +584,11 @@ class HierarchicalAttention(nn.Module, metaclass=abc.ABCMeta):
       # The jnp.stack() adds axis=0 which is then removed by jnp.max().
       max_similarity_all = jnp.stack(max_similarity_list, axis=0)
       similarity_offset = jnp.max(max_similarity_all, axis=0, keepdims=False)
+
+    if self.sharding_over_head_dimension:
+      similarity_offset = self.partitioner.annotate_similarity(
+          similarity_offset
+      )
     return similarity_offset
 
   def _compute_hierarchical_attention(
@@ -592,15 +611,15 @@ class HierarchicalAttention(nn.Module, metaclass=abc.ABCMeta):
       attention[block_name] = jnp.exp(
           similarity[block_name] / self.softmax_temperature
       )
+    if self.sharding_over_head_dimension:
+      attention = self.partitioner.annotate_attention(attention)
 
     # This is to correct the overlapping between attention blocks for the
     # adjacent levels
     if hierarchy.num_level > 1:
       logging.info('Applying correction_mask')
       correction_mask = self._gen_correction_mask(hierarchy)
-      for block_name in hierarchy.block_names:
-        if block_name == th.TokenBlockName.ANCHOR:
-          continue
+      for block_name in hierarchy.neighbor_block_names:
         attention[block_name] *= correction_mask[block_name]
 
     # This is for the auto-regressive decoding. We only need to explicitly
@@ -626,7 +645,6 @@ class HierarchicalAttention(nn.Module, metaclass=abc.ABCMeta):
       The correction mask.
     """
 
-  @abc.abstractmethod
   def _gen_causal_mask(self, hierarchy: th.TokenHierarchy) -> Array:
     """Generates causal mask.
 
@@ -634,8 +652,13 @@ class HierarchicalAttention(nn.Module, metaclass=abc.ABCMeta):
       hierarchy: Token hierarchy.
 
     Returns:
-      The causal mask.
+      Causal mask with shape <float>[num_block_cluster, num_block_cluster, 1].
     """
+    nc = hierarchy.num_block_cluster
+    causal_mask = jnp.tril(jnp.ones((nc, nc), dtype=self.dtype), k=0)
+    # Needs to add the last num_heads axis. The first 2 dimensions in
+    # attention[TokenBlockName.ANCHOR] are handled by broadcast.
+    return causal_mask[:, :, None]
 
   def _compute_softmax_partition(
       self,
@@ -680,9 +703,7 @@ class HierarchicalAttention(nn.Module, metaclass=abc.ABCMeta):
         # Expands from [batch_size, packed_dim, 1, 1] to
         # [batch_size, packed_dim, num_clusters, num_heads] in preparation
         # to compute attention*all_ones.
-        for block_name in hierarchy.block_names:
-          if block_name == th.TokenBlockName.ANCHOR:
-            continue
+        for block_name in hierarchy.neighbor_block_names:
           repeated_all_ones = jnp.repeat(
               all_ones[block_name], num_cluster, axis=2)
           repeated_all_ones = jnp.repeat(repeated_all_ones, num_heads, axis=3)
@@ -857,8 +878,9 @@ class OneDimHierarchicalAttention(HierarchicalAttention):
   See arxiv.org/abs/2107.11906 for algorithm details.
   """
 
-  def _setup_hierarchy(self, features: int,
-                       for_self_attention: bool) -> th.OneDimTokenHierarchy:
+  def _setup_hierarchy(
+      self, features: Union[int, Tuple[int, int]], for_self_attention: bool
+  ) -> th.OneDimTokenHierarchy:
     return th.OneDimTokenHierarchy(
         features,
         num_cluster=self.num_clusters,
@@ -903,35 +925,19 @@ class OneDimHierarchicalAttention(HierarchicalAttention):
     num_fine_block = hierarchy.num_fine_block
     num_coarse_block = hierarchy.num_coarse_block
     all_ones_block = jnp.ones((num_fine_block, nc, nc, 1), dtype=self.dtype)
-    right_block = np.ones((1, nc, nc, 1), dtype=self.dtype)
+    right_block = np.ones((num_coarse_block, nc, nc, 1), dtype=self.dtype)
     right_block[:, half_nc:, :half_nc] = 0
-    right_blocks = jnp.repeat(right_block, num_coarse_block, axis=0)
-    left_block = np.ones((1, nc, nc, 1), dtype=self.dtype)
+    left_block = np.ones((num_coarse_block, nc, nc, 1), dtype=self.dtype)
     left_block[:, :half_nc, half_nc:] = 0
-    left_blocks = jnp.repeat(left_block, num_coarse_block, axis=0)
-    return {
-        th.TokenBlockName.RIGHT:
-            jnp.concatenate((all_ones_block, right_blocks), axis=0),
-        th.TokenBlockName.LEFT:
-            jnp.concatenate((all_ones_block, left_blocks), axis=0),
+    correction_mask = {
+        th.TokenBlockName.RIGHT: jnp.concatenate(
+            (all_ones_block, right_block), axis=0
+        ),
+        th.TokenBlockName.LEFT: jnp.concatenate(
+            (all_ones_block, left_block), axis=0
+        ),
     }
-
-  def _gen_causal_mask(self, hierarchy: th.TokenHierarchy) -> Array:
-    """Generate causal mask.
-
-    Args:
-      hierarchy: Token hierarchy.
-
-    Returns:
-      The causal mask with shape <float>[num_clusters, num_clusters, num_heads]
-    """
-    causal_mask = jnp.tril(
-        jnp.ones((hierarchy.num_cluster, hierarchy.num_cluster),
-                 dtype=self.dtype),
-        k=0)
-    # Needs to add the last num_heads axis. The first 2 dimensions in
-    # attention[TokenBlockName.ANCHOR] are handled by broadcast.
-    return causal_mask[:, :, None]
+    return correction_mask
 
   def _duplicate_heads(self, softmax_partition: Array, head_dim: int) -> Array:
     """Duplicates entries in softmax_partition by head_dim times.
@@ -949,9 +955,6 @@ class OneDimHierarchicalAttention(HierarchicalAttention):
         softmax_partition[..., None], head_dim, axis=3)
     new_shape = softmax_partition.shape[:2] + (self.num_heads * head_dim,)
     return softmax_partition.reshape(new_shape)
-
-  def _get_qkv_axis_names(self):
-    return ('batch', 'length', 'heads', 'kv')
 
 
 class OneDimDecoderSelfAttention(OneDimHierarchicalAttention):
@@ -980,8 +983,9 @@ class OneDimEncoderSelfAttention(OneDimHierarchicalAttention):
   def __call__(
       self,  # pytype: disable=signature-mismatch  # overriding-default-value-checks
       inputs: Array,
-      padding_mask: Array,
-      enable_dropout: Optional[bool] = False) -> Array:
+      padding_mask: Optional[Array] = None,
+      enable_dropout: Optional[bool] = False,
+  ) -> Array:
     return super().__call__(
         inputs,
         inputs,

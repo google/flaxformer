@@ -1,4 +1,4 @@
-# Copyright 2022 Google LLC.
+# Copyright 2023 Google LLC.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -21,6 +21,7 @@ from absl.testing import absltest
 from absl.testing import parameterized
 
 from aqt.jax_legacy.jax import quantization as aqt
+import flax
 from flax import linen as nn
 from flax.linen import partitioning
 import jax
@@ -132,36 +133,46 @@ class DenseTest(parameterized.TestCase):
     params = module.init(random.PRNGKey(0), inputs, enable_dropout=False)
 
     assert_same_tree(
-        params['params'].unfreeze(), {
+        flax.core.unfreeze(params['params']),
+        {
             'wi': {
-                'kernel': [[
-                    -0.2650487422943115, -0.9350943565368652,
-                    -0.09850478172302246, -0.3685007095336914
+                'kernel': [
+                    [
+                        -0.2650487422943115,
+                        -0.9350943565368652,
+                        -0.09850478172302246,
+                        -0.3685007095336914,
+                    ],
+                    [
+                        0.4673573970794678,
+                        0.058478593826293945,
+                        -0.5871121883392334,
+                        -0.7413773536682129,
+                    ],
                 ],
-                           [
-                               0.4673573970794678, 0.058478593826293945,
-                               -0.5871121883392334, -0.7413773536682129
-                           ]],
             },
             'wo': {
-                'kernel': [[-0.7278401851654053, 0.6603918075561523],
-                           [-0.4713869094848633, -0.37511157989501953],
-                           [-0.15709185600280762, 0.7399897575378418],
-                           [-0.7014286518096924, -0.2968623638153076]],
+                'kernel': [
+                    [-0.7278401851654053, 0.6603918075561523],
+                    [-0.4713869094848633, -0.37511157989501953],
+                    [-0.15709185600280762, 0.7399897575378418],
+                    [-0.7014286518096924, -0.2968623638153076],
+                ],
             },
-        })
+        },
+    )
 
     self.assertDictEqual(
-        params['params_axes'].unfreeze(), {
+        flax.core.unfreeze(params['params_axes']),
+        {
             'wi': {
-                'kernel_axes':
-                    partitioning.AxisMetadata(names=('embed', 'mlp'))
+                'kernel_axes': partitioning.AxisMetadata(names=('embed', 'mlp'))
             },
             'wo': {
-                'kernel_axes':
-                    partitioning.AxisMetadata(names=('mlp', 'embed'))
+                'kernel_axes': partitioning.AxisMetadata(names=('mlp', 'embed'))
             },
-        })
+        },
+    )
     result = module.apply(params, inputs, enable_dropout=False)
 
     np.testing.assert_allclose(
@@ -199,52 +210,62 @@ class DenseTest(parameterized.TestCase):
         enable_dropout=False,
         mutable=['params', 'params_axes'])
     assert_same_tree(
-        variables['params'].unfreeze(), {
+        flax.core.unfreeze(variables['params']),
+        {
             'wi': {
                 'kernel': [
                     [
-                        -0.2650487422943115, -0.9350943565368652,
-                        -0.09850478172302246, -0.3685007095336914
+                        -0.2650487422943115,
+                        -0.9350943565368652,
+                        -0.09850478172302246,
+                        -0.3685007095336914,
                     ],
                     [
-                        0.4673573970794678, 0.058478593826293945,
-                        -0.5871121883392334, -0.7413773536682129
+                        0.4673573970794678,
+                        0.058478593826293945,
+                        -0.5871121883392334,
+                        -0.7413773536682129,
                     ],
                 ],
             },
             'wo': {
                 'kernel': [
                     [
-                        0.549019455909729, -0.7615442276000977,
-                        0.2908056378364563
+                        0.549019455909729,
+                        -0.7615442276000977,
+                        0.2908056378364563,
                     ],
                     [
-                        0.8247717618942261, -0.37039434909820557,
-                        0.14754922688007355
+                        0.8247717618942261,
+                        -0.37039434909820557,
+                        0.14754922688007355,
                     ],
                     [
-                        -0.4929429590702057, 0.34858351945877075,
-                        -0.27896377444267273
+                        -0.4929429590702057,
+                        0.34858351945877075,
+                        -0.27896377444267273,
                     ],
                     [
-                        -0.5565190315246582, -0.8740609288215637,
-                        0.6347796320915222
+                        -0.5565190315246582,
+                        -0.8740609288215637,
+                        0.6347796320915222,
                     ],
                 ],
             },
-        })
+        },
+    )
 
     self.assertDictEqual(
-        variables['params_axes'].unfreeze(), {
+        flax.core.unfreeze(variables['params_axes']),
+        {
             'wi': {
-                'kernel_axes':
-                    partitioning.AxisMetadata(names=('embed', 'mlp'))
+                'kernel_axes': partitioning.AxisMetadata(names=('embed', 'mlp'))
             },
             'wo': {
-                'kernel_axes':
-                    partitioning.AxisMetadata(names=('mlp', 'embed'))
+                'kernel_axes': partitioning.AxisMetadata(names=('mlp', 'embed'))
             },
-        })
+        },
+    )
     result = module.apply(variables, inputs, enable_dropout=False)
     np.testing.assert_allclose(
         result.tolist(),
@@ -384,17 +405,23 @@ class DenseTest(parameterized.TestCase):
     result, variables = module.init_with_output(
         random.PRNGKey(0), inputs, enable_dropout=False)
     assert_same_tree(
-        variables['params'].unfreeze(), {
+        flax.core.unfreeze(variables['params']),
+        {
             'wi': {
                 'qkernel': [[0, 0, 0, 0], [0, 0, 0, 0]],
-                'qscale':
-                    [[2.818772e-07, -9.838715e-07, 1.211104e-06, 2.669436e-07]],
+                'qscale': [[
+                    2.818772e-07,
+                    -9.838715e-07,
+                    1.211104e-06,
+                    2.669436e-07,
+                ]],
             },
             'wo': {
                 'qkernel': [[0, 0], [0, 0], [0, 0], [0, 0]],
                 'qscale': [[-1.854524e-06, 1.883966e-06]],
-            }
-        })
+            },
+        },
+    )
     self.assertDictEqual(
         testing_utils.param_dtypes_shapes_axes(variables['params'],
                                                variables['params_axes']),
@@ -440,24 +467,34 @@ class DenseTest(parameterized.TestCase):
     result, variables = module.init_with_output(
         random.PRNGKey(0), inputs, enable_dropout=False)
     assert_same_tree(
-        variables['params'].unfreeze(), {
+        flax.core.unfreeze(variables['params']),
+        {
             'wi': {
-                'kernel': [[
-                    -0.2650487422943115, -0.9350943565368652,
-                    -0.09850478172302246, -0.3685007095336914
+                'kernel': [
+                    [
+                        -0.2650487422943115,
+                        -0.9350943565368652,
+                        -0.09850478172302246,
+                        -0.3685007095336914,
+                    ],
+                    [
+                        0.4673573970794678,
+                        0.058478593826293945,
+                        -0.5871121883392334,
+                        -0.7413773536682129,
+                    ],
                 ],
-                           [
-                               0.4673573970794678, 0.058478593826293945,
-                               -0.5871121883392334, -0.7413773536682129
-                           ]],
             },
             'wo': {
-                'kernel': [[-0.7278401851654053, 0.6603918075561523],
-                           [-0.4713869094848633, -0.37511157989501953],
-                           [-0.15709185600280762, 0.7399897575378418],
-                           [-0.7014286518096924, -0.2968623638153076]],
+                'kernel': [
+                    [-0.7278401851654053, 0.6603918075561523],
+                    [-0.4713869094848633, -0.37511157989501953],
+                    [-0.15709185600280762, 0.7399897575378418],
+                    [-0.7014286518096924, -0.2968623638153076],
+                ],
             },
-        })
+        },
+    )
     self.assertDictEqual(
         testing_utils.param_dtypes_shapes_axes(variables['params'],
                                                variables['params_axes']),
@@ -602,8 +639,11 @@ class DenseTest(parameterized.TestCase):
       }
 
     self.assertDictEqual(
-        jax.tree_map(lambda a: a.tolist(), params['params'].unfreeze()),
-        expected_params)
+        jax.tree_map(
+            lambda a: a.tolist(), flax.core.unfreeze(params['params'])
+        ),
+        expected_params,
+    )
 
 
 if __name__ == '__main__':

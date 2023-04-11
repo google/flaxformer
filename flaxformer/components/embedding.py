@@ -1,4 +1,4 @@
-# Copyright 2022 Google LLC.
+# Copyright 2023 Google LLC.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -205,7 +205,7 @@ class Embed(nn.Module, Embedder[Array]):
   cast_input_dtype: Optional[DType] = None
   dtype: DType = jnp.float32
   attend_dtype: Optional[DType] = None
-  embedding_init: Initializer = default_embed_init
+  embedding_init: Initializer = default_embed_init  # pytype: disable=annotation-type-mismatch  # jax-types
   one_hot: bool = False
   axes: Sequence[str] = ('vocab', 'embed')
   input_axis_names: Sequence[str] = ('batch', 'length')
@@ -506,7 +506,7 @@ class PositionEmbed(nn.Module, EmbedderWithDecode[Array]):
   num_embeddings: int
   features: int
   dtype: DType = jnp.float32
-  embedding_init: Initializer = default_embed_init
+  embedding_init: Initializer = default_embed_init  # pytype: disable=annotation-type-mismatch  # jax-types
 
   def setup(self):
     shape = (self.num_embeddings, self.features)
@@ -689,7 +689,7 @@ class HashEmbed(nn.Module, Embedder[Array]):
   num_tables: int = 8
   cast_input_dtype: Optional[DType] = None
   dtype: DType = jnp.float32
-  embedding_init: Initializer = default_embed_init
+  embedding_init: Initializer = default_embed_init  # pytype: disable=annotation-type-mismatch  # jax-types
   one_hot: bool = False
 
   _tables: Sequence[Embed] = dataclasses.field(init=False)
@@ -781,7 +781,7 @@ class NgramHashEmbed(nn.Module, Embedder[Array]):
   num_tables: int = 8
   cast_input_dtype: Optional[DType] = None
   dtype: DType = jnp.float32
-  embedding_init: Initializer = default_embed_init
+  embedding_init: Initializer = default_embed_init  # pytype: disable=annotation-type-mismatch  # jax-types
   one_hot: bool = False
 
   _tables_by_order: Mapping[str, Sequence[Embed]] = (

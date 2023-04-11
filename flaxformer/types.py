@@ -1,4 +1,4 @@
-# Copyright 2022 Google LLC.
+# Copyright 2023 Google LLC.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,7 +14,7 @@
 
 """JAX generic types used as pytype annotations throughout Flaxformer."""
 
-from typing import Callable, Iterable
+from typing import Callable, Sequence
 
 import jax.numpy as jnp
 
@@ -22,7 +22,7 @@ Array = jnp.ndarray
 DType = jnp.dtype
 PRNGKey = jnp.ndarray
 # TODO: Fix types in flax.linen such that we can use `Tuple[int, ...]`.
-Shape = Iterable[int]
+Shape = Sequence[int]
 
 Activation = Callable[..., Array]
 

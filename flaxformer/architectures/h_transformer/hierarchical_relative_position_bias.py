@@ -1,4 +1,4 @@
-# Copyright 2022 Google LLC.
+# Copyright 2023 Google LLC.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -30,6 +30,8 @@ to the overall model training memory usage and runtime.
 from flax import linen as nn
 from flax.linen import partitioning
 import jax.numpy as jnp
+import numpy as np
+from flaxformer.architectures.h_transformer.partitioning import AxisName
 from flaxformer.types import Initializer
 
 
@@ -43,7 +45,7 @@ class HierarchicalRelativePositionBias(nn.Module):
       heads share the same h-RPB.
   """
 
-  position_bias_init: Initializer = nn.initializers.normal(stddev=0.1)
+  position_bias_init: Initializer = nn.initializers.normal(stddev=0.1)  # pytype: disable=annotation-type-mismatch  # jax-types
   num_cluster: int = 2
   num_head: int = 1
   enable_param_axes: bool = True
@@ -59,19 +61,24 @@ class HierarchicalRelativePositionBias(nn.Module):
     Returns:
       Trainable one-dimensional relative position bias array.
         <float>[num_cluster, 3*num_cluster, num_head]
+
+    Notes:
+      A few small static arrays are calculated or allocated with numpy
+      and get folded into program constants. This is more efficient and
+      the memory foot print is as small as O(num_cluster).
     """
     # Key tokens sit at positions with coordinates in the range [0, 3*nc].
     key_length = 3 * self.num_cluster
-    key_positions = jnp.arange(key_length)
+    key_positions = np.arange(key_length)
     # Query tokens sit at positions with coordinates in the range [nc, 2*nc].
     query_length = self.num_cluster
-    query_positions = jnp.arange(self.num_cluster, 2 * self.num_cluster)
+    query_positions = np.arange(self.num_cluster, 2 * self.num_cluster)
     # Compute the relative positions between each query and key pair.
     relative_positions = key_positions.reshape(
         (1, key_length)) - query_positions.reshape((query_length, 1))
     # These indices are used by a bias lookup. So we shift the indices
     # such that the smallest index is zero.
-    relative_positions -= jnp.min(relative_positions)
+    relative_positions -= np.min(relative_positions)
     total_positions = query_length + key_length - 1
     if self.enable_param_axes:
       bias_params = partitioning.param_with_axes(
@@ -79,7 +86,7 @@ class HierarchicalRelativePositionBias(nn.Module):
           self.position_bias_init,
           (total_positions, self.num_head),
           jnp.float32,
-          axes=('relpos_buckets', 'heads'),
+          axes=(AxisName.RELPOS_BUCKETS, AxisName.HEADS),
       )
     else:
       bias_params = self.param(

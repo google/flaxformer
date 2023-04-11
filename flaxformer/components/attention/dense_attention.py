@@ -1,4 +1,4 @@
-# Copyright 2022 Google LLC.
+# Copyright 2023 Google LLC.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -290,7 +290,7 @@ def dot_product_attention_multiquery(
     use_extra_logit: bool = False,
     float32_logits: bool = False,
 ) -> Array:
-  """Computes dot-product mutiquery-attention given query, key, and value.
+  """Computes dot-product multiquery-attention given query, key, and value.
 
   This is a variant of the multi-head dot product attention introduced in
   https://arxiv.org/abs/1706.03762 and implemented in `dot_product_attention`.
@@ -473,7 +473,7 @@ class MultiHeadDotProductAttention(nn.Module, DenseAttention):
   broadcast_dropout: bool = True
   dropout_rate: float = 0.0
   precision: Optional[lax.Precision] = None
-  kernel_init: Initializer = default_kernel_init
+  kernel_init: Initializer = default_kernel_init  # pytype: disable=annotation-type-mismatch  # jax-types
   qkv_kernel_init: Optional[Initializer] = None
   kv_kernel_init: Optional[Initializer] = None
   q_kernel_init: Optional[Initializer] = None
@@ -1123,7 +1123,7 @@ class MultiQueryDotProductAttention(nn.Module, DenseAttention):
   broadcast_dropout: bool = True
   dropout_rate: float = 0.0
   precision: Optional[lax.Precision] = None
-  kernel_init: Initializer = default_kernel_init
+  kernel_init: Initializer = default_kernel_init  # pytype: disable=annotation-type-mismatch  # jax-types
   q_kernel_init: Optional[Initializer] = None
   bias_init: Initializer = initializers.zeros
   rescale_logits: bool = False

@@ -1,4 +1,4 @@
-# Copyright 2022 Google LLC.
+# Copyright 2023 Google LLC.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -15,8 +15,8 @@
 """Tests for flaxformer.embedding."""
 from absl.testing import absltest
 from absl.testing import parameterized
-
 from flax import linen as nn
+from flax.core import pop
 from flax.linen import partitioning as flax_partitioning
 import jax
 import numpy as np
@@ -287,7 +287,7 @@ class EmbeddingTest(parameterized.TestCase):
         embedding_init=jax.nn.initializers.ones)
     variables = position_embedder.init(
         jax.random.PRNGKey(0), inputs=positions, decode=True)
-    state, params = variables.pop('params')
+    state, params = pop(variables, 'params')
 
     output_embeddings, state = position_embedder.apply(
         {
