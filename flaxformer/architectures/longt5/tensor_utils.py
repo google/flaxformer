@@ -403,3 +403,5 @@ def positions_from_segment_ids(segment_ids: Array) -> Array:
   input_mask = segment_ids > 0
 
   return (raw_range - reset_offset) * input_mask
+
+

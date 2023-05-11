@@ -213,6 +213,7 @@ class DotProduct(nn.Module):
 # ============================ Batch Similarity ================================
 class BatchDotProduct(nn.Module):
   """Batch version of dot product similarity function."""
+  use_only_explicit_hard_negatives: bool = False
 
   @nn.compact
   def __call__(self,
@@ -228,18 +229,42 @@ class BatchDotProduct(nn.Module):
       right_encodings: A 2-D tensor of (right) encodings with shape [batch size,
         encoding dim].
       right_additional_encodings: An optional 2-D tensor of (right) additional
-        encodings with shape [batch size, encoding dim].
+        encodings with shape [batch_size * num_hard_negatives, encoding_dim].
       **params: Hyperparameters dict.
 
     Returns:
-      A 2-D tensor of dot product similarities with either shape
-      [batch size, 2 * batch size] if right_additional_encodings are provided
-      or [batch size, batch size] otherwise.
+      logits: A 2-D tensor of dot product similarities. If
+        right_additional_encodings are provided, then the output shape is
+        [batch_size, batch_size + num_hard_negatives] if
+        use_only_explicit_hard_negatives is True, and
+        [batch_size, num_hard_negatives * batch_size] if
+        use_only_explicit_hard_negatives is False. If right_additional_encodings
+        are not provided, then the output shape is [batch_size, batch_size].
     """
-    if right_additional_encodings is not None:
-      right_encodings = jnp.concatenate(
-          [right_encodings, right_additional_encodings], axis=0)
-    logits = jnp.dot(left_encodings, right_encodings.transpose())
+    if self.use_only_explicit_hard_negatives:
+      # Compute in-batch logits of shape [batch_size, batch_size].
+      logits = jnp.dot(left_encodings, right_encodings.transpose())
+      if right_additional_encodings is not None:
+        batch_size, encoding_dim = left_encodings.shape
+        right_additional_encodings = right_additional_encodings.reshape(
+            [batch_size, -1, encoding_dim]
+        )
+        # Logits for explicitly provided hard negatives. The shape
+        # is [batch_size, num_hard_negatives].
+        additional_logits = jnp.sum(
+            left_encodings[:, jnp.newaxis, :] * right_additional_encodings,
+            axis=-1,
+        )
+        # Final logits of shape [batch_size, batch_size + num_hard_negatives].
+        logits = jnp.concatenate([logits, additional_logits], axis=-1)
+    else:
+      if right_additional_encodings is not None:
+        right_encodings = jnp.concatenate(
+            [right_encodings, right_additional_encodings], axis=0
+        )
+      # Final logits. Each examples uses all other hard negatives in the batch,
+      # so the shape is [batch_size, num_hard_negatives * batch_size].
+      logits = jnp.dot(left_encodings, right_encodings.transpose())
 
     return logits
 

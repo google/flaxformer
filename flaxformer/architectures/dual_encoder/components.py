@@ -43,3 +43,15 @@ class LearnableScaling(nn.Module):
       broadscast_scalar = jnp.expand_dims(self.scalar, axis=1)
       return jnp.asarray(x, self.dtype) * broadscast_scalar
     return jnp.asarray(x, self.dtype)
+
+
+class ConstantScaling(nn.Module):
+  """A module with just one single constant scalar."""
+
+  scaling_value: float = 100.0
+
+  @nn.compact
+  def __call__(self, x: jnp.ndarray, train: bool = False) -> jnp.ndarray:
+    # For backwards compatibility (from before logit scaling was called from
+    # loss modules), constant scaling is applied regardless of train
+    return x * self.scaling_value

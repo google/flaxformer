@@ -385,44 +385,6 @@ class MoeLayerTest(parameterized.TestCase):
       )
 
   @parameterized.parameters(
-      dict(num_model_partitions=-1),
-      dict(num_model_partitions=0),
-      dict(num_model_partitions=1),
-  )
-  def test_num_partitions_incorrect(self, num_model_partitions: int):
-    expert = dense.MlpBlock(
-        use_bias=False, intermediate_dim=2, name='feed_forward_expert'
-    )
-    router = routing.ExpertsChooseMaskedRouter(
-        router_weights=routing.RouterWeights(name='router_weights'),
-        jitter_noise=0.0,
-        dtype=jnp.float32,
-        ignore_padding_tokens=True,
-    )
-    moe_layer = moe_layers.MoeLayer(
-        num_experts=2,
-        num_expert_partitions=2,
-        router=router,
-        max_group_size=16,
-        train_capacity_factor=1.0,
-        eval_capacity_factor=1.0,
-        expert=expert,
-        num_model_partitions=num_model_partitions,
-        optimize_model_parallel_communications=True,
-    )
-    init_batch = {'inputs': jnp.ones((4, 4, 3), jnp.float32)}
-
-    with self.assertRaisesRegex(
-        ValueError,
-        (
-            'optimize_model_parallel_communications=True with '
-            f'num_model_partitions={num_model_partitions} has no effect; '
-            'please set optimize_model_parallel_communications=False'
-        ),
-    ):
-      init_layer_variables(jax.random.PRNGKey(0), moe_layer, init_batch)
-
-  @parameterized.parameters(
       dict(
           num_expert_partitions=1,
           num_model_partitions=1,

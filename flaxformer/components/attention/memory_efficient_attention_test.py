@@ -384,5 +384,192 @@ class AttentionTest(parameterized.TestCase):
         )
 
 
+class SelfAttention(dense_attention.MultiHeadDotProductAttention):
+  """Self-attention special case of multi-head dot-product attention."""
+
+  attention_fn: Callable[[Array, Array, Array], Array] = (
+      memory_efficient_attention.dot_product_attention_queries_per_head
+  )
+
+  @nn.compact
+  def __call__(
+      self,
+      inputs_q: Array,
+      mask: Optional[Array] = None,
+      bias: Optional[Array] = None,
+      enable_dropout: bool = True,
+  ):
+    return super().__call__(
+        inputs_q, inputs_q, mask, bias, enable_dropout=enable_dropout
+    )
+
+
+class MHAttentionTest(parameterized.TestCase):
+
+  def test_dot_product_attention_shape(self):
+    # This test only checks for shape but tries to make sure all code paths are
+    # reached.
+    dropout_rng = random.PRNGKey(0)
+    batch_size, num_heads, q_len, kv_len, qk_depth, v_depth = 1, 2, 3, 4, 5, 6
+
+    query = jnp.ones((batch_size, q_len, num_heads, qk_depth))
+    key = jnp.ones((batch_size, kv_len, num_heads, qk_depth))
+    value = jnp.ones((batch_size, kv_len, num_heads, v_depth))
+    bias = jnp.ones((batch_size, num_heads, q_len, kv_len))
+
+    args = dict(
+        query=query,
+        key=key,
+        value=value,
+        bias=bias,
+        rescale_logits=True,
+        dropout_rng=dropout_rng,
+        dropout_rate=0.5,
+        enable_dropout=True,
+    )
+
+    output = memory_efficient_attention.dot_product_attention_multihead(
+        **args, broadcast_dropout=True
+    )
+    self.assertEqual(output.shape, (batch_size, q_len, num_heads, v_depth))
+
+    # Make sure we also reach the code path where we don't broadcast dropout.
+    output = memory_efficient_attention.dot_product_attention_multihead(
+        **args, broadcast_dropout=False
+    )
+    self.assertEqual(output.shape, (batch_size, q_len, num_heads, v_depth))
+
+  def test_dot_product_attention_no_batch_dim(self):
+    num_heads, q_len, kv_len, qk_depth, v_depth = 1, 2, 3, 4, 5
+    query = jnp.ones((q_len, num_heads, qk_depth))
+    key = jnp.ones((kv_len, num_heads, qk_depth))
+    value = jnp.ones((kv_len, num_heads, v_depth))
+    output = memory_efficient_attention.dot_product_attention_multihead(
+        query, key, value
+    )
+    self.assertEqual(output.shape, (q_len, num_heads, v_depth))
+
+  def test_self_attention(self):
+    # We only test MultiHeadDotProductAttention through SelfAttention because
+    # we are only shape checking anyway.
+    rngs = {'params': random.PRNGKey(0), 'dropout': random.PRNGKey(1)}
+    args = SelfAttentionArgs()
+    model = SelfAttention(**args.init_args())
+    y, _ = model.init_with_output(rngs, **args.apply_args())
+    self.assertEqual(y.shape, (args.batch_size, args.q_len, args.out_features))
+
+  def test_self_attention_cast_logits_float32(self):
+    rngs = {'params': random.PRNGKey(0), 'dropout': random.PRNGKey(1)}
+    args = SelfAttentionArgs(float32_logits=True)
+    model = SelfAttention(**args.init_args())
+    y, _ = model.init_with_output(rngs, **args.apply_args())
+    self.assertEqual(y.shape, (args.batch_size, args.q_len, args.out_features))
+
+  def test_self_attention_no_rescale_logits(self):
+    rngs = {'params': random.PRNGKey(0), 'dropout': random.PRNGKey(1)}
+    args = SelfAttentionArgs(rescale_logits=False)
+    model = SelfAttention(**args.init_args())
+    y, _ = model.init_with_output(rngs, **args.apply_args())
+    self.assertEqual(y.shape, (args.batch_size, args.q_len, args.out_features))
+
+  def test_self_attention_no_out_features(self):
+    rngs = {'params': random.PRNGKey(0), 'dropout': random.PRNGKey(1)}
+    args = SelfAttentionArgs(out_features=None)
+    model = SelfAttention(**args.init_args())
+    y, _ = model.init_with_output(rngs, **args.apply_args())
+    self.assertEqual(y.shape, (args.batch_size, args.q_len, args.features))
+
+  def test_self_attention_no_masking(self):
+    rngs = {'params': random.PRNGKey(0), 'dropout': random.PRNGKey(1)}
+    args = SelfAttentionArgs()
+    model = SelfAttention(**args.init_args())
+    apply_args = args.apply_args()
+    apply_args['mask'] = None
+    y, _ = model.init_with_output(rngs, **apply_args)
+    self.assertEqual(y.shape, (args.batch_size, args.q_len, args.out_features))
+
+  def test_self_attention_with_decoding(self):
+    rngs = {'params': random.PRNGKey(0), 'dropout': random.PRNGKey(1)}
+    args = SelfAttentionArgs(decode=True, q_len=1)
+    model = SelfAttention(**args.init_args())
+    apply_args = args.apply_args()
+    apply_args['mask'] = None
+    apply_args['bias'] = None
+    params = model.init(rngs, **apply_args)
+    y, _ = model.apply(
+        params,
+        **apply_args,
+        mutable=['cache'],
+        rngs={'dropout': random.PRNGKey(2)},
+    )
+    self.assertEqual(y.shape, (args.batch_size, args.q_len, args.out_features))
+
+  @parameterized.parameters({'f': 20}, {'f': 22})
+  def test_multihead_dot_product_attention(self, f):
+    # b: batch, f: qkv_features, q: q_len, k: kv_len, h: num_head, d: head_dim
+    b, q, h, d, k = 2, 3, 4, 5, 6
+
+    base_args = SelfAttentionArgs(
+        num_heads=h,
+        qkv_features=f,
+        out_features=f,
+        dropout_rate=0,
+        rescale_logits=False,
+        use_bias=False,
+    )
+    args = base_args.init_args()
+
+    if f != h * d:
+      args['head_dim'] = d
+
+    np.random.seed(0)
+    inputs_q = np.random.randn(b, q, f)
+    inputs_kv = np.random.randn(b, k, f)
+
+    # Projection: [b, q, f] -> [b, q, h, d]
+    # So the kernels have to be [f, h, d]
+    query_kernel = np.random.randn(f, h, d)
+    key_kernel = np.random.randn(f, h, d)
+    value_kernel = np.random.randn(f, h, d)
+    # `out` calculation: [b, q, h, d] -> [b, q, f]
+    # So kernel has to be [h, d, f]
+    out_kernel = np.random.randn(h, d, f)
+
+    params = {
+        'query': {'kernel': query_kernel.reshape(f, -1)},
+        'key': {'kernel': key_kernel.reshape(f, -1)},
+        'value': {'kernel': value_kernel.reshape(f, -1)},
+        'out': {'kernel': out_kernel.reshape(-1, f)},
+    }
+    y = dense_attention.MultiHeadDotProductAttention(**args).apply(
+        {'params': freeze(params)}, inputs_q, inputs_kv
+    )
+
+    query = np.einsum('bqf,fhd->bqhd', inputs_q, query_kernel)
+    key = np.einsum('bkf,fhd->bkhd', inputs_kv, key_kernel)
+    value = np.einsum('bkf,fhd->bkhd', inputs_kv, value_kernel)
+    logits = np.einsum('bqhd,bkhd->bhqk', query, key)
+    weights = nn.softmax(logits, axis=-1)
+    combined_value = np.einsum('bhqk,bkhd->bqhd', weights, value)
+    y_expected = np.einsum('bqhd,hdf->bqf', combined_value, out_kernel)
+    np.testing.assert_allclose(y, y_expected, rtol=1e-5, atol=1e-5)
+
+  def test_dot_product_attention(self):
+    # b: batch, f: qkv_features, q: q_len, k: kv_len, h: num_head, d: head_dim
+    b, q, h, d, k = 2, 3, 4, 5, 6
+    np.random.seed(0)
+    query = np.random.randn(b, q, h, d)
+    key = np.random.randn(b, k, h, d)
+    value = np.random.randn(b, k, h, d)
+    bias = np.random.randn(b, h, q, k)
+    attn_out = memory_efficient_attention.dot_product_attention_multihead(
+        query, key, value, bias=bias
+    )
+    logits = np.einsum('bqhd,bkhd->bhqk', query, key)
+    weights = jax.nn.softmax(logits + bias, axis=-1)
+    expected = np.einsum('bhqk,bkhd->bqhd', weights, value)
+    np.testing.assert_allclose(attn_out, expected, atol=1e-6)
+
+
 if __name__ == '__main__':
   absltest.main()

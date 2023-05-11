@@ -248,6 +248,107 @@ class ParallelFusedDecoderOnlyTest(absltest.TestCase):
         get_params('decoder_params_axes_fused_parallel_quantized.json'),
     )
 
+  def test_dense_general_factory_parallel_fused(self):
+    dtype = jnp.bfloat16
+    num_attn_heads = 8
+    num_features = 13
+    make_dropout = lambda: nn.Dropout(rate=0.1, broadcast_dims=(-2,))
+    make_layer_norm = layer_norm.T5LayerNorm
+
+    bias_init = nn.initializers.normal(stddev=1.0)
+
+    def _make_mq_attention(num_attn_heads, dtype):
+      """First test configuration for attention."""
+      return dense_attention.MultiQueryDotProductAttention(
+          num_heads=num_attn_heads,
+          dtype=dtype,
+          qkv_features=512,
+          out_features=num_features,
+          head_dim=None,
+          kernel_init=nn.initializers.variance_scaling(1.0, 'fan_in', 'normal'),
+          bias_init=bias_init,
+          use_bias=False,
+          broadcast_dropout=True,
+          dropout_rate=0.1,
+          rescale_logits=True,
+      )
+
+    def _make_fusion_mlp(dtype):
+      """First test configuration for the MLP."""
+      return dense.MlpBlock(
+          use_bias=False,
+          intermediate_dim=2048,
+          out_dim=13,
+          precomputed_intermediates=True,
+          fuse_kernels=False,
+          activations=('swish', 'linear'),
+          kernel_init=nn.initializers.variance_scaling(
+              1.0, 'fan_in', 'truncated_normal'
+          ),
+          bias_init=bias_init,
+          intermediate_dropout_rate=0.1,
+          final_dropout_rate=0.1,
+          dtype=dtype,
+      )
+
+    def _make_relative_position_bias(
+        num_attn_heads: int, dtype: Any
+    ) -> relative_position_biases.RelativePositionBiases:
+      return relative_position_biases.RelativePositionBiases(
+          num_buckets=32,
+          max_distance=128,
+          num_heads=num_attn_heads,
+          dtype=dtype,
+          embedding_init=nn.initializers.variance_scaling(
+              1.0, 'fan_avg', 'uniform'
+          ),
+      )
+
+    variables_arr = []
+    for dense_general_cls_factory in [None, lambda: dense.DenseGeneral]:
+      decoder_layer = parallel_fused_decoder.ParallelFusedDecoderLayer(
+          self_attention=_make_mq_attention(num_attn_heads, dtype),
+          mlp=_make_fusion_mlp(dtype),
+          dropout_factory=make_dropout,
+          layer_norm_factory=make_layer_norm,
+          relative_position_bias_factory=(
+              lambda: _make_relative_position_bias(num_attn_heads, dtype)
+          ),
+          use_aqt=False,
+          weight_params=None,
+          possibly_use_quantized_vars=False,
+          is_quant_finetune_mode=False,
+          q_wi_fused_kernel_init=nn.initializers.constant(0),
+          kv_fused_kernel_init=nn.initializers.constant(1),
+          o_wo_fused_kernel_init=nn.initializers.constant(2),
+          dense_general_cls_factory=dense_general_cls_factory,
+      )
+      batch = 2
+      seq_len = 4
+      hidden_dim = 13
+      inputs = np.ones((batch, seq_len, hidden_dim), dtype=np.float32)
+
+      variables = decoder_layer.init(
+          random.PRNGKey(0),
+          targets=inputs,
+          encoded=None,
+          enable_dropout=False,
+      )
+      variables_arr.append(variables)
+
+    np.testing.assert_allclose(
+        variables_arr[0]['params']['q_wi_fused']['kernel'],
+        variables_arr[1]['params']['q_wi_fused']['kernel'],
+    )
+    np.testing.assert_allclose(
+        variables_arr[0]['params']['kv_fused']['kernel'],
+        variables_arr[1]['params']['kv_fused']['kernel'],
+    )
+    np.testing.assert_allclose(
+        variables_arr[0]['params']['o_wo_fused']['kernel'],
+        variables_arr[1]['params']['o_wo_fused']['kernel'],
+    )
+
 
 if __name__ == '__main__':
   absltest.main()

@@ -128,11 +128,30 @@ class SimilarityFunctionsTest(absltest.TestCase):
     right_encodings = random.normal(key2, (BATCH_SIZE, 8))
     right_negative_encodings = random.normal(key3, (BATCH_SIZE, 8))
     model = similarity_functions.BatchDotProduct()
-    logits, _ = model.init_with_output(key4, left_encodings, right_encodings,
-                                       right_negative_encodings)
+    logits, _ = model.init_with_output(
+        key4, left_encodings, right_encodings, right_negative_encodings
+    )
     # The shape of logits equals [num_positive, num_positive + num_negative]
     # where both num_positive and num_negative equals BATCH_SIZE.
     self.assertEqual(logits.shape, (BATCH_SIZE, BATCH_SIZE + BATCH_SIZE))
+
+  def test_batch_dot_product_with_negative_use_only_explicit_hard_negatives(
+      self,
+  ):
+    """Test if the BatchDotProduct similarity function has correct shapes."""
+    rng = random.PRNGKey(0)
+    key1, key2, key3, key4 = random.split(rng, 4)
+    left_encodings = random.normal(key1, (BATCH_SIZE, 8))
+    right_encodings = random.normal(key2, (BATCH_SIZE, 8))
+    right_negative_encodings = random.normal(key3, (BATCH_SIZE, 8))
+    model = similarity_functions.BatchDotProduct(
+        use_only_explicit_hard_negatives=True
+    )
+    logits, _ = model.init_with_output(
+        key4, left_encodings, right_encodings, right_negative_encodings
+    )
+    # The shape of logits equals [num_positive, num_positive + 1].
+    self.assertEqual(logits.shape, (BATCH_SIZE, BATCH_SIZE + 1))
 
   def test_pointwise_ffnn_with_multiple_layers(self):
     """Test the Multi-layer PointwiseFFNN has correct shapes."""

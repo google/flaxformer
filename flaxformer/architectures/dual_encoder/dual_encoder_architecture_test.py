@@ -15,8 +15,8 @@
 """Tests for the dual encoder architecture."""
 
 import dataclasses
-import functools
-from typing import Any, Optional, Sequence
+from typing import Any
+
 from absl.testing import absltest
 from absl.testing import parameterized
 from flax import linen as nn
@@ -57,16 +57,17 @@ BIAS_INIT = nn.initializers.normal(stddev=1e-6)
 
 
 
-def make_token_emb1(vocab_size, dtype, name='token_embedder'):
+def make_token_emb1(vocab_size, dtype, name='token_embedder', num_features=13):
   """First test configuration for token embeddings."""
   return embedding.Embed(
       num_embeddings=vocab_size,
-      features=13,
+      features=num_features,
       cast_input_dtype=jnp.int32,
       dtype=dtype,
       attend_dtype=jnp.float32,  # for logit training stability
       embedding_init=EMBEDDING_INIT,
-      name=name)
+      name=name,
+  )
 
 
 def make_attention1(num_attn_heads, dtype):
@@ -110,7 +111,6 @@ def _make_relpos_bias(
 def make_test_dual_encoder(
     similarity_fn: str,
     pool_method: str,
-    logit_fns: Optional[Sequence[str]] = None
 ) -> dual_encoder_architecture.DualEncoder:
   dtype = jnp.float32
   num_attn_heads = 8
@@ -167,27 +167,19 @@ def make_test_dual_encoder(
     else:
       raise ValueError(f'Do not support pooling method: {pool_method}.')
 
-  def _make_similarity_layer(current_similarity_fn=None):
-    if current_similarity_fn is None:
-      current_similarity_fn = similarity_fn
-    if current_similarity_fn == 'batch_dot_product':
-      return similarity_functions.BatchDotProduct(name=current_similarity_fn)
-    if current_similarity_fn == 'pointwise_ffnn':
+  def _make_similarity_layer():
+    if similarity_fn == 'batch_dot_product':
+      return similarity_functions.BatchDotProduct(name=similarity_fn)
+    if similarity_fn == 'pointwise_ffnn':
       make_dropout = lambda: nn.Dropout(rate=0.1)
       return similarity_functions.PointwiseFFNN(
-          OUTPUT_DIM, dropout_factory=make_dropout, name=current_similarity_fn)
-    if current_similarity_fn == 'single_tower_pointwise_ffnn':
+          OUTPUT_DIM, dropout_factory=make_dropout, name=similarity_fn
+      )
+    if similarity_fn == 'single_tower_pointwise_ffnn':
       make_dropout = lambda: nn.Dropout(rate=0.1)
       return single_tower_logit_functions.SingleTowerPointwiseFFNN(
-          OUTPUT_DIM, dropout_factory=make_dropout, name=current_similarity_fn)
-
-  def _make_logit_layers():
-    all_logit_layers = []
-    for logit_fn in logit_fns:
-      fn = functools.partial(
-          _make_similarity_layer, current_similarity_fn=logit_fn)
-      all_logit_layers.append(fn)
-    return all_logit_layers
+          OUTPUT_DIM, dropout_factory=make_dropout, name=similarity_fn
+      )
 
   def _make_l2_norm():
     return l2_norm.L2Norm()
@@ -196,13 +188,11 @@ def make_test_dual_encoder(
       shared_token_embedder_factory=lambda: None,
       encoder_factory=_make_encoder,
       pooler_factory=None
-      if pool_method == 'first' else lambda: _make_pooler(pool_method),
+      if pool_method == 'first'
+      else lambda: _make_pooler(pool_method),
       l2_norm_factory=_make_l2_norm,
       projection_layer_factory=_make_projection_layer,
-      similarity_layer_factory=None
-      if similarity_fn is None else _make_similarity_layer,
-      multi_logit_layer_factories=None
-      if logit_fns is None else _make_logit_layers(),
+      similarity_layer_factory=_make_similarity_layer,
       dtype=dtype,  # pytype: disable=wrong-keyword-args
   )
 
@@ -393,43 +383,6 @@ class DualEncoderTest(parameterized.TestCase):
     self.assertEqual(left_encoded.shape, (2, PROJECTION_DIM))
     self.assertEqual(right_encoded.shape, (2, PROJECTION_DIM))
     self.assertEqual(logits.shape, (2, OUTPUT_DIM))
-
-  def test_dual_encoder_with_multi_logit_layers(self):
-    """Tests if multi logit dual encoder has correct output shapes."""
-
-    left_inputs = np.array(
-        [
-            # Batch 1.
-            [101, 183, 20, 75],
-            # Batch 2.
-            [101, 392, 19, 7],
-        ],
-        dtype=np.int32)
-    right_inputs = np.array(
-        [
-            # Batch 1.
-            [101, 283, 85],
-            # Batch 2.
-            [101, 492, 17],
-        ],
-        dtype=np.int32)
-
-    model = make_test_dual_encoder(
-        similarity_fn=None,
-        pool_method='first',
-        logit_fns=['batch_dot_product', 'pointwise_ffnn'])
-
-    results, _ = model.init_with_output(
-        random.PRNGKey(0), left_inputs, right_inputs, enable_dropout=False
-    )
-    left_encoded = results.left_encoded
-    right_encoded = results.right_encoded
-    logits = results.logits
-
-    self.assertEqual(left_encoded.shape, (2, PROJECTION_DIM))
-    self.assertEqual(right_encoded.shape, (2, PROJECTION_DIM))
-    self.assertEqual(logits['batch_dot_product'].shape, (2, 2))
-    self.assertEqual(logits['pointwise_ffnn'].shape, (2, OUTPUT_DIM))
 
 
 

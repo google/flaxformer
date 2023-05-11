@@ -453,9 +453,11 @@ def make_encoder_block(
     dropout_rate: float = 0.0,
     dtype: jnp.dtype = jnp.float32,
     kernel_init: Initializer = initializers.truncated_normal(
-        stddev=_DEFAULT_INIT_RANGE),
+        stddev=_DEFAULT_INIT_RANGE
+    ),
     bias_init: Initializer = nn.initializers.zeros,
     layer_norm_epsilon: float = _DEFAULT_LAYER_NORM,
+    sow_attention_intermediates: bool = False,
 ) -> EncoderBlock:
   """Returns a newly constructed EncoderBlock.
 
@@ -472,6 +474,8 @@ def make_encoder_block(
     kernel_init: Initializer method for attention and mlp layers kernels.
     bias_init: Initializer method for attention and mlp layers biases.
     layer_norm_epsilon: The layer norm epsilon parameter.
+    sow_attention_intermediates: Whether to track attention intermediates using
+      Module.sow.
   """
 
   def make_layer() -> EncoderLayer:
@@ -481,14 +485,17 @@ def make_encoder_block(
             dropout_rate=dropout_rate,
             kernel_init=kernel_init,
             bias_init=bias_init,
-            dtype=dtype),
+            dtype=dtype,
+            sow_intermediates=sow_attention_intermediates,
+        ),
         hidden_size=hidden_size,
         intermediate_dim=intermediate_dim,
         dtype=dtype,
         dropout_rate=dropout_rate,
         kernel_init=kernel_init,
         bias_init=bias_init,
-        layer_norm_epsilon=layer_norm_epsilon)
+        layer_norm_epsilon=layer_norm_epsilon,
+    )
 
   return EncoderBlock(
       common.LayerSequence(num_layers=num_layers, make_layer=make_layer),  # pytype: disable=wrong-keyword-args
@@ -789,9 +796,11 @@ def make_attention_layer(
     num_heads: int,
     dropout_rate: float = 0.0,
     kernel_init: Initializer = initializers.truncated_normal(
-        stddev=_DEFAULT_INIT_RANGE),
+        stddev=_DEFAULT_INIT_RANGE
+    ),
     bias_init: Initializer = nn.initializers.zeros,
     dtype: DType = jnp.float32,
+    sow_intermediates: bool = False,
     name: Optional[str] = None,
 ) -> dense_attention.DenseAttention:
   """Returns a Bert-style attention layer."""
@@ -805,7 +814,9 @@ def make_attention_layer(
       use_bias=True,
       rescale_logits=True,
       output_projection=False,
-      name=name)
+      sow_intermediates=sow_intermediates,
+      name=name,
+  )
 
 
 def make_mlp_block(

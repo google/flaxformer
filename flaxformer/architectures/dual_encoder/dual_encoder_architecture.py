@@ -19,7 +19,7 @@ networks.
 """
 
 import inspect
-from typing import Callable, Dict, Mapping, Optional, Sequence, Union
+from typing import Callable, Mapping, Optional, Union
 
 from flax import linen as nn
 import flax.struct
@@ -45,7 +45,7 @@ class DualEncoderOutput:
 
   left_encoded: Array
   right_encoded: Array
-  logits: Union[Array, Dict[str, Array]]
+  logits: Array
 
 
 
@@ -89,16 +89,6 @@ class DualEncoder(nn.Module, param_remapping.ParameterRemappable):
       projection layer.
     similarity_layer_factory: Optional specialization of encoder output
       similarity layer.
-    multi_logit_layer_factories: This is similar to similarity layer,
-    because both are used to create logits. Use similarity layer to create only
-    1 logits, where as multi_logit_layer_factories to create more than
-    one logits in the form of a dictionary. The different logits can be used to
-    compute different losses. similarity_layer_factory takes a single factory,
-    where as multi_logit_layer_factories takes a list of factories. The
-    same factory functions which are passed to similarity layer can be passed
-    here. Please do not set both, if you want to use a similarity layer, just
-    append it to this list, and keep the similarity_layer empty while using
-    this.
     dtype: DType for dual encoder to cast embedded inputs, and for attention
       mask generation.
   """
@@ -109,8 +99,6 @@ class DualEncoder(nn.Module, param_remapping.ParameterRemappable):
   l2_norm_factory: Optional[Callable[[], nn.Module]] = None
   projection_layer_factory: Optional[Callable[[], nn.Module]] = None
   similarity_layer_factory: Optional[Callable[[], nn.Module]] = None
-  multi_logit_layer_factories: Optional[Sequence[Callable[[],
-                                                          nn.Module]]] = None
 
   # Configures behavior when the model is called. Many of these might eventually
   # be better as call parameters.
@@ -132,24 +120,8 @@ class DualEncoder(nn.Module, param_remapping.ParameterRemappable):
     if self.projection_layer_factory:
       self.projection_layer = self.projection_layer_factory()  # pylint: disable=not-callable
 
-    if self.similarity_layer_factory and self.multi_logit_layer_factories:
-      raise ValueError(
-          'Both similarity_layer_factory and multi_logit_layer_factories create'
-          'layer(s) that compute logits. Do not set values for both as they are'
-          'redundant. Similarity layers is used to produce one set of logits as'
-          'outputs, where as logit creation layers is used to produce a '
-          'dictionary of logits. The simplest fix would be to take your '
-          'similarity_layer_factory and add it to the list of'
-          'logit_creation_layer_factories in your architecture gin file. (It is'
-          'recommended to use only multi_logit_layer_factories)')
     if self.similarity_layer_factory:
       self.similarity_layer = self.similarity_layer_factory()  # pylint: disable=not-callable
-
-    if self.multi_logit_layer_factories:
-      self.multi_logit_layers = [
-          logit_layer_factory()
-          for logit_layer_factory in self.multi_logit_layer_factories  # pylint: disable=not-an-iterable
-      ]
 
   def encode(self,
              encoder_input_tokens: jnp.ndarray,
@@ -217,28 +189,21 @@ class DualEncoder(nn.Module, param_remapping.ParameterRemappable):
                          right_encoded: Array,
                          right_negative_encoded: Optional[Array] = None,
                          enable_dropout: bool = True) -> Array:
-    # For backward compatibility of teams using self.compute_similarity without
-    # passing the logit_creation layer.
-    return self.compute_logits(left_encoded, right_encoded,
-                               self.similarity_layer, right_negative_encoded,
-                               enable_dropout)
-
-  def compute_logits(self,
-                     left_encoded: Array,
-                     right_encoded: Array,
-                     logit_creation_layer: nn.module.Module,
-                     right_negative_encoded: Optional[Array] = None,
-                     enable_dropout: bool = True) -> Array:
-
-    if check_use_negative_inputs(logit_creation_layer):
-      return logit_creation_layer(
+    if right_negative_encoded is not None:
+      if not check_use_negative_inputs(self.similarity_layer):
+        raise ValueError(
+            'Received negative inputs but similarity layer'
+            f' "{self.similarity_layer.name}" does not support negative inputs.'
+        )
+      return self.similarity_layer(
           left_encoded,
           right_encoded,
           right_negative_encoded,
-          enable_dropout=enable_dropout)
-
-    return logit_creation_layer(
-        left_encoded, right_encoded, enable_dropout=enable_dropout)
+          enable_dropout=enable_dropout,
+      )
+    return self.similarity_layer(
+        left_encoded, right_encoded, enable_dropout=enable_dropout
+    )
 
   def __call__(self,
                left_encoder_input_tokens,
@@ -276,6 +241,12 @@ class DualEncoder(nn.Module, param_remapping.ParameterRemappable):
     Returns:
       encodings and similarity scores from the dual encoder.
     """
+    if self.similarity_layer_factory is None:
+      raise ValueError(
+          'DualEncoder instances without a similarity layer may only be used'
+          ' for encoding inputs, not comparing them.'
+      )
+
     left_encoded = self.encode(
         left_encoder_input_tokens,
         encoder_segment_ids=left_encoder_segment_ids,
@@ -297,49 +268,12 @@ class DualEncoder(nn.Module, param_remapping.ParameterRemappable):
           enable_dropout=enable_dropout,
       )
 
-    if (
-        self.similarity_layer_factory is None
-        and self.multi_logit_layer_factories is None
-    ):
-      raise ValueError(
-          'DualEncoder instances without a similarity layer or logit creation'
-          ' layer may only be used for encoding inputs, not comparing them.'
-      )
-
-    if right_negative_encoded is not None:
-      if self.similarity_layer_factory:
-        all_layers = [self.similarity_layer]
-      else:
-        all_layers = self.multi_logit_layers
-
-      # when right_negative_encoded is being passed, check if any of the layers
-      # are making use of them
-      negative_inputs_being_used = any(
-          check_use_negative_inputs(layer) for layer in all_layers)
-
-      if not negative_inputs_being_used:
-        raise ValueError(
-            'Negative inputs were provided but none of the'
-            'logit_creation_layers or similarity_layers are using them')
-
-    if self.similarity_layer_factory:
-      logits = self.compute_logits(
-          left_encoded,
-          right_encoded,
-          self.similarity_layer,
-          right_negative_encoded,
-          enable_dropout=enable_dropout)
-    else:
-      # create a dictionary of logits using all logit_creation_layer_factories
-      logits = {}
-      for logit_creation_layer in self.multi_logit_layers:
-        current_logits = self.compute_logits(
-            left_encoded,
-            right_encoded,
-            logit_creation_layer,
-            right_negative_encoded,
-            enable_dropout=enable_dropout)
-        logits[logit_creation_layer.name] = current_logits
+    logits = self.compute_similarity(
+        left_encoded,
+        right_encoded,
+        right_negative_encoded,
+        enable_dropout=enable_dropout,
+    )
 
     return DualEncoderOutput(left_encoded, right_encoded, logits)
 

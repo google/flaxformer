@@ -19,6 +19,7 @@ import pathlib
 from typing import Optional
 from absl.testing import absltest
 from absl.testing import parameterized
+import flax
 from flax import linen as nn
 import jax
 import numpy as np
@@ -218,7 +219,7 @@ class BertHeadsTest(parameterized.TestCase):
     self.assertSameStructure(param_shapes, expected_param_shapes)
     self.assertEqual((batch_size, seq_length, self.vocab_size), output.shape)
 
-    params = variables['params'].unfreeze()['mlm_head']
+    params = flax.core.unfreeze(variables['params'])['mlm_head']
     del params['layer_norm']
     del params['bias']
     self.assertDictEqual(

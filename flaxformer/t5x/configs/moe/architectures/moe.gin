@@ -218,6 +218,8 @@ dense.MlpBlock:
   intermediate_dropout_rate = %DROPOUT_RATE
   final_dropout_rate = 0
   dtype = %ACTIVATION_DTYPE
+  input_axis_name = 'mlp_embed'  # Inputs will be replicated along model axis
+  output_axis_name = 'mlp_embed'  # Outputs will be replicated along model axis
 mlp_kernel_init/linen.initializers.variance_scaling:
   scale = %SCALE
   mode = 'fan_in'
@@ -276,9 +278,10 @@ expert/dense.MlpBlock:
   intermediate_dropout_rate = %EXPERT_DROPOUT_RATE
   final_dropout_rate = 0.
   dtype = %MOE_TRUNCATED_DTYPE
-  input_axis_name = 'embed'
+  input_axis_name = 'mlp_embed'  # Inputs will be replicated along model axis
+  # Intermediates partitioned along model axis.
   intermediate_axis_name = 'expert_mlp'
-  output_axis_name = 'embed'
+  output_axis_name = 'mlp_embed'  # Outputs will be replicated along model axis
   data_sharding_constraints = ('expert_replicas', 'mlp')
   activation_partitioning_dims = 1
 expert_kernel_init/linen.initializers.variance_scaling:

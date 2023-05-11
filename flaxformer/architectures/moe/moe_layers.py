@@ -81,18 +81,6 @@ class MoeLayer(nn.Module):
     split_params: Whether or not to initialize each expert's parameters
       independently.
     precision: XLA precision for array computations.
-    optimize_model_parallel_communications: EXPERIMENTAL flag. If using
-      model-parallelism for experts (experts spanning multiple devices), this
-      flag is used to ensure that we do not perform duplicate all-to-all
-      communication for experts spread across multiple devices, by partitioning
-      the model/hidden dimension along the model-parallel axis for the experts.
-      This same partition is used in Mesh Tensorflow:
-      https://github.com/tensorflow/mesh/blob/6b31c0fc/mesh_tensorflow/transformer/moe.py#L487-L496
-        However, depending on model size and hardware topology, the reduction in
-        all-to-all communication costs may be outweighed by the increased costs
-        from the new all-gather introduced to collect the partitioned inputs.
-        Current recommendation is to only use this flag if it clearly
-        demonstrates speed-ups; if in doubt, leave off.
     strict_group_size: If True, fail if unable to set the token group size equal
       to max_group_size. If False (default), the actual group size may be
       smaller than max_group_size for consistency with the number of experts and
@@ -116,28 +104,10 @@ class MoeLayer(nn.Module):
   dtype: DType = jnp.bfloat16
   split_params: bool = True
   precision: jax.lax.Precision = jax.lax.Precision.DEFAULT
-  optimize_model_parallel_communications: bool = False
   strict_group_size: bool = False
 
   def setup(self):
     """Verifies that the MoeLayer is correctly configured."""
-    if self.optimize_model_parallel_communications:
-      if self.num_model_partitions <= 1:
-        raise ValueError(
-            'optimize_model_parallel_communications=True with '
-            f'num_model_partitions={self.num_model_partitions} has no effect; '
-            'please set optimize_model_parallel_communications=False.'
-        )
-      if (
-          len(self.input_hidden_dims_axes) > 1
-          or len(self.output_hidden_dims_axes) > 1
-      ):
-        raise ValueError(
-            'optimize_model_parallel_communications=True is not yet supported '
-            'for inputs or outputs with multiple hidden dimensions; '
-            'please set optimize_model_parallel_communications=False.'
-        )
-
     if self.num_expert_partitions > self.num_experts:
       raise ValueError(
           f'The number of expert partitions ({self.num_expert_partitions}) '
@@ -151,7 +121,7 @@ class MoeLayer(nn.Module):
   @nn.compact
   def __call__(
       self,
-      inputs,
+      inputs: Array,
       decode: bool = False,
       prefill: bool = False,
       prefill_lengths: Optional[Array] = None,
@@ -488,13 +458,21 @@ class MoeLayer(nn.Module):
   def _call_experts(
       self, inputs: Array, enable_dropout: bool, **kwargs
   ) -> Array:
-    """Sends and receives inputs to experts using pjit induced all_to_all calls.
+    """Sends and receives inputs to experts using pjit induced all-to-all calls.
 
     Assumes training is distributed using jax.experimental.pjit and induces
-    all_to_all calls using reshapes and sharding constraints. We use Flax's
+    all-to-all calls using reshapes and sharding constraints. We use Flax's
     lifted vmap to apply the expert transformation.
 
-    The entire computations is performed using self.dtype. We recommend a
+    Input data is ideally partitioned as:
+    G_ed ** H_m,
+    where G (num groups) is partitioned along the e (expert) and d (data)
+    axes, and H (hidden dims) is partitioned along the m (model) axis. "**"
+    denotes fully replicated axes. By partitioning H along the model parallel
+    axis, we avoid duplicate information transfer in the all-to-alls between
+    devices replicating data.
+
+    The entire computation is performed using self.dtype. We recommend a
     truncated float type (e.g. bfloat16) to reduce all-to-all communication
     overhead.
 
@@ -536,6 +514,10 @@ class MoeLayer(nn.Module):
       )
       inputs = jnp.swapaxes(inputs, 1, 2)
 
+    # Induce all-to-alls:
+    # E_ed ** H_m --> E_ed ** H_m,
+    # where E is the number of experts and H is the hidden dimension. e, d, and
+    # m denote the expert, data and model axes, respectively.
     inputs = inputs.reshape(
         num_experts,
         num_groups // num_experts,
@@ -553,29 +535,32 @@ class MoeLayer(nn.Module):
             *self.input_hidden_dims_axes,
         ),
     )
-
-    if self.optimize_model_parallel_communications:
-      # Partition inputs along model parallel submesh axis to reduce duplicate
-      # all-to-all communications in model parallelism cases.
-      # Shape: [num_experts, num_groups // num_experts, num_experts, capacity,
-      # hidden_dims, self.num_model_partitions]
-      inputs = self._swapaxes_with_sharding_constraint(
-          inputs, 0, 2, capacity, *hidden_dims
-      )
-    else:
-      # Shape: [num_experts, num_groups // num_experts, num_experts, capacity,
-      # hidden_dims]
-      inputs = jnp.swapaxes(inputs, 0, 2)
+    inputs = jnp.swapaxes(inputs, 0, 2)
+    inputs = flax_partitioning.with_sharding_constraint(
+        inputs,
+        (
+            'expert',
+            'expert_replicas',
+            'unmodeled',
+            'length',
+            *self.input_hidden_dims_axes,
+        ),
+    )
 
     inputs = inputs.reshape(num_experts, num_groups * capacity, *hidden_dims)
+    # Perform all-gather here along hidden dimnension (H) axis:
+    # E_ed ** H_m --> E_ed ** H.
     inputs = flax_partitioning.with_sharding_constraint(
-        inputs, ('expert', 'expert_replicas', *self.input_hidden_dims_axes)
+        inputs, ('expert', 'expert_replicas', 'unmodeled')
     )
 
     # Apply expert transformation.
 
     # Vectorize over the 'expert' axis of `inputs`. We use Flax's Lifted vmap
     # to introduce parameters along the mapped `expert` axis.
+    # The vmapped MLP operation essentially performs:
+    # E_ed ** H --> E_ed ** F_m --> E_ed ** H,
+    # where F is the feed-forward dimension.
     @functools.partial(
         flax_partitioning.vmap_with_axes,
         in_axes=(0,),
@@ -599,6 +584,10 @@ class MoeLayer(nn.Module):
     # Send examples back to their original devices.
     output_dims = outputs.shape[2:]
     outputs = outputs.reshape(num_experts, num_groups, capacity, *output_dims)
+
+    # Reshard over along hidden dimension (H) axis:
+    # E_ed ** H --> E_ed ** H_m,
+    # before performing all-to-alls.
     outputs = flax_partitioning.with_sharding_constraint(
         outputs,
         ('expert', 'expert_replicas', 'length', *self.output_hidden_dims_axes),
@@ -610,18 +599,17 @@ class MoeLayer(nn.Module):
         capacity,
         *output_dims,
     )
-
-    if self.optimize_model_parallel_communications:
-      # Shape: [num_experts, num_groups // num_experts, num_experts, capacity,
-      # *output_dims, self.num_model_partitions]
-      outputs = self._swapaxes_with_sharding_constraint(
-          outputs, 0, 2, capacity, *output_dims
-      )
-    else:
-      # Shape: [num_experts, num_groups // num_experts, num_experts, capacity,
-      # *output_dims]
-      outputs = jnp.swapaxes(outputs, 0, 2)
-
+    outputs = flax_partitioning.with_sharding_constraint(
+        outputs,
+        (
+            'expert',
+            'expert_replicas',
+            'unmodeled',
+            'length',
+            *self.output_hidden_dims_axes,
+        ),
+    )
+    outputs = jnp.swapaxes(outputs, 0, 2)
     outputs = flax_partitioning.with_sharding_constraint(
         outputs,
         (
@@ -722,73 +710,6 @@ class MoeLayer(nn.Module):
     ]:
       wrapped_metric_value = jnp.asarray(value).reshape((1, 1))
       self.sow('intermediates', metric, wrapped_metric_value)
-
-  def _swapaxes_with_sharding_constraint(
-      self,
-      array: Array,
-      axis1: int,
-      axis2: int,
-      expert_capacity: int,
-      hidden_dim: int,
-  ) -> Array:
-    """Interchanges two array axes under model-parallel sharding constraints.
-
-    For model-parallel experts (self.num_model_partitions > 1), to ensure that
-    multiple devices are not performing all-to-all duplicate communications, we
-    partition the model/hidden dimension along the expert model-parallel axis
-    ('expert_mlp') before performing the all-to-all transfer. See also:
-    https://github.com/tensorflow/mesh/blob/6b31c0fc/mesh_tensorflow/transformer/moe.py#L487-L496
-
-
-    Args:
-      array: Input array.
-      axis1: First axis.
-      axis2: Second axis.
-      expert_capacity: Token capacity per expert.
-      hidden_dim: Model/hidden dimension of inputs.
-
-    Returns:
-      View or copy of input array with axes swapped.
-
-    Raises:
-      ValueError if num_model_partitions is less than or equal to 1.
-    """
-    if self.num_model_partitions <= 1:
-      raise ValueError(
-          'Expected num_model_partitions to be > 1 but got: '
-          f'{self.num_model_partitions}'
-      )
-    array = array.reshape(
-        self.num_experts,
-        -1,
-        self.num_experts,
-        expert_capacity,
-        hidden_dim // self.num_model_partitions,
-        self.num_model_partitions,
-    )
-    array = flax_partitioning.with_sharding_constraint(
-        array,
-        (
-            'expert',
-            'expert_replicas',
-            'unmodeled',
-            'length',
-            'embed',
-            'expert_mlp',
-        ),
-    )
-    array = jnp.swapaxes(array, axis1, axis2)
-    return flax_partitioning.with_sharding_constraint(
-        array,
-        (
-            'expert',
-            'expert_replicas',
-            'unmodeled',
-            'length',
-            'embed',
-            'expert_mlp',
-        ),
-    )
 
 
 def _num_groups(

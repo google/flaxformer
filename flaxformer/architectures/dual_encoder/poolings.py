@@ -15,15 +15,18 @@
 """Layers for pooling operations."""
 
 import functools
-from typing import Callable
+from typing import Callable, Optional
 
 from flax import linen as nn
+from flax.linen import partitioning
 from flax.linen.linear import default_kernel_init
 import jax
 from jax import lax
 import jax.numpy as jnp
 
 from flaxformer import activation_partitioning
+from flaxformer import transformer_common as common
+from flaxformer.architectures.t5 import t5_architecture
 from flaxformer.architectures.t5 import t5_common_layers
 from flaxformer.components import dense
 from flaxformer.components.attention import dense_attention
@@ -162,7 +165,13 @@ class MultiHeadAttentionPooling(nn.Module):
     """
     encoding_size = encoded_inputs.shape[-1]
     batch_size = encoded_inputs.shape[0]
-    query = self.param('attention_query', self.query_init, (encoding_size,))
+    query = partitioning.param_with_axes(
+        'attention_query',
+        self.query_init,
+        (encoding_size,),
+        self.dtype,
+        axes=('embed',),
+    )
 
     # [batch_size, 1 embedding_size]
     query_3d = jnp.tile(query, (batch_size, 1, 1))
@@ -195,6 +204,75 @@ class MultiHeadAttentionPooling(nn.Module):
         y, self.activation_partitioning_dims
     )
     return jnp.reshape(y, (batch_size, encoding_size))
+
+
+class MultiLayerPooling(nn.Module):
+  """Multi-layer transformer pooling.
+
+  Attributes:
+    layer_factory: A callable that returns an EncoderLayer.
+    layer_norm_factory: A callable that returns a layer norm.
+    num_layers: Number of layers to generate.
+    pooler_factory: Optional specialization of final pooling layer. If None,
+      embedding representation for the first token is used as sequence
+      representation.
+    dtype: DType to cast the embedded inputs.
+    shared_relative_position_bias_factory: A callable that returns a relative
+      position bias instance which will be shared for all encoder layers. Only
+      set this if using shared relative position biases.
+  """
+
+  layer_factory: t5_architecture.MakeEncoderLayerFn
+  layer_norm_factory: Callable[[], nn.Module]
+  num_layers: int
+  pooler_factory: Optional[Callable[[], nn.Module]] = None
+  dtype: DType = jnp.float32
+  shared_relative_position_bias_factory: Optional[Callable[[], nn.Module]] = (
+      None
+  )
+
+  def setup(self):
+    self.relpos_bias = (
+        self.shared_relative_position_bias_factory()  # pylint: disable=not-callable
+        if self.shared_relative_position_bias_factory is not None
+        else None
+    )
+    lyrf = lambda: self.layer_factory(  # pylint: disable=g-long-lambda
+        shared_relative_position_bias=self.relpos_bias
+    )
+    self.layers = [lyrf() for _ in range(self.num_layers)]
+    self.encoder = common.TransparentLayerSequence(self.layers)
+
+    self.encoder_norm = self.layer_norm_factory()
+
+    if self.pooler_factory:
+      self.pooler = self.pooler_factory()  # pylint: disable=not-callable
+
+  def __call__(
+      self,
+      encoded_inputs: Array,
+      input_masks: Array,
+      deterministic: bool = False,
+  ):
+    encoder_mask = dense_attention.make_attention_mask(
+        input_masks, input_masks, dtype=self.dtype
+    )
+    logit_mask = jnp.expand_dims(input_masks, axis=-1)
+    encoded = self.encoder(
+        encoded_inputs,
+        encoder_mask=encoder_mask,
+        logit_mask=logit_mask,
+        enable_dropout=not deterministic,
+    )
+    encoded = self.encoder_norm(encoded)
+
+    if self.pooler_factory:
+      encodings = self.pooler(encoded, input_masks, deterministic=deterministic)
+    else:
+      # Fallback to use first token.
+      encodings = encoded[:, 0, :]
+
+    return encodings
 
 
 class MeanPooling(nn.Module):

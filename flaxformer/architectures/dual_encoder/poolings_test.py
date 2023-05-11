@@ -13,13 +13,40 @@
 # limitations under the License.
 
 """Tests for pooling layers."""
+from typing import Optional
+
 from absl.testing import absltest
 from absl.testing import parameterized
+from flax import linen
 from jax import numpy as jnp
 from jax import random
 import numpy as np
 from flaxformer.architectures.dual_encoder import poolings
+from flaxformer.architectures.t5 import t5_architecture
+from flaxformer.components import dense
 from flaxformer.components import layer_norm
+from flaxformer.components.attention import dense_attention
+
+
+def _get_layer_factory():
+  def _get_layer(shared_relative_position_bias: Optional[linen.Module]):
+    attention = dense_attention.MultiHeadDotProductAttention(
+        num_heads=2, head_dim=2, use_bias=False, dtype=jnp.float32
+    )
+    mlp = dense.MlpBlock(
+        use_bias=False, intermediate_dim=2, activations=('relu',)
+    )
+    dropout_factory = lambda: linen.Dropout(0.0)
+    layer = t5_architecture.EncoderLayer(
+        attention=attention,
+        mlp=mlp,
+        dropout_factory=dropout_factory,
+        layer_norm_factory=layer_norm.T5LayerNorm,
+        shared_relative_position_bias=shared_relative_position_bias,
+    )
+    return layer
+
+  return _get_layer
 
 
 class PoolingsTest(parameterized.TestCase):
@@ -40,6 +67,23 @@ class PoolingsTest(parameterized.TestCase):
           'multihead_attention_pooling',
           poolings.MultiHeadAttentionPooling(
               num_heads=2, head_dim=2, layer_norm_factory=layer_norm.T5LayerNorm
+          ),
+      ),
+      (
+          'multi_layer_pooling',
+          poolings.MultiLayerPooling(
+              layer_factory=_get_layer_factory(),
+              num_layers=2,
+              layer_norm_factory=layer_norm.T5LayerNorm,
+          ),
+      ),
+      (
+          'multi_layer_pooling_with_mean_pooling',
+          poolings.MultiLayerPooling(
+              layer_factory=_get_layer_factory(),
+              num_layers=2,
+              layer_norm_factory=layer_norm.T5LayerNorm,
+              pooler_factory=poolings.MeanPooling,
           ),
       ),
       ('last_token_pooling', poolings.LastTokenPooling()),

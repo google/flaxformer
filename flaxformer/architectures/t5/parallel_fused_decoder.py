@@ -77,6 +77,8 @@ class ParallelFusedDecoderLayer(nn.Module, param_remapping.ParameterRemappable):
   kv_fused_kernel_init: Optional[Initializer] = None
   o_wo_fused_kernel_init: Optional[Initializer] = None
 
+  dense_general_cls_factory: Optional[Callable[[], type[nn.Module]]] = None
+
   def setup(self):
     if self.activation_partitioning_dims != 1:
       logging.warning(
@@ -126,6 +128,10 @@ class ParallelFusedDecoderLayer(nn.Module, param_remapping.ParameterRemappable):
         num_heads,
         (mlp_intermediate_dim // num_heads) * n_activations + head_dim,
     )
+    if self.dense_general_cls_factory:
+      self.dense_general_cls = self.dense_general_cls_factory()
+    else:
+      self.dense_general_cls = dense.DenseGeneral
 
     # TODO: move the  AQT branching code complexity out to the
     # configuration system here and other places in Flaxformer.
@@ -183,7 +189,7 @@ class ParallelFusedDecoderLayer(nn.Module, param_remapping.ParameterRemappable):
         # reshape kernel.
         return functools.partial(aqt_dense, padding_mask=None)
       else:
-        return dense.DenseGeneral(
+        return self.dense_general_cls(
             axis=axis,
             features=features,
             use_bias=use_bias,
@@ -414,7 +420,7 @@ class ParallelFusedDecoderLayer(nn.Module, param_remapping.ParameterRemappable):
           possibly_use_quantized_vars=self.possibly_use_quantized_vars,
       )(y_fused)
     else:
-      y_out = dense.DenseGeneral(**self.o_wo_fused_args)(y_fused)
+      y_out = self.dense_general_cls(**self.o_wo_fused_args)(y_fused)
     # y *= 2**-0.5
     z = layer_input_residual + self.dropout(
         y_out, deterministic=not enable_dropout
