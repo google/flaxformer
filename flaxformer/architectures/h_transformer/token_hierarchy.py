@@ -31,6 +31,7 @@ from flaxformer.types import DType
 @enum.unique
 class InputArrayName(enum.Enum):
   """Input array names."""
+
   QUERY = enum.auto()
   KEY = enum.auto()
   VALUE = enum.auto()
@@ -44,6 +45,7 @@ class TokenBlockName(enum.Enum):
   into equal-sized blocks. The attention among blocks corresponds
   to the attention matrix structure.
   """
+
   ANCHOR = enum.auto()
   # For one-dimension token sequences
   LEFT = enum.auto()
@@ -69,6 +71,7 @@ class CoarsenPaddingMaskResults:
       level=k-1 is [1, 1, 0, 0], then the corresponding  entry in denominator at
       level=k should be 2.
   """
+
   aggregated_padding_mask: Dict[int, Array]
   denominator: Optional[Dict[int, Array]]
 
@@ -76,6 +79,7 @@ class CoarsenPaddingMaskResults:
 @gin.constants_from_enum
 class TokenCoarseningMethod(str, enum.Enum):
   """Names of the coarsening method."""
+
   SAMPLE = 'sample'
   SUM = 'sum'
   CONST_AVERAGE = 'const_average'
@@ -84,6 +88,7 @@ class TokenCoarseningMethod(str, enum.Enum):
 @gin.constants_from_enum
 class ConvKernelType(str, enum.Enum):
   """Names of the convolution kernel type."""
+
   CONST = 'const'
   LINEAR = 'linear'
 
@@ -126,7 +131,8 @@ class OneDimTokenCoarsening:
     if new_seq_len * self._coarsening_ratio != seq_len:
       raise ValueError(
           f'The sequence length {seq_len} does not divide coarsening_ratio '
-          f'{self._coarsening_ratio}.')
+          f'{self._coarsening_ratio}.'
+      )
 
     new_shape = (batch, new_seq_len, self._coarsening_ratio, num_head, head_dim)
     reshaped_inputs = inputs.reshape(new_shape)
@@ -144,13 +150,15 @@ class OneDimTokenCoarsening:
 class OneDimTokenInterpolation:
   """Interpolation class for one-dimension sequence token hierarchy."""
 
-  def __init__(self,
-               conv_kernel_size: int = 2,
-               conv_kernel_type: ConvKernelType = ConvKernelType.CONST,
-               channel_dim: int = 1,
-               interpolation_ratio: int = 2,
-               dtype: DType = jnp.float32,
-               use_edge_correction: bool = True):
+  def __init__(
+      self,
+      conv_kernel_size: int = 2,
+      conv_kernel_type: ConvKernelType = ConvKernelType.CONST,
+      channel_dim: int = 1,
+      interpolation_ratio: int = 2,
+      dtype: DType = jnp.float32,
+      use_edge_correction: bool = True,
+  ):
     """Generates a static conv kernel for interpolation.
 
     Args:
@@ -173,20 +181,22 @@ class OneDimTokenInterpolation:
           f'interpolation_ratio {interpolation_ratio} is larger than '
           f'conv_kernel_size {conv_kernel_size}. This means some tokens '
           'will not be included in the interpolation and the final output will '
-          'be wrong.')
+          'be wrong.'
+      )
     self._interpolation_ratio = interpolation_ratio
     self._use_edge_correction = use_edge_correction
     self._conv_kernel_type = conv_kernel_type
     if conv_kernel_type == ConvKernelType.CONST:
       kernel = np.ones((conv_kernel_size,))
     elif conv_kernel_type == ConvKernelType.LINEAR:
-      kernel = np.array([0.5, 1., 0.5])
+      kernel = np.array([0.5, 1.0, 0.5])
     else:
       raise ValueError(f'Unsupported conv_kernel_type {conv_kernel_type}.')
 
     kernel = jnp.array(kernel[:, None, None], dtype=dtype)
-    self._conv_kernel = jnp.repeat(
-        kernel, channel_dim, axis=2) if channel_dim > 1 else kernel
+    self._conv_kernel = (
+        jnp.repeat(kernel, channel_dim, axis=2) if channel_dim > 1 else kernel
+    )
 
   def __call__(self, inputs: Array) -> Array:
     """Interpolates or upscales sequence length by 2x.
@@ -197,19 +207,22 @@ class OneDimTokenInterpolation:
     Returns:
       Interpolated embeddings with shape <float>[batch, 2*seq_len, channel_dim].
     """
-    dn = lax.conv_dimension_numbers(inputs.shape, self._conv_kernel.shape,
-                                    ('NHC', 'HIO', 'NHC'))
+    dn = lax.conv_dimension_numbers(
+        inputs.shape, self._conv_kernel.shape, ('NHC', 'HIO', 'NHC')
+    )
     kernel_size = self._conv_kernel.shape[0]
     padding = ((kernel_size - 1, kernel_size - 1),)
     lhs_dilation = (self._interpolation_ratio,)
     y = lax.conv_general_dilated(
         inputs.astype(jnp.float32),
-        self._conv_kernel.astype(jnp.float32), (1,),
+        self._conv_kernel.astype(jnp.float32),
+        (1,),
         padding=padding,
         lhs_dilation=lhs_dilation,
         rhs_dilation=(1,),
         dimension_numbers=dn,
-        feature_group_count=inputs.shape[-1])
+        feature_group_count=inputs.shape[-1],
+    )
 
     if self._conv_kernel_type == ConvKernelType.LINEAR:
       # Linear conv_kernel can potentially improve accuracy. But it has two
@@ -257,9 +270,9 @@ class TokenHierarchy(metaclass=abc.ABCMeta):
       causal_mask: This specifies whether to apply a causal mask on the
         attention weights. If True, the output at timestep `t` will not depend
         on inputs at timesteps strictly greater than `t`.
-      token_ratio: The ratio of the token count at two adjacent levels.
-        For instance, 2 means token count is reduced by a factor of 2 from
-        level-k to level-(k+1) due to coarsening.
+      token_ratio: The ratio of the token count at two adjacent levels. For
+        instance, 2 means token count is reduced by a factor of 2 from level-k
+        to level-(k+1) due to coarsening.
       dtype: The dtype of the computation.
 
     Raises:
@@ -277,27 +290,38 @@ class TokenHierarchy(metaclass=abc.ABCMeta):
       raise ValueError('num_cluster must be an even number.')
     max_num_cluster = seq_len // 2
     if max_num_cluster <= 1:
-      raise ValueError('max_num_cluster must be larger than 1; instead got '
-                       f'max_num_cluster={max_num_cluster}. This is caused '
-                       'by a small input length = 2.')
+      raise ValueError(
+          'max_num_cluster must be larger than 1; instead got '
+          f'max_num_cluster={max_num_cluster}. This is caused '
+          'by a small input length = 2.'
+      )
     self._num_cluster = min(num_cluster, max_num_cluster)
     if self._num_cluster != num_cluster:
       logging.info(
           'num_cluster is reset from %d to %d because max_num_cluster = %d',
-          num_cluster, self._num_cluster, max_num_cluster)
+          num_cluster,
+          self._num_cluster,
+          max_num_cluster,
+      )
 
     self._num_block_leaf_level = seq_len // self._num_cluster
     if self._num_block_leaf_level * self._num_cluster != seq_len:
-      raise ValueError('seq_len must be divisible by num_cluster; instead got '
-                       f'(seq_len, num_cluster)={seq_len, self._num_cluster}.')
+      raise ValueError(
+          'seq_len must be divisible by num_cluster; instead got '
+          f'(seq_len, num_cluster)={seq_len, self._num_cluster}.'
+      )
     if self._num_block_leaf_level < 2:
-      raise ValueError('num_block=seq_len/num_cluster>=2 is required; '
-                       f'instead got num_block={self._num_block_leaf_level}')
+      raise ValueError(
+          'num_block=seq_len/num_cluster>=2 is required; '
+          f'instead got num_block={self._num_block_leaf_level}'
+      )
 
     self._num_level = int(np.log2(self._num_block_leaf_level))
     if np.exp2(self._num_level) != self._num_block_leaf_level:
-      raise ValueError('num_block=seq_len/num_cluster must be power of 2;'
-                       f' instead got num_block={self._num_block_leaf_level}')
+      raise ValueError(
+          'num_block=seq_len/num_cluster must be power of 2;'
+          f' instead got num_block={self._num_block_leaf_level}'
+      )
 
     self._num_block = [self._num_block_leaf_level] * self._num_level
     for level in range(1, self._num_level):
@@ -326,7 +350,8 @@ class TokenHierarchy(metaclass=abc.ABCMeta):
       self,
       inputs: Array,
       input_array_name: InputArrayName = InputArrayName.QUERY,
-      padding_mask: Optional[Array] = None) -> HierarchicalCoarsenResults:
+      padding_mask: Optional[Array] = None,
+  ) -> HierarchicalCoarsenResults:
     """Hierarchically coarsens inputs level by level.
 
     Args:
@@ -457,10 +482,10 @@ class TokenHierarchy(metaclass=abc.ABCMeta):
       if block_name == TokenBlockName.ANCHOR:
         continue
       block_mask_list = []
-      scalar = 1.
+      scalar = 1.0
       for level in range(self.num_level):
         block_mask = self._gen_zero_block_mask(level, block_name, batch_size)
-        if scalar > 1.:
+        if scalar > 1.0:
           block_mask *= scalar
         block_mask_list.append(block_mask)
         scalar *= growth_factor
@@ -484,8 +509,8 @@ class TokenHierarchy(metaclass=abc.ABCMeta):
 
     Args:
       level: The specified level in the hierarchy.
-      block_name: The generated mask is for the token/attention block with
-         this name.
+      block_name: The generated mask is for the token/attention block with this
+        name.
       batch_size: The batch size for training data.
 
     Returns:
@@ -547,13 +572,15 @@ class OneDimTokenHierarchy(TokenHierarchy):
     self._level_end_coarse_block_idx = [0] * self._num_level
     for level in range(1, self._num_level):
       self._level_end_coarse_block_idx[level] = (
-          self._level_end_coarse_block_idx[level - 1] + self._num_block[level])
+          self._level_end_coarse_block_idx[level - 1] + self._num_block[level]
+      )
 
   def hierarchical_coarsen(
       self,
       inputs: Array,
       input_array_name: InputArrayName = InputArrayName.QUERY,
-      padding_mask: Optional[Array] = None) -> HierarchicalCoarsenResults:
+      padding_mask: Optional[Array] = None,
+  ) -> HierarchicalCoarsenResults:
     """Hierarchically coarsens inputs level by level.
 
     Args:
@@ -581,8 +608,9 @@ class OneDimTokenHierarchy(TokenHierarchy):
 
     if padding_mask is not None:
       if padding_mask.ndim != 3:
-        raise ValueError('padding_mask rank = '
-                         f'{padding_mask.ndim}, it must be 3.')
+        raise ValueError(
+            f'padding_mask rank = {padding_mask.ndim}, it must be 3.'
+        )
       padding_mask = padding_mask[..., None]
 
     decoder_only = self._for_self_attention and self._causal_mask
@@ -594,7 +622,8 @@ class OneDimTokenHierarchy(TokenHierarchy):
       if encoder_only or cross_attention:
         # In both cases, q_denominator is needed for coarsening query.
         coarse_mask_results = self._coarsen_padding_mask(
-            padding_mask, need_aggregation=False)
+            padding_mask, need_aggregation=False
+        )
         q_denominator = coarse_mask_results.denominator
       else:
         q_denominator = None
@@ -602,30 +631,37 @@ class OneDimTokenHierarchy(TokenHierarchy):
       # For auto-regressive decoder, only sample the first position of each
       # coarsening cluster. This avoids the leakage from future positions.
       coarse_qkv = self._coarsen_query_or_key(
-          inputs, denominator=q_denominator, use_sample=decoder_only)
+          inputs, denominator=q_denominator, use_sample=decoder_only
+      )
     elif input_array_name == InputArrayName.KEY:
       coarse_mask_results = self._coarsen_padding_mask(
-          padding_mask, need_aggregation=True)
+          padding_mask, need_aggregation=True
+      )
       aggregated_padding_mask = coarse_mask_results.aggregated_padding_mask
       coarse_qkv = self._coarsen_query_or_key(
-          inputs, denominator=coarse_mask_results.denominator, use_sample=False)
+          inputs, denominator=coarse_mask_results.denominator, use_sample=False
+      )
     else:
       coarse_qkv = self._coarsen_value(inputs)
 
     coarse_qkv = self._partition_sequences(coarse_qkv)
     packed_coarse_qkv = self._pack_coarse_qkv(
-        coarse_qkv, input_name=input_array_name)
+        coarse_qkv, input_name=input_array_name
+    )
     if aggregated_padding_mask is not None:
       aggregated_padding_mask = self._partition_sequences(
-          aggregated_padding_mask)
+          aggregated_padding_mask
+      )
       packed_aggregated_padding_mask = self._pack_coarse_qkv(
-          aggregated_padding_mask, input_name=InputArrayName.KEY)
+          aggregated_padding_mask, input_name=InputArrayName.KEY
+      )
     else:
       packed_aggregated_padding_mask = None
 
     return HierarchicalCoarsenResults(
         packed_coarse_qkv=packed_coarse_qkv,
-        packed_aggregated_key_padding_mask=packed_aggregated_padding_mask)
+        packed_aggregated_key_padding_mask=packed_aggregated_padding_mask,
+    )
 
   def recover_input_shape(self, packed_coarse_qkv: Array, level: int) -> Array:
     """Recovers from blockwise partitioned shape to the input sequence shape.
@@ -678,14 +714,16 @@ class OneDimTokenHierarchy(TokenHierarchy):
         conv_kernel_size=self._conv_kernel_size,
         conv_kernel_type=self._interpolation_kernel_type,
         channel_dim=channel_dim,
-        interpolation_ratio=self._token_ratio)
+        interpolation_ratio=self._token_ratio,
+    )
 
-    cumulative_sum = 0.  # Default value in case num_level==1.
+    cumulative_sum = 0.0  # Default value in case num_level==1.
     for level in range(self.num_level - 1, 0, -1):
       level_start = self.level_end_coarse_block_idx[level - 1]
       level_end = self.level_end_coarse_block_idx[level]
       current_level_coarse_y = self.recover_input_shape(
-          coarse_y[:, level_start:level_end], level)
+          coarse_y[:, level_start:level_end], level
+      )
       if level == self.num_level - 1:
         # This starts the cumsum. So only assignment is done.
         cumulative_sum = current_level_coarse_y
@@ -695,9 +733,8 @@ class OneDimTokenHierarchy(TokenHierarchy):
     return cumulative_sum  # pytype: disable=bad-return-type  # jax-ndarray
 
   def _coarsen_padding_mask(
-      self,
-      padding_mask: Optional[Array],
-      need_aggregation: bool = False) -> CoarsenPaddingMaskResults:
+      self, padding_mask: Optional[Array], need_aggregation: bool = False
+  ) -> CoarsenPaddingMaskResults:
     """Coarsens padding mask.
 
     Args:
@@ -718,8 +755,8 @@ class OneDimTokenHierarchy(TokenHierarchy):
       )
 
     coarsening_fn = OneDimTokenCoarsening(
-        method=TokenCoarseningMethod.SUM,
-        coarsening_ratio=self._token_ratio)
+        method=TokenCoarseningMethod.SUM, coarsening_ratio=self._token_ratio
+    )
 
     coarse_padding_mask = {0: padding_mask}
     if need_aggregation:
@@ -734,14 +771,16 @@ class OneDimTokenHierarchy(TokenHierarchy):
       denominator[level] = lax.select(
           coarse_padding_mask[level] > 0,
           coarse_padding_mask[level].astype(self._dtype),
-          jnp.ones(coarse_padding_mask[level].shape, dtype=self._dtype))
+          jnp.ones(coarse_padding_mask[level].shape, dtype=self._dtype),
+      )
 
       if need_aggregation:
         if level == 1:
           aggregated_padding_mask[level] = coarse_padding_mask[level]
         else:
           aggregated_padding_mask[level] = coarsening_fn(
-              aggregated_padding_mask[level - 1])
+              aggregated_padding_mask[level - 1]
+          )
 
       # Sets entries to 1/0 so that coarse_padding_mask at each level is still
       # a binary mask. This is important to get the correct denominator.
@@ -749,19 +788,22 @@ class OneDimTokenHierarchy(TokenHierarchy):
       coarse_padding_mask[level] = lax.select(
           coarse_padding_mask[level] > 0,
           jnp.ones(coarse_padding_mask[level].shape, dtype=self._dtype),
-          jnp.zeros(coarse_padding_mask[level].shape, dtype=self._dtype))
+          jnp.zeros(coarse_padding_mask[level].shape, dtype=self._dtype),
+      )
 
     if not need_aggregation:
       aggregated_padding_mask = None
 
     return CoarsenPaddingMaskResults(
-        aggregated_padding_mask=aggregated_padding_mask,
-        denominator=denominator)
+        aggregated_padding_mask=aggregated_padding_mask, denominator=denominator
+    )
 
-  def _coarsen_query_or_key(self,
-                            inputs_qk: Array,
-                            denominator: Array,
-                            use_sample: bool = False) -> Dict[int, Array]:
+  def _coarsen_query_or_key(
+      self,
+      inputs_qk: Array,
+      denominator: Optional[Array],
+      use_sample: bool = False,
+  ) -> Dict[int, Array]:
     """Coarsens Query or Key.
 
     Args:
@@ -783,8 +825,8 @@ class OneDimTokenHierarchy(TokenHierarchy):
         method = TokenCoarseningMethod.SUM
 
     coarsening_fn = OneDimTokenCoarsening(
-        method=method,
-        coarsening_ratio=self._token_ratio)
+        method=method, coarsening_ratio=self._token_ratio
+    )
 
     coarse_qk = {0: inputs_qk}
     for level in range(1, self.num_level):
@@ -806,15 +848,16 @@ class OneDimTokenHierarchy(TokenHierarchy):
          value: <float>[batch, seq_len[level], num_head, head_dim]
     """
     coarsening_fn = OneDimTokenCoarsening(
-        method=TokenCoarseningMethod.SUM, coarsening_ratio=self._token_ratio)
+        method=TokenCoarseningMethod.SUM, coarsening_ratio=self._token_ratio
+    )
     coarse_v = {0: inputs}
     for level in range(1, self.num_level):
       coarse_v[level] = coarsening_fn(coarse_v[level - 1])
     return coarse_v
 
   def _pack_coarse_qkv(
-      self, coarse_qkv: Dict[int, Array],
-      input_name: InputArrayName) -> Dict[TokenBlockName, Array]:
+      self, coarse_qkv: Dict[int, Array], input_name: InputArrayName
+  ) -> Dict[TokenBlockName, Array]:
     """Packs coarse Query/Key/Value.
 
     Args:
@@ -839,11 +882,12 @@ class OneDimTokenHierarchy(TokenHierarchy):
             computing or being multiplied by attention[TokenBlockName.RIGHT].
             Its shape is <float>[batch, packed_dim, num_cluster, feature_dim].
     """
-    to_replace = (input_name == InputArrayName.QUERY)
+    to_replace = input_name == InputArrayName.QUERY
     if to_replace:
       batch_size = coarse_qkv[0].shape[0]
       packed_zero_block_mask = self.gen_packed_zero_block_mask(
-          batch_size=batch_size, use_growth_factor=False, trailing_ndim=3)
+          batch_size=batch_size, use_growth_factor=False, trailing_ndim=3
+      )
 
     packed_coarse_qkv = {}
     for block_name in self.block_names:
@@ -861,8 +905,9 @@ class OneDimTokenHierarchy(TokenHierarchy):
           packed_coarse_qkv[block_name] *= packed_zero_block_mask[block_name]
     return packed_coarse_qkv
 
-  def _partition_sequences(self, coarse_qkv: Dict[int,
-                                                  Array]) -> Dict[int, Array]:
+  def _partition_sequences(
+      self, coarse_qkv: Dict[int, Array]
+  ) -> Dict[int, Array]:
     """Partitions sequences at each level of the hierarchy into blockwise shape.
 
     Args:
@@ -875,8 +920,13 @@ class OneDimTokenHierarchy(TokenHierarchy):
     (batch, _, num_head, head_dim) = coarse_qkv[0].shape
     reshaped_coarse_qkv = {}
     for level in range(self.num_level):
-      new_shape = (batch, self.num_block[level], self.num_cluster, num_head,
-                   head_dim)
+      new_shape = (
+          batch,
+          self.num_block[level],
+          self.num_cluster,
+          num_head,
+          head_dim,
+      )
       reshaped_coarse_qkv[level] = coarse_qkv[level].reshape(new_shape)
     return reshaped_coarse_qkv
 
@@ -890,8 +940,8 @@ class OneDimTokenHierarchy(TokenHierarchy):
 
     Args:
       level: The specified level in the hierarchy.
-      block_name: The generated mask is for the token/attention block with
-         this name.
+      block_name: The generated mask is for the token/attention block with this
+        name.
       batch_size: The batch size for training data.
 
     Returns:
@@ -901,7 +951,7 @@ class OneDimTokenHierarchy(TokenHierarchy):
     block_coord = self.block_coord[block_name]
     block_mask = np.ones((batch_size, num_block), dtype=self._dtype)
     if block_coord == -1:
-      block_mask[:, 0] = 0.
+      block_mask[:, 0] = 0.0
     elif block_coord == 1:
-      block_mask[:, -1] = 0.
+      block_mask[:, -1] = 0.0
     return jnp.array(block_mask)

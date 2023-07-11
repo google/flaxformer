@@ -30,6 +30,7 @@ import jax.numpy as jnp
 from flaxformer.architectures.longt5 import relative_position_biases_general
 from flaxformer.architectures.longt5 import tensor_utils
 from flaxformer.components import dense
+from flaxformer.components import embedding
 from flaxformer.components import layer_norm
 from flaxformer.components.attention import dense_attention  # GOOGLE-INTERNAL # pylint: disable=line-too-long
 from flaxformer.types import Array
@@ -174,6 +175,8 @@ class EncoderLocalSelfAttention(nn.Module, LongSelfAttention):
   output_projection: bool = True
   split_head_kernel: bool = False
   kernels_to_fuse: Optional[str] = None  # Only 'qkv' is supported.
+  use_rotary_embedding: bool = False
+  rotary_embedding_max_timescale: float = 1e4
   concat_3_blocks_implementation: Optional[str] = None
   relpos_bias: Optional[RelativePositionBiasesGeneral] = None
 
@@ -278,6 +281,15 @@ class EncoderLocalSelfAttention(nn.Module, LongSelfAttention):
     dropout_rng = None
     if enable_dropout and self.dropout_rate > 0.:
       dropout_rng = self.make_rng('dropout')
+
+    if self.use_rotary_embedding:
+      length = inputs.shape[-2]
+      sin, cos = embedding.generate_fixed_pos_embedding(
+          head_dim, length, max_timescale=self.rotary_embedding_max_timescale
+      )
+      query, key = embedding.apply_rotary_embedding(
+          query, key, cos, sin, decode=False, rotary_index=None
+      )
 
     # Apply attention.
     x = _local_self_attention(

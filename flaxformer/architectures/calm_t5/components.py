@@ -379,9 +379,10 @@ class MultiHeadDotProductAttention(dense_attention.MultiHeadDotProductAttention
           query, key, cos, sin, decode=decode, rotary_index=rotary_index)
 
     # Compute attention.
-    attn_weights = self.compute_attention_fn(
+    x = self.attention_fn(
         query,
         key,
+        value,
         bias=attention_bias,
         broadcast_dropout=self.broadcast_dropout,
         rescale_logits=self.rescale_logits,
@@ -391,14 +392,8 @@ class MultiHeadDotProductAttention(dense_attention.MultiHeadDotProductAttention
         dtype=self.dtype,
         precision=self.precision,
         use_extra_logit=self.use_extra_logit,
-        float32_logits=self.float32_logits)  # pytype: disable=wrong-keyword-args
-
-    # Save the attention weights if `intermediates` is mutable, otherwise no-op.
-    if self.sow_intermediates:
-      self.sow('intermediates', 'attention', attn_weights)
-
-    # Apply attention.
-    x = self.apply_attention_fn(attn_weights, value, precision=self.precision)
+        float32_logits=self.float32_logits,
+    )  # pytype: disable=wrong-keyword-args
 
     if not self.output_projection:
       return x

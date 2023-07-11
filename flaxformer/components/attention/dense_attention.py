@@ -479,11 +479,8 @@ class MultiHeadDotProductAttention(nn.Module, DenseAttention):
   q_kernel_init: Optional[Initializer] = None
   bias_init: Initializer = initializers.zeros
   rescale_logits: bool = False
-  compute_attention_fn: Callable[..., Array] = staticmethod(
-      dot_product_attention_weights
-  )
-  apply_attention_fn: Callable[..., Array] = staticmethod(
-      apply_dot_product_attention_weights_to_values
+  attention_fn: Callable[[Array, Array, Array], Array] = staticmethod(
+      dot_product_attention
   )
   use_extra_logit: bool = False
   float32_logits: bool = False
@@ -500,6 +497,7 @@ class MultiHeadDotProductAttention(nn.Module, DenseAttention):
   q_conv: Optional[nn.Module] = None
   k_conv: Optional[nn.Module] = None
   v_conv: Optional[nn.Module] = None
+  dense_general_factory: Callable[..., nn.Module] = dense.DenseGeneral
 
   def update_cache_prefill(
       self,
@@ -765,7 +763,7 @@ class MultiHeadDotProductAttention(nn.Module, DenseAttention):
       query_init = lambda *args: q_kernel_init(*args) / depth_scaling
 
     make_dense = functools.partial(
-        dense.DenseGeneral,
+        self.dense_general_factory,
         axis=-1,
         bias_init=self.bias_init,
         use_bias=self.use_bias,
@@ -1029,14 +1027,16 @@ class MultiHeadDotProductAttention(nn.Module, DenseAttention):
       sin, cos = embedding.generate_fixed_pos_embedding(
           dim, max_length, max_timescale=self.rotary_embedding_max_timescale
       )
+      sin = sin.astype(self.dtype)
+      cos = cos.astype(self.dtype)
       query, key = embedding.apply_rotary_embedding(
           query, key, cos, sin, decode=decode, rotary_index=rotary_index
       )
 
-    # Compute attention.
-    attn_weights = self.compute_attention_fn(
+    x = self.attention_fn(
         query,
         key,
+        value,
         bias=attention_bias,
         broadcast_dropout=self.broadcast_dropout,
         rescale_logits=self.rescale_logits,
@@ -1049,18 +1049,12 @@ class MultiHeadDotProductAttention(nn.Module, DenseAttention):
         float32_logits=self.float32_logits,
     )  # pytype: disable=wrong-keyword-args
 
-    # Save the attention weights if `intermediates` is mutable, otherwise no-op.
-    if self.sow_intermediates:
-      self.sow('intermediates', 'attention', attn_weights)
-
-    # Apply attention.
-    x = self.apply_attention_fn(attn_weights, value, precision=self.precision)
-
+    # Compute attention.
     if not self.output_projection:
       return x
 
     # Back to the original inputs dimensions.
-    out = dense.DenseGeneral(
+    out = self.dense_general_factory(
         features=features,
         axis=(-2, -1),
         kernel_init=self.kernel_init,
@@ -1071,9 +1065,9 @@ class MultiHeadDotProductAttention(nn.Module, DenseAttention):
         reshape_kernel=not self.split_head_kernel,
         kernel_axis_names=['heads', 'kv', 'embed'],
         name='out',
-    )(  # pytype: disable=wrong-arg-types
+    )(
         x
-    )
+    )  # pytype: disable=wrong-keyword-args
     return out
 
 
@@ -1731,6 +1725,8 @@ class MultiQueryDotProductAttention(nn.Module, DenseAttention):
       sin, cos = embedding.generate_fixed_pos_embedding(
           dim, max_length, max_timescale=self.rotary_embedding_max_timescale
       )
+      sin = sin.astype(self.dtype)
+      cos = cos.astype(self.dtype)
       query, key = embedding.apply_rotary_embedding(
           query, key, cos, sin, decode=decode, rotary_index=rotary_index
       )
@@ -2360,5 +2356,3 @@ def get_decoder_logit_mask(decoder_input_tokens, dtype):
       ),
       axis=-1,
   )
-
-

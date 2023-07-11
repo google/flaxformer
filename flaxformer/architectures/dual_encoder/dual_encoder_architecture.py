@@ -45,9 +45,7 @@ class DualEncoderOutput:
 
   left_encoded: Array
   right_encoded: Array
-  logits: Array
-
-
+  logits: Union[Array, Mapping[str, Array]]
 
 
 class MakeEncoderFn(Protocol):

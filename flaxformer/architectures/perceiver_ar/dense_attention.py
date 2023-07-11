@@ -100,10 +100,9 @@ class MultiHeadDotProductAttention(nn.Module, dense_attention.DenseAttention):
   q_kernel_init: Optional[Initializer] = None
   bias_init: Initializer = initializers.zeros
   rescale_logits: bool = False
-  compute_attention_fn: Callable[..., Array] = staticmethod(
-      dense_attention.dot_product_attention_weights)
-  apply_attention_fn: Callable[..., Array] = staticmethod(
-      dense_attention.apply_dot_product_attention_weights_to_values)
+  attention_fn: Callable[[Array, Array, Array], Array] = staticmethod(
+      dense_attention.dot_product_attention
+  )
   use_extra_logit: bool = False
   float32_logits: bool = False
   output_projection: bool = True
@@ -589,9 +588,10 @@ class MultiHeadDotProductAttention(nn.Module, dense_attention.DenseAttention):
           query_position_offset=query_position_offset)
 
     # Compute attention.
-    attn_weights = self.compute_attention_fn(
+    x = self.attention_fn(
         query,
         key,
+        value,
         bias=attention_bias,
         broadcast_dropout=self.broadcast_dropout,
         rescale_logits=self.rescale_logits,
@@ -601,14 +601,8 @@ class MultiHeadDotProductAttention(nn.Module, dense_attention.DenseAttention):
         dtype=self.dtype,
         precision=self.precision,
         use_extra_logit=self.use_extra_logit,
-        float32_logits=self.float32_logits)  # pytype: disable=wrong-keyword-args
-
-    # Save the attention weights if `intermediates` is mutable, otherwise no-op.
-    if self.sow_intermediates:
-      self.sow('intermediates', 'attention', attn_weights)
-
-    # Apply attention.
-    x = self.apply_attention_fn(attn_weights, value, precision=self.precision)
+        float32_logits=self.float32_logits,
+    )  # pytype: disable=wrong-keyword-args
 
     if not self.output_projection:
       return x

@@ -38,9 +38,9 @@ from flaxformer.types import DType
 from flaxformer.types import Initializer
 
 
-#------------------------------------------------------------------------------
+# ------------------------------------------------------------------------------
 # Adafactor-compatible DenseGeneral for attention layers.
-#------------------------------------------------------------------------------
+# ------------------------------------------------------------------------------
 def _normalize_axes(axes: Iterable[int], ndim: int) -> Tuple[int, ...]:
   # A tuple by convention. len(axes_tuple) then also gives the rank efficiently.
   return tuple([ax if ax >= 0 else ndim + ax for ax in axes])
@@ -246,6 +246,7 @@ class MlpBlock(nn.Module):
   weight_params: Optional[aqt.QuantOps.WeightParams] = None
   act_params: Optional[aqt.QuantOps.ActHParams] = None
   possibly_use_quantized_vars: bool = False
+  dense_general_factory: Callable[..., nn.Module] = DenseGeneral
 
   @nn.compact
   def __call__(self,
@@ -306,15 +307,15 @@ class MlpBlock(nn.Module):
         )(inputs, padding_mask=None)
         return result.reshape((batch, seq_len, features))
       else:
-        return DenseGeneral(
-            features,
+        return self.dense_general_factory(
+            features=features,
             use_bias=self.use_bias,
             dtype=self.dtype,
             kernel_init=self.kernel_init,
             bias_init=self.bias_init,
             kernel_axis_names=kernel_axis_names,
-            name=name)(
-                inputs)
+            name=name,
+        )(inputs)
 
     # Iterate over specified MLP input activation functions.
     # e.g. ('relu',) or ('gelu', 'linear') for gated-gelu.
@@ -355,17 +356,20 @@ class MlpBlock(nn.Module):
                            'intermediates.')
         xs = inputs
       else:
-        xs = DenseGeneral(
-            (len(self.activations), self.intermediate_dim),
+        xs = self.dense_general_factory(
+            features=(len(self.activations), self.intermediate_dim),
             use_bias=self.use_bias,
             dtype=self.dtype,
             kernel_init=wi_fused_kernel_init,
             bias_init=self.bias_init,
             reshape_kernel=False,
-            kernel_axis_names=(self.input_axis_name, self.activations_axis_name,
-                               self.intermediate_axis_name),
-            name='wi_fused')(
-                inputs)
+            kernel_axis_names=(
+                self.input_axis_name,
+                self.activations_axis_name,
+                self.intermediate_axis_name,
+            ),
+            name='wi_fused',
+        )(inputs)
       for idx, act_fn in enumerate(self.activations):
         x = jnp.squeeze(lax.dynamic_slice_in_dim(xs, idx, 1, -2), -2)
         x = _convert_to_activation_function(act_fn)(x)

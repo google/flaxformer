@@ -7,5 +7,8 @@ from flaxformer.components.attention import memory_efficient_attention
 dense_attention.MultiQueryDotProductAttention:
   attention_fn = @memory_efficient_attention.dot_product_attention_multiquery
 
+dense_attention.MultiHeadDotProductAttention:
+  attention_fn = @memory_efficient_attention.dot_product_attention_multihead
+
 # Note that this attention function only works when the sequence length is
 # less than, or a multiple of dot_product_attention_multiquery.key_chunk_size.

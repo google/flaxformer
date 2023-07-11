@@ -29,7 +29,7 @@ install_requires = [
     "numpy>=1.12",
     "jax>=0.2.21",
     "flax>=0.5.1",
-    "aqtp[jax_legacy]>=0.0.10",
+    "aqtp[jax_legacy]>=0.0.10, <=0.1.0",
 ]
 
 tests_require = [
@@ -39,7 +39,7 @@ tests_require = [
 
 setup(
     name="flaxformer",
-    version="0.8.1",
+    version="0.8.2",
     description="Flaxformer: Transformer implementations in Flax",
     long_description="\n\n".join([README]),
     long_description_content_type="text/markdown",

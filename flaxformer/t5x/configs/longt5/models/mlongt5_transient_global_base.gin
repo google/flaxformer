@@ -1,0 +1,49 @@
+# mLongT5 Base model with transient global attention.
+# Provides MODEL
+from __gin__ import dynamic_registration
+
+import seqio
+from t5x import adafactor
+from t5x import models
+
+ARCHITECTURE = %gin.REQUIRED
+
+# mLongT5 is identical to longt5.1.1 architecture except for the vocabulary.
+include 'flaxformer/t5x/configs/longt5/architectures/longt5_1_1_transient_global_flaxformer.gin'
+NUM_EMBEDDINGS = 256384  # vocab size rounded to a multiple of 128 for TPU efficiency
+
+# Architecture overrides
+NUM_ENCODER_LAYERS = 12
+NUM_DECODER_LAYERS = 12
+NUM_HEADS = 12
+HEAD_DIM = 64
+EMBED_DIM = 768
+MLP_DIM = 2048
+
+# Loss HParam defaults
+Z_LOSS = 0.0001
+LABEL_SMOOTHING = 0.0
+LOSS_NORMALIZING_FACTOR = None
+
+# Vocabulary (shared by encoder and decoder)
+VOCABULARY = @seqio.SentencePieceVocabulary()
+seqio.SentencePieceVocabulary.sentencepiece_model_file = "gs://t5-data/vocabs/umt5.256000/sentencepiece.model"
+seqio.SentencePieceVocabulary.extra_ids = 300
+
+# Optimizer
+# `learning_rate` is set by `Trainer.learning_rate_fn`.
+OPTIMIZER = @adafactor.Adafactor()
+adafactor.Adafactor:
+  decay_rate = 0.8
+  step_offset = 0
+
+# Model
+MODEL = @models.EncoderDecoderModel()
+models.EncoderDecoderModel:
+  module = %ARCHITECTURE  # provided by t5_flaxformer
+  input_vocabulary = %VOCABULARY
+  output_vocabulary = %VOCABULARY
+  optimizer_def = %OPTIMIZER
+  z_loss = %Z_LOSS
+  label_smoothing = %LABEL_SMOOTHING
+  loss_normalizing_factor = %LOSS_NORMALIZING_FACTOR

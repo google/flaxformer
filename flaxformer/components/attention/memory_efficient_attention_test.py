@@ -52,7 +52,7 @@ class MultiQueryDotProductAttention(
 class SelfAttentionArgs:
   num_heads: int = 1
   batch_size: int = 2
-  qkv_features: int = 3
+  qkv_features: int = 8
   out_features: int = 4
   q_len: int = 5
   features: int = 6
@@ -83,10 +83,16 @@ class SelfAttentionArgs:
         use_rotary_embedding=self.use_rotary_embedding,
     )
 
-  def apply_args(self):
-    inputs_q = jnp.ones((self.batch_size, self.q_len, self.features))
-    mask = jnp.ones((self.batch_size, self.num_heads, self.q_len, self.q_len))
-    bias = jnp.ones((self.batch_size, self.num_heads, self.q_len, self.q_len))
+  def apply_args(self, dtype=jnp.float32):
+    inputs_q = jnp.ones(
+        (self.batch_size, self.q_len, self.features), dtype=dtype
+    )
+    mask = jnp.ones(
+        (self.batch_size, self.num_heads, self.q_len, self.q_len), dtype=dtype
+    )
+    bias = jnp.ones(
+        (self.batch_size, self.num_heads, self.q_len, self.q_len), dtype=dtype
+    )
     return {
         'inputs_q': inputs_q,
         'mask': mask,
@@ -388,7 +394,7 @@ class SelfAttention(dense_attention.MultiHeadDotProductAttention):
   """Self-attention special case of multi-head dot-product attention."""
 
   attention_fn: Callable[[Array, Array, Array], Array] = (
-      memory_efficient_attention.dot_product_attention_queries_per_head
+      memory_efficient_attention.dot_product_attention_multihead
   )
 
   @nn.compact
@@ -569,6 +575,15 @@ class MHAttentionTest(parameterized.TestCase):
     weights = jax.nn.softmax(logits + bias, axis=-1)
     expected = np.einsum('bhqk,bkhd->bqhd', weights, value)
     np.testing.assert_allclose(attn_out, expected, atol=1e-6)
+
+  def test_with_rope_and_bfloat16(self):
+    rngs = {'params': random.PRNGKey(0), 'dropout': random.PRNGKey(1)}
+    args = SelfAttentionArgs()
+    init_args = args.init_args()
+    init_args.update({'dtype': 'bfloat16', 'use_rotary_embedding': True})
+    model = SelfAttention(**init_args)
+    y, _ = model.init_with_output(rngs, **args.apply_args(dtype='bfloat16'))
+    self.assertEqual(y.shape, (args.batch_size, args.q_len, args.out_features))
 
 
 if __name__ == '__main__':

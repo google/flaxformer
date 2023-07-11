@@ -1,0 +1,12 @@
+# mLongT5 Large model with transient global attention.
+# Provides MODEL
+
+include 'flaxformer/t5x/configs/longt5/models/mlongt5_transient_global_base.gin'  # imports vocab, optimizer and model.
+
+# Architecture overrides
+NUM_HEADS = 16
+NUM_ENCODER_LAYERS = 24
+NUM_DECODER_LAYERS = 24
+HEAD_DIM = 64
+EMBED_DIM = 1024
+MLP_DIM = 2816

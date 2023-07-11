@@ -189,17 +189,23 @@ class LongAttentionTest(parameterized.TestCase):
     att_config = dict(
         num_heads=num_heads,
         dtype=dtype,
-        qkv_features=15,
-        out_features=out_features)
+        qkv_features=20,
+        out_features=out_features,
+        use_rotary_embedding=True,
+    )
 
     relpos_bias = RelativePositionBiasesGeneral(
         num_heads=num_heads, num_buckets=32, max_distance=128, dtype=dtype)
 
     local_att = long_attention.EncoderLocalSelfAttention(
-        local_radius=local_radius, relpos_bias=relpos_bias, **att_config)
+        local_radius=local_radius,
+        relpos_bias=relpos_bias,
+        **att_config,
+    )
 
     full_att = dense_attention.MultiHeadDotProductAttention(
-        use_bias=True, **att_config)
+        use_bias=True, **att_config
+    )
 
     local_att_output, local_att_vars = local_att.init_with_output(
         keys[3],
