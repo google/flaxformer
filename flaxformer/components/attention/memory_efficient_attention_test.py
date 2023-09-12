@@ -494,11 +494,14 @@ class MHAttentionTest(parameterized.TestCase):
     y, _ = model.init_with_output(rngs, **apply_args)
     self.assertEqual(y.shape, (args.batch_size, args.q_len, args.out_features))
 
-  def test_self_attention_with_decoding(self):
+  @parameterized.product(dtype=['float32', 'bfloat16'])
+  def test_self_attention_with_decoding(self, dtype):
     rngs = {'params': random.PRNGKey(0), 'dropout': random.PRNGKey(1)}
     args = SelfAttentionArgs(decode=True, q_len=1)
-    model = SelfAttention(**args.init_args())
-    apply_args = args.apply_args()
+    init_args = args.init_args()
+    init_args['dtype'] = dtype
+    model = SelfAttention(**init_args)
+    apply_args = args.apply_args(dtype=dtype)
     apply_args['mask'] = None
     apply_args['bias'] = None
     params = model.init(rngs, **apply_args)

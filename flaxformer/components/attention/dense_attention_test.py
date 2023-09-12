@@ -34,7 +34,6 @@ import jax.numpy as jnp
 import numpy as np
 
 from flaxformer import testing_utils
-
 from flaxformer.components import dense
 from flaxformer.components.attention import dense_attention
 from flaxformer.types import Array
@@ -593,6 +592,33 @@ class AttentionTest(parameterized.TestCase):
     weights = jax.nn.softmax(logits + bias, axis=-1)
     expected = np.einsum('bhqk,bkhd->bqhd', weights, value)
     np.testing.assert_allclose(attn_out, expected, atol=1e-6)
+
+  def test_dot_product_attention_rescale_weights(self):
+    b, q, h, d, k = 2, 3, 4, 5, 6
+    np.random.seed(0)
+    query = np.random.randn(b, q, h, d)
+    key = np.random.randn(b, k, h, d)
+    value = np.random.randn(b, k, h, d)
+    bias = np.random.randn(b, h, q, k)
+    attn_out = dense_attention.dot_product_attention(
+        query, key, value, bias=bias, rescale_weights=True
+    )
+    logits = np.einsum('bqhd,bkhd->bhqk', query, key) / np.sqrt(d)
+    weights = jax.nn.softmax(logits + bias, axis=-1)
+    expected = np.einsum('bhqk,bkhd->bqhd', weights, value)
+    np.testing.assert_allclose(attn_out, expected, atol=1e-6)
+
+  def test_dot_product_attention_rescale_both(self):
+    b, q, h, d, k = 2, 3, 4, 5, 6
+    np.random.seed(0)
+    query = np.random.randn(b, q, h, d)
+    key = np.random.randn(b, k, h, d)
+    value = np.random.randn(b, k, h, d)
+    # Rescaling twice is not supported.
+    with self.assertRaises(ValueError):
+      dense_attention.dot_product_attention(
+          query, key, value, rescale_logits=True, rescale_weights=True
+      )
 
   @parameterized.parameters({'f': 20}, {'f': 22})
   def test_multiquery_dot_product_attention(self, f):

@@ -84,6 +84,7 @@ def dot_product_attention_weights(
     bias: Optional[Array] = None,
     broadcast_dropout: bool = True,
     rescale_logits: bool = False,
+    rescale_weights: bool = False,
     dropout_rng: Optional[PRNGKey] = None,
     dropout_rate: float = 0.0,
     enable_dropout: bool = True,
@@ -110,6 +111,8 @@ def dot_product_attention_weights(
       incorporating causal masks, padding masks, proximity bias, etc.
     broadcast_dropout: bool: use a broadcasted dropout along batch dims.
     rescale_logits: bool. Whether to rescale `query` logits by 1/sqrt(depth_kq).
+    rescale_weights: bool. Whether to rescale attention weights by
+      1/sqrt(depth_kq). This is applied before bias and softmax.
     dropout_rng: JAX PRNGKey: to be used for dropout
     dropout_rate: dropout rate
     enable_dropout: bool, whether to apply dropout
@@ -127,13 +130,18 @@ def dot_product_attention_weights(
   assert query.shape[:-3] == key.shape[:-3], 'q, k batch dims must match.'
   assert query.shape[-2] == key.shape[-2], 'q, k num_heads must match.'
   assert query.shape[-1] == key.shape[-1], 'q, k depths must match.'
+  if rescale_logits and rescale_weights:
+    raise ValueError(
+        'Only one of rescale_logits or rescale_weights may be True.'
+    )
+
+  depth = query.shape[-1]
 
   # Calculate attention matrix.
   # NOTE: T5 does not explicitly rescale the attention logits by
   #       1/sqrt(depth_kq)!  This is folded into the initializers of the
   #       linear transformations, which is equivalent under Adafactor.
   if rescale_logits:
-    depth = query.shape[-1]
     query = query / jnp.sqrt(depth).astype(dtype)
 
   # Casting logits and softmax computation for float32 for model stability.
@@ -145,6 +153,8 @@ def dot_product_attention_weights(
   attn_weights = jnp.einsum(
       '...qhd,...khd->...hqk', query, key, precision=precision
   )
+  if rescale_weights:
+    attn_weights = attn_weights / jnp.sqrt(depth).astype(dtype)
 
   # Apply attention bias: masking, dropout, proximity bias, etc.
   if bias is not None:
@@ -204,6 +214,7 @@ def dot_product_attention(
     bias: Optional[Array] = None,
     broadcast_dropout: bool = True,
     rescale_logits: bool = False,
+    rescale_weights: bool = False,
     dropout_rng: Optional[PRNGKey] = None,
     dropout_rate: float = 0.0,
     enable_dropout: bool = True,
@@ -232,7 +243,9 @@ def dot_product_attention(
       incorporating causal masks, padding masks, proximity bias, etc.
     broadcast_dropout: bool: use a broadcasted dropout along batch dims.
     rescale_logits: bool. Whether to rescale `query` logits by 1/sqrt(depth_kq).
-    dropout_rng: JAX PRNGKey: to be used for dropout
+    rescale_weights: bool. Whether to rescale attention weights by
+      1/sqrt(depth_kq). This is applied before bias and softmax.
+   dropout_rng: JAX PRNGKey: to be used for dropout
     dropout_rate: dropout rate
     enable_dropout: bool, whether to apply dropout
     dtype: the dtype of the computation (default: float32)
@@ -261,6 +274,7 @@ def dot_product_attention(
       bias=bias,
       broadcast_dropout=broadcast_dropout,
       rescale_logits=rescale_logits,
+      rescale_weights=rescale_weights,
       dropout_rng=dropout_rng,
       dropout_rate=dropout_rate,
       enable_dropout=enable_dropout,
@@ -473,7 +487,9 @@ class MultiHeadDotProductAttention(nn.Module, DenseAttention):
   broadcast_dropout: bool = True
   dropout_rate: float = 0.0
   precision: Optional[lax.Precision] = None
-  kernel_init: Initializer = default_kernel_init  # pytype: disable=annotation-type-mismatch  # jax-types
+  kernel_init: Initializer = (
+      default_kernel_init  # pytype: disable=annotation-type-mismatch  # jax-types
+  )
   qkv_kernel_init: Optional[Initializer] = None
   kv_kernel_init: Optional[Initializer] = None
   q_kernel_init: Optional[Initializer] = None
@@ -1117,7 +1133,9 @@ class MultiQueryDotProductAttention(nn.Module, DenseAttention):
   broadcast_dropout: bool = True
   dropout_rate: float = 0.0
   precision: Optional[lax.Precision] = None
-  kernel_init: Initializer = default_kernel_init  # pytype: disable=annotation-type-mismatch  # jax-types
+  kernel_init: Initializer = (
+      default_kernel_init  # pytype: disable=annotation-type-mismatch  # jax-types
+  )
   q_kernel_init: Optional[Initializer] = None
   bias_init: Initializer = initializers.zeros
   rescale_logits: bool = False

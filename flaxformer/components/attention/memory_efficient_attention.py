@@ -400,7 +400,7 @@ def dot_product_attention_queries_per_head(
     query_offset = query_chunk_idx * query_chunk_size
     key_offset = key_chunk_idx * key_chunk_size
 
-    local_bias = jnp.zeros((1, 1, 1, 1, 1))
+    local_bias = jnp.zeros((1, 1, 1, 1, 1), dtype=dtype)
     if bias is not None:
       # If bias is not broadcasted yet, dynamic slice would fail with full slice
       # size. In this case we keep the bias unbroadcasted.

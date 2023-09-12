@@ -237,7 +237,7 @@ class BatchDotProduct(nn.Module):
         right_additional_encodings are provided, then the output shape is
         [batch_size, batch_size + num_hard_negatives] if
         use_only_explicit_hard_negatives is True, and
-        [batch_size, num_hard_negatives * batch_size] if
+        [batch_size, batch_size * (1 + num_hard_negatives)] if
         use_only_explicit_hard_negatives is False. If right_additional_encodings
         are not provided, then the output shape is [batch_size, batch_size].
     """
@@ -263,7 +263,7 @@ class BatchDotProduct(nn.Module):
             [right_encodings, right_additional_encodings], axis=0
         )
       # Final logits. Each examples uses all other hard negatives in the batch,
-      # so the shape is [batch_size, num_hard_negatives * batch_size].
+      # so shape is [batch_size, batch_size * (1 + num_hard_negatives)].
       logits = jnp.dot(left_encodings, right_encodings.transpose())
 
     return logits

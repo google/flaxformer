@@ -29,7 +29,6 @@ from flax.linen import partitioning
 import jax
 from jax import lax
 from jax import numpy as jnp
-import numpy as np
 
 from flaxformer.components import initializers
 from flaxformer.types import Array
@@ -481,12 +480,12 @@ class FixedEmbed(nn.Module, EmbedderWithDecode[Array]):
     # TODO: Keep track of this index in the decoder instead.
     if decode:
       position_embedder_index = self.variable(
-          'cache', 'position_embedder_index',
-          lambda: jnp.array(-1, dtype=jnp.uint32))
-      i = position_embedder_index.value
-      position_embedder_index.value = i + 1
-      return jax.lax.dynamic_slice(self.embedding, jnp.array((i, 0)),
-                                   np.array((1, self.features)))
+          'cache',
+          'position_embedder_index',
+          lambda: jnp.array([-1], dtype=jnp.uint32),
+      )
+      inputs = position_embedder_index.value[:, jnp.newaxis]
+      position_embedder_index.value += 1
 
     return jnp.take(self.embedding, inputs, axis=0)
 
@@ -541,12 +540,12 @@ class PositionEmbed(nn.Module, EmbedderWithDecode[Array]):
     # TODO: Keep track of this index in the decoder instead.
     if decode:
       position_embedder_index = self.variable(
-          'cache', 'position_embedder_index',
-          lambda: jnp.array(-1, dtype=jnp.uint32))
-      i = position_embedder_index.value
-      position_embedder_index.value = i + 1
-      return jax.lax.dynamic_slice(self.pos_embedding, jnp.array((i, 0)),
-                                   np.array((1, self.features)))
+          'cache',
+          'position_embedder_index',
+          lambda: jnp.array([-1], dtype=jnp.uint32),
+      )
+      inputs = position_embedder_index.value[:, jnp.newaxis]
+      position_embedder_index.value += 1
 
     return jnp.take(self.pos_embedding, inputs, axis=0)
 

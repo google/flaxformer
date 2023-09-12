@@ -261,6 +261,11 @@ class MultiEmbedTest(parameterized.TestCase):
     self.assertNotAlmostEqual(grads['output_grad'].sum(), 0.0)
 
 
+def _arange_init(key, shape, dtype):
+  del key
+  return np.arange(np.prod(shape), dtype=dtype).reshape(shape)
+
+
 class EmbeddingTest(parameterized.TestCase):
 
   def test_add_position_embs(self):
@@ -268,14 +273,18 @@ class EmbeddingTest(parameterized.TestCase):
     positions = np.array([[[0, 1, 2], [0, 1, 2]]], dtype=np.int32)
     position_embedder = embedding.PositionEmbed(
         num_embeddings=10,
-        features=4,
+        features=2,
         dtype=np.float32,
-        embedding_init=jax.nn.initializers.ones)
+        embedding_init=_arange_init,
+    )
 
     variables = position_embedder.init(jax.random.PRNGKey(0), inputs=positions)
     output_embeddings = position_embedder.apply(variables, inputs=positions)
 
-    np.testing.assert_array_equal(output_embeddings, 1)
+    np.testing.assert_array_equal(
+        output_embeddings,
+        [[[[0, 1], [2, 3], [4, 5]], [[0, 1], [2, 3], [4, 5]]]],
+    )
 
   def test_add_position_embs_decoder(self):
     """Tests that position embeddings are correctly applied in decoding mode."""
@@ -284,35 +293,77 @@ class EmbeddingTest(parameterized.TestCase):
         num_embeddings=10,
         features=3,
         dtype=np.float32,
-        embedding_init=jax.nn.initializers.ones)
+        embedding_init=_arange_init,
+    )
     variables = position_embedder.init(
-        jax.random.PRNGKey(0), inputs=positions, decode=True)
+        jax.random.PRNGKey(0), inputs=positions, decode=True
+    )
     state, params = pop(variables, 'params')
 
     output_embeddings, state = position_embedder.apply(
-        {
-            'params': params,
-            **state
-        },
+        {'params': params, **state},
         inputs=positions,
         decode=True,
-        mutable=['cache'])
+        mutable=['cache'],
+    )
 
-    np.testing.assert_array_equal(output_embeddings, 1)
-    np.testing.assert_array_equal(state['cache']['position_embedder_index'], 1)
+    np.testing.assert_array_equal(output_embeddings, [[[0, 1, 2]]])
+    np.testing.assert_array_equal(
+        state['cache']['position_embedder_index'], [1]
+    )
 
     # Test that repeated access increments the cache_index.
     output_embeddings, state = position_embedder.apply(
-        {
-            'params': params,
-            **state
-        },
+        {'params': params, **state},
         inputs=positions,
         decode=True,
-        mutable=['cache'])
+        mutable=['cache'],
+    )
 
-    np.testing.assert_array_equal(output_embeddings, 1)
-    np.testing.assert_array_equal(state['cache']['position_embedder_index'], 2)
+    np.testing.assert_array_equal(output_embeddings, [[[3, 4, 5]]])
+    np.testing.assert_array_equal(
+        state['cache']['position_embedder_index'], [2]
+    )
+
+  def test_add_position_embs_batch_decoder(self):
+    """Tests that position embeddings are correctly applied in decoding mode."""
+    positions = np.array([[[0, 1, 2]], [[0, 1, 2]]], dtype=np.int32)
+    position_embedder = embedding.PositionEmbed(
+        num_embeddings=10,
+        features=2,
+        dtype=np.float32,
+        embedding_init=_arange_init,
+    )
+    variables = position_embedder.init(
+        jax.random.PRNGKey(0), inputs=positions, decode=True
+    )
+    state, params = pop(variables, 'params')
+    state['cache']['position_embedder_index'] = np.array([0, 2])
+
+    output_embeddings, state = position_embedder.apply(
+        {'params': params, **state},
+        inputs=positions,
+        decode=True,
+        mutable=['cache'],
+    )
+
+    np.testing.assert_array_equal(output_embeddings, [[[2, 3]], [[6, 7]]])
+    np.testing.assert_array_equal(
+        state['cache']['position_embedder_index'], [1, 3]
+    )
+
+    # Test that repeated access increments the cache_index.
+    output_embeddings, state = position_embedder.apply(
+        {'params': params, **state},
+        inputs=positions,
+        decode=True,
+        mutable=['cache'],
+    )
+
+    np.testing.assert_array_equal(output_embeddings, [[[4, 5]], [[8, 9]]])
+    np.testing.assert_array_equal(
+        state['cache']['position_embedder_index'], [2, 4]
+    )
 
   def test_add_sinusoidal_position_embs(self):
     """Tests that sinusoidal positional embeddings are applied."""
