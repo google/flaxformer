@@ -54,7 +54,7 @@ as needed!
 First, we recommend installing a few dependencies manually,
 
 ```
-pip3 install numpy sentencepiece tensorflow==2.8.1
+pip3 install numpy sentencepiece tensorflow>=2.14.0
 ```
 
 This is a workaround to prevent pip backtracking on package versions; we

@@ -19,7 +19,7 @@ from typing import Optional, Tuple, TypeVar
 from absl import logging
 from flax.linen import partitioning as flax_partitioning
 import jax
-from jax.experimental.pjit import with_sharding_constraint as jax_pjit_wsc
+from jax.lax import with_sharding_constraint as jax_pjit_wsc
 
 
 def global_mesh_defined():

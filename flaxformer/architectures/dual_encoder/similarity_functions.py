@@ -207,7 +207,7 @@ class DotProduct(nn.Module):
     # Implement the dot product as module to be consistent to other similarity
     # functions.
     del self
-    return jnp.sum(left_encodings * right_encodings, axis=-1, keepdims=True)
+    return jnp.sum(left_encodings * right_encodings, axis=-1, keepdims=True)  # pytype: disable=bad-return-type  # jnp-type
 
 
 # ============================ Batch Similarity ================================
@@ -266,7 +266,7 @@ class BatchDotProduct(nn.Module):
       # so shape is [batch_size, batch_size * (1 + num_hard_negatives)].
       logits = jnp.dot(left_encodings, right_encodings.transpose())
 
-    return logits
+    return logits  # pytype: disable=bad-return-type  # jnp-type
 
 
 class DoNothing(nn.Module):
@@ -300,7 +300,7 @@ class DoNothing(nn.Module):
     del right_encodings
     del right_additional_encodings
     del params
-    return jnp.zeros((), dtype=jnp.int32)
+    return jnp.zeros((), dtype=jnp.int32)  # pytype: disable=bad-return-type  # jnp-type
 
 
 class BatchAttentionSimilarity(nn.Module):

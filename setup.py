@@ -29,20 +29,21 @@ install_requires = [
     "numpy>=1.12",
     "jax>=0.2.21",
     "flax>=0.6.9",
-    "aqtp[jax_legacy]>=0.0.10, <=0.1.0",
+    "aqtp>=0.1.0",
 ]
 
 tests_require = [
     "absl-py",
     "pytest",
-    "tensorflow>=2.12.0",
+    "tensorflow>=2.14.0",
+    "tensorflow-text>=2.14.0rc0",
     "gin-config",
     "t5x @ git+https://github.com/google-research/t5x",
 ]
 
 setup(
     name="flaxformer",
-    version="0.8.3",
+    version="0.8.4",
     description="Flaxformer: Transformer implementations in Flax",
     long_description="\n\n".join([README]),
     long_description_content_type="text/markdown",

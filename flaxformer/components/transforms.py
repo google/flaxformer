@@ -22,7 +22,7 @@ from flax import linen as nn
 from flax.core.lift import Out as ScanOut  # pylint: disable=unused-import
 from flax.linen import partitioning
 import jax
-from jax.experimental.pjit import with_sharding_constraint as jax_pjit_wsc
+from jax.lax import with_sharding_constraint as jax_pjit_wsc
 
 # TODO: this file contains JAX transform workarounds to fix/move
 # upstream, primarily concerning the JAX checkpoint/remat transform and

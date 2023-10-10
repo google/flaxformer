@@ -445,7 +445,7 @@ class MoeLayer(nn.Module):
       total_expert_capacity = self.num_experts * expert_capacity * num_groups
       expert_usage = num_tokens_dispatched / total_expert_capacity
 
-    self._sow_expert_metrics(
+    self._sow_expert_metrics(  # pytype: disable=wrong-arg-types  # jnp-type
         router_mask.auxiliary_loss,
         router_mask.router_z_loss,
         fraction_tokens_left_behind,

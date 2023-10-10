@@ -35,3 +35,6 @@ class LayerLayout(str, enum.Enum):
   MIDDLE = 'middle'
   MIXED = 'mixed'
   TOP = 'top'
+
+  def __format__(self, format_spec: str) -> str:
+    return self.value.__format__(format_spec)

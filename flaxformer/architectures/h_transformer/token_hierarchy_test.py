@@ -26,6 +26,19 @@ from flaxformer.architectures.h_transformer import token_hierarchy
 class OneDimTokenCoarseningTest(parameterized.TestCase):
   """Test cases for OneDimTokenCoarsening."""
 
+  def test_enum_format(self):
+    # Python 3.10 and 3.11 changed behavior. We just want to make sure that enum
+    # items can be formatted.
+    self.assertIsInstance(
+        'token coarsening: {:20s}.'.format(
+            token_hierarchy.TokenCoarseningMethod.CONST_AVERAGE
+        ),
+        str,
+    )
+    self.assertIsInstance(
+        'conv: {:10s}.'.format(token_hierarchy.ConvKernelType.CONST), str
+    )
+
   @parameterized.named_parameters(
       ('sample', token_hierarchy.TokenCoarseningMethod.SAMPLE,
        np.array([[[[1.], [2.]], [[5.], [6.]]]])),

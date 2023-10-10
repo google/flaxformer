@@ -84,6 +84,9 @@ class TokenCoarseningMethod(str, enum.Enum):
   SUM = 'sum'
   CONST_AVERAGE = 'const_average'
 
+  def __format__(self, format_spec: str) -> str:
+    return self.value.__format__(format_spec)
+
 
 @gin.constants_from_enum
 class ConvKernelType(str, enum.Enum):
@@ -91,6 +94,9 @@ class ConvKernelType(str, enum.Enum):
 
   CONST = 'const'
   LINEAR = 'linear'
+
+  def __format__(self, format_spec: str) -> str:
+    return self.value.__format__(format_spec)
 
 
 class OneDimTokenCoarsening:
