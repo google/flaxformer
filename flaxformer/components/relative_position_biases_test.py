@@ -18,6 +18,7 @@
 from absl.testing import absltest
 import jax
 from jax import random
+from jax import tree_util
 import jax.numpy as jnp
 import numpy as np
 
@@ -54,7 +55,7 @@ class RelativePositionBiasesTest(absltest.TestCase):
     variables = self.relative_attention.init(
         random.PRNGKey(0), self.query_len, self.key_len)
     sharding.check_params_and_axis_names_match(variables)
-    for axis_names in jax.tree_leaves(sharding.get_axis_names(variables)):
+    for axis_names in tree_util.tree_leaves(sharding.get_axis_names(variables)):
       for axis_name in axis_names:
         self.assertIn(axis_name, {'relpos_heads', 'relpos_buckets'})
     expected_files.check_params_and_axes(variables['params'],

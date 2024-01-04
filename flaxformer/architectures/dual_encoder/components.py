@@ -29,14 +29,16 @@ class LearnableScaling(nn.Module):
   def setup(self):
     self.scalar = partitioning.param_with_axes(
         "learnable_scalar",
-        nn.initializers.constant(self.init_scaling_value), (1,),
+        nn.initializers.constant(self.init_scaling_value),
+        (1,),
         jnp.float32,
-        axes=("embed",))
+        axes=("embed",),
+    )
 
   @nn.compact
-  def __call__(self,
-               x: jnp.ndarray,
-               enable_dropout: bool = True) -> jnp.ndarray:
+  def __call__(
+      self, x: jnp.ndarray, enable_dropout: bool = True
+  ) -> jnp.ndarray:
     if enable_dropout:
       # Only apply logit scaling during training since during eval the scaling
       # will not affect the eval metrics.
@@ -55,3 +57,50 @@ class ConstantScaling(nn.Module):
     # For backwards compatibility (from before logit scaling was called from
     # loss modules), constant scaling is applied regardless of train
     return x * self.scaling_value
+
+
+class LearnableScalingAndBias(nn.Module):
+  """A module with one learnable scalar and a bias."""
+
+  dtype: types.DType = jnp.float32
+  init_scaling_value: float = 15.0
+  init_bias: float = -11.00
+
+  def setup(self):
+    self.weight = partitioning.param_with_axes(
+        "learnable_weight",
+        nn.initializers.constant(self.init_scaling_value),
+        (1,),
+        jnp.float32,
+        axes=("embed",),
+    )
+    self.bias = partitioning.param_with_axes(
+        "learnable_bias",
+        nn.initializers.constant(self.init_bias),
+        (1,),
+        jnp.float32,
+        axes=("embed",),
+    )
+
+  @nn.compact
+  def __call__(
+      self, x: jnp.ndarray, enable_dropout: bool = True
+  ) -> jnp.ndarray:
+    if enable_dropout:
+      # Only apply logit scaling during training since during eval the scaling
+      # will not affect the eval metrics.
+      return jnp.asarray(x, self.dtype) * self.weight + self.bias
+    return jnp.asarray(x, self.dtype)
+
+
+class ConstantScalingAndBias(nn.Module):
+  """A module with just one single constant scalar and bias."""
+
+  scaling_value: float = 15.0
+  bias: float = -11.00
+
+  @nn.compact
+  def __call__(self, x: jnp.ndarray, train: bool = False) -> jnp.ndarray:
+    # For backwards compatibility (from before logit scaling was called from
+    # loss modules), constant scaling is applied regardless of train
+    return x * self.scaling_value + self.bias

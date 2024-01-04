@@ -87,7 +87,7 @@ class CroppingMethod(enum.Enum):
 
 
 def crop_train_batch(
-    rng: Optional[jax.random.KeyArray],
+    rng: Optional[jax.Array],
     batch: Mapping[str, jnp.ndarray],
     cropping_method: CroppingMethod,
     num_latents: int,
@@ -267,7 +267,7 @@ class PerceiverARModel(models.DecoderOnlyModel):
       self,
       params: PyTree,
       batch: Mapping[str, jnp.ndarray],
-      dropout_rng: Optional[jax.random.KeyArray],
+      dropout_rng: Optional[jax.Array],
       is_eval: bool = False,
   ) -> Tuple[jnp.ndarray, models.MetricsMap]:
     """Loss function used for training with a cross-entropy loss."""
@@ -478,7 +478,7 @@ class PerceiverARModel(models.DecoderOnlyModel):
       self,
       params: PyTree,
       batch: Mapping[str, jnp.ndarray],
-      rng: Optional[jax.random.KeyArray] = None,
+      rng: Optional[jax.Array] = None,
       *,
       return_all_decodes: bool = False,
       num_decodes: int = 1,

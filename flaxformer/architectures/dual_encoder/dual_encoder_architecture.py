@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""This file contains "architecture" classes for dual encoder models.
+"""Architecture classes for dual encoder models.
 
 These are combinators which assemble components (L2Norm, MLP, etc.) into
 networks.
@@ -43,9 +43,9 @@ def check_use_negative_inputs(logit_creation_layer: nn.Module) -> bool:
 class DualEncoderOutput:
   """Outputs of T5X retrieval DualEncoder architecture."""
 
-  left_encoded: Array
-  right_encoded: Array
-  logits: Union[Array, Mapping[str, Array]]
+  left_encoded: Array | Mapping[str, Array]
+  right_encoded: Array | Mapping[str, Array]
+  logits: Array | Mapping[str, Array]
 
 
 class MakeEncoderFn(Protocol):

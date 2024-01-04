@@ -13,6 +13,9 @@
 # limitations under the License.
 
 """Tests for similarity functions."""
+
+import functools
+
 from absl.testing import absltest
 from absl.testing import parameterized
 from flax import linen as nn
@@ -20,6 +23,7 @@ from jax import random
 import jax.numpy as jnp
 import tensorflow as tf
 
+from flaxformer.architectures.dual_encoder import poolings
 from flaxformer.architectures.dual_encoder import similarity_functions
 from flaxformer.components import dense
 from flaxformer.components import layer_norm
@@ -85,12 +89,15 @@ def make_batch_attention_similarity_model():
   )
 
 
+
+
 class SimilarityFunctionsTest(absltest.TestCase):
 
   def test_pointwise_ffnn(self):
     """Test if the PointwiseFFNN similarity function has correct shapes."""
     model = similarity_functions.PointwiseFFNN(
-        OUTPUT_DIM, dropout_factory=make_dropout)
+        OUTPUT_DIM, dropout_factory=make_dropout
+    )
 
     rng = random.PRNGKey(0)
     key1, key2, key3 = random.split(rng, 3)

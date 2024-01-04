@@ -13,6 +13,7 @@
 # limitations under the License.
 
 """Tests for scaling module."""
+
 from absl.testing import absltest
 from jax import numpy as jnp
 from jax import random
@@ -31,12 +32,39 @@ class LearnableScalingTest(tf.test.TestCase):
 
     def _get_learnable_scaling(dtype):
       return components.LearnableScaling(
-          dtype=dtype, init_scaling_value=init_scaling_value)
+          dtype=dtype, init_scaling_value=init_scaling_value
+      )
 
     model_fn = _get_learnable_scaling
     y = model_fn(jnp.float32).init_with_output(key3, x, enable_dropout=True)
 
     self.assertAllClose(y[0], init_scaling_value * x)
+
+  def test_logits_get_scaled_by_scalar_and_bias(self):
+    logit_scaling_module = components.LearnableScalingAndBias()
+    y, _ = logit_scaling_module.init_with_output(
+        random.PRNGKey(0), jnp.array([1, 0])
+    )
+    self.assertAllEqual(y, [4, -11])
+
+  def test_logits_get_scaled_by_scalar_and_bias_learnable(self):
+    rng = random.PRNGKey(0)
+    key1, key2, key3 = random.split(rng, 3)
+    init_scaling_value = random.uniform(key1).item()
+    init_bias = random.uniform(key1).item()
+    x = random.normal(key2, (2, 3, 4))
+
+    def _get_learnable_scaling(dtype):
+      return components.LearnableScalingAndBias(
+          dtype=dtype,
+          init_scaling_value=init_scaling_value,
+          init_bias=init_bias,
+      )
+
+    model_fn = _get_learnable_scaling
+    y = model_fn(jnp.float32).init_with_output(key3, x, enable_dropout=True)
+
+    self.assertAllClose(y[0], init_scaling_value * x + init_bias)
 
 
 if __name__ == '__main__':

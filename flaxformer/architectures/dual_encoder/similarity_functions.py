@@ -216,11 +216,13 @@ class BatchDotProduct(nn.Module):
   use_only_explicit_hard_negatives: bool = False
 
   @nn.compact
-  def __call__(self,
-               left_encodings: Array,
-               right_encodings: Array,
-               right_additional_encodings: Optional[Array] = None,
-               **params) -> Tuple[Array, ...]:
+  def __call__(
+      self,
+      left_encodings: Array,
+      right_encodings: Array,
+      right_additional_encodings: Optional[Array] = None,
+      **params,
+  ) -> Array:
     """Compute the batch dot product similarity from two encodings.
 
     Args:
@@ -351,6 +353,7 @@ class BatchAttentionSimilarity(nn.Module):
       *,
       pointwise_similarity: bool = True,
       enable_dropout: bool = True,
+      **_,
   ) -> Array:
     """Computes the attention based similarity from two encodings.
 
@@ -464,3 +467,5 @@ class BatchAttentionSimilarity(nn.Module):
       )
 
     return avg_logits
+
+

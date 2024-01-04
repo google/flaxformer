@@ -19,6 +19,7 @@ import functools
 from absl.testing import absltest
 import jax
 from jax import random
+from jax import tree_util
 import numpy as np
 
 from flaxformer import sharding
@@ -269,7 +270,7 @@ class EncoderDecoderTest(absltest.TestCase):
     )
 
     sharding.check_params_and_axis_names_match(variables)
-    for axis_names in jax.tree_leaves(sharding.get_axis_names(variables)):
+    for axis_names in tree_util.tree_leaves(sharding.get_axis_names(variables)):
       for name in axis_names:
         self.assertIn(
             name, {
@@ -329,7 +330,7 @@ class EncoderDecoderTest(absltest.TestCase):
         decoder_target_tokens=decoder_target_tokens,
     )
     sharding.check_params_and_axis_names_match(variables)
-    for axis_names in jax.tree_leaves(sharding.get_axis_names(variables)):
+    for axis_names in tree_util.tree_leaves(sharding.get_axis_names(variables)):
       for name in axis_names:
         self.assertIn(
             name, {

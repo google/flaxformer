@@ -34,6 +34,7 @@ install_requires = [
 
 tests_require = [
     "absl-py",
+    "immutabledict",
     "pytest",
     "tensorflow>=2.14.0",
     "tensorflow-text>=2.14.0rc0",
@@ -43,7 +44,7 @@ tests_require = [
 
 setup(
     name="flaxformer",
-    version="0.8.4",
+    version="0.8.5",
     description="Flaxformer: Transformer implementations in Flax",
     long_description="\n\n".join([README]),
     long_description_content_type="text/markdown",
