@@ -1,4 +1,4 @@
-# Copyright 2023 Google LLC.
+# Copyright 2024 Google LLC.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -15,7 +15,7 @@
 """Layers for pooling operations."""
 
 import functools
-from typing import Callable, Optional
+from typing import Callable, Optional, Protocol
 
 from flax import linen as nn
 from flax.linen import partitioning
@@ -36,6 +36,18 @@ from flaxformer.types import Initializer
 
 NEG_INF = -1e10
 EPSILON = 1e-10
+
+
+# Copy of MakeEncoderLayerFn in t5_architecture. Unfortunately, it seems
+# necessary to duplicate these definitions, since importing them in pytype does
+# not work.
+class MakeEncoderLayerFn(Protocol):
+  """Signature for functions that make an encoder layer."""
+
+  def __call__(
+      self, *, shared_relative_position_bias: Optional[nn.Module]
+  ) -> t5_architecture.EncoderLayer:
+    ...
 
 
 @functools.partial(jax.vmap, in_axes=[0, 0], out_axes=0)
@@ -222,7 +234,7 @@ class MultiLayerPooling(nn.Module):
       set this if using shared relative position biases.
   """
 
-  layer_factory: t5_architecture.MakeEncoderLayerFn
+  layer_factory: MakeEncoderLayerFn
   layer_norm_factory: Callable[[], nn.Module]
   num_layers: int
   pooler_factory: Optional[Callable[[], nn.Module]] = None

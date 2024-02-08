@@ -1,4 +1,4 @@
-# Copyright 2023 Google LLC.
+# Copyright 2024 Google LLC.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -853,7 +853,7 @@ class HierarchicalAttention(nn.Module, metaclass=abc.ABCMeta):
     """
 
     def dropout_multiplier(attention_block, dropout_rng):
-      keep_prob = jax.lax.tie_in(attention_block, 1.0 - self.dropout_rate)
+      keep_prob = 1.0 - self.dropout_rate
       if self.broadcast_dropout:
         (_, num_block, _, num_clusters, _) = attention_block.shape
         # The dropout is broadcast across batch and num_heads.

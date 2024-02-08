@@ -1,4 +1,4 @@
-# Copyright 2023 Google LLC.
+# Copyright 2024 Google LLC.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -22,12 +22,12 @@ from __future__ import annotations
 
 import enum
 import inspect
-from typing import Any, Callable, Optional, Tuple, Union
+from typing import Any, Callable, Optional, Protocol, Tuple, Union
 
 from flax import linen as nn
 import jax
 import jax.numpy as jnp
-from typing_extensions import Protocol
+
 from flaxformer import activation_partitioning
 from flaxformer import transformer_common as common
 from flaxformer.architectures.common import param_remapping

@@ -1,4 +1,4 @@
-# Copyright 2023 Google LLC.
+# Copyright 2024 Google LLC.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -27,7 +27,7 @@ return a vector of the same length as the batch size:
   S[i] = similarity(encodings1[i], encodings2[i]).
 """
 
-from typing import Any, Callable, Iterable, Optional, Tuple, Union
+from typing import Any, Callable, Iterable, Optional
 
 from flax import linen as nn
 from flax.linen.linear import default_kernel_init
@@ -69,7 +69,7 @@ class PointwiseFFNN(nn.Module):
       layers. These are the hidden layers before the last hidden layer.
     intermediate_act_fn: An activation function for the hidden layers.
   """
-  features: Union[Iterable[int], int]
+  features: Iterable[int] | int
   use_bias: bool = False
   dtype: DType = jnp.float32
   kernel_init: Initializer = default_kernel_init  # pytype: disable=annotation-type-mismatch  # jax-types
@@ -80,7 +80,7 @@ class PointwiseFFNN(nn.Module):
   use_difference_feature: bool = True
   use_product_feature: bool = True
   dropout_factory: Optional[Callable[[], nn.Module]] = None
-  intermediate_features: Optional[Union[Iterable[int], int]] = None
+  intermediate_features: Optional[Iterable[int] | int] = None
   intermediate_act_fn: str = 'relu'
 
   def _build_layer(self, f):
@@ -190,8 +190,9 @@ class PointwiseFFNN(nn.Module):
 class DotProduct(nn.Module):
   """Vanilla row-wise version of dot product similarity function."""
 
-  def __call__(self, left_encodings: Array, right_encodings: Array,
-               **params) -> Tuple[Array, ...]:
+  def __call__(
+      self, left_encodings: Array, right_encodings: Array, **params
+  ) -> tuple[Array, ...]:
     """Computes the point-wise product similarity from two encodings.
 
     Args:
@@ -279,11 +280,13 @@ class DoNothing(nn.Module):
   """
 
   @nn.compact
-  def __call__(self,
-               left_encodings: Array,
-               right_encodings: Array,
-               right_additional_encodings: Optional[Array] = None,
-               **params) -> Tuple[Array, ...]:
+  def __call__(
+      self,
+      left_encodings: Array,
+      right_encodings: Array,
+      right_additional_encodings: Optional[Array] = None,
+      **params,
+  ) -> tuple[Array, ...]:
     """Compute the batch dot product similarity from two encodings.
 
     Args:
