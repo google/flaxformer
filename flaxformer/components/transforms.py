@@ -258,7 +258,7 @@ def inner_scan_spmd(annotation_tree, scan_axis):
     tmp.pop(scan_axis)
     return type(x)(*tmp)
 
-  annotation_tree = jax.tree_map(del_axis, annotation_tree)
+  annotation_tree = jax.tree.map(del_axis, annotation_tree)
 
   def annotate_fn(variable_groups, rng_groups):
     broadcast_vars, carry_vars, *scan_variable_groups = variable_groups

@@ -45,7 +45,7 @@ def _dense_t5_testdata_dir() -> pathlib.Path:
 
 def check_dense_t5_params(actual_params: frozen_dict.FrozenDict[str, Any],
                           expected_filename: str) -> None:
-  actual = jax.tree_map(
+  actual = jax.tree.map(
       lambda x: list(x.shape),
       frozen_dict.unfreeze(param_remapping.filter_out_metadata(actual_params)))
   expected = json.load(open(_dense_t5_testdata_dir() / expected_filename))

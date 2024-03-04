@@ -40,7 +40,7 @@ jax.config.parse_flags_with_absl()
 
 
 def assert_same_tree(a, b):
-  jax.tree_map(
+  jax.tree.map(
       functools.partial(np.testing.assert_allclose, atol=1e-6, rtol=1e-6), a, b)
 
 
@@ -532,7 +532,7 @@ class DenseTest(parameterized.TestCase):
         enable_dropout=False,
         mutable=['params', 'params_axes'])
     self.assertEqual(
-        jax.tree_map(lambda a: a.tolist(), variables['params_axes']), {
+        jax.tree.map(lambda a: a.tolist(), variables['params_axes']), {
             'wi_fused': {
                 'kernel_axes':
                     nn.partitioning.AxisMetadata(
@@ -639,7 +639,7 @@ class DenseTest(parameterized.TestCase):
       }
 
     self.assertDictEqual(
-        jax.tree_map(
+        jax.tree.map(
             lambda a: a.tolist(), flax.core.unfreeze(params['params'])
         ),
         expected_params,

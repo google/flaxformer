@@ -35,13 +35,13 @@ from flaxformer.types import PRNGKey
 def param_shapes(params: Mapping[str, Any]) -> Dict[str, Any]:
   """Converts a tree of params into a tree of param shapes."""
   params = param_remapping.filter_out_metadata(params)
-  return jax.tree_map(lambda x: list(x.shape), frozen_dict.unfreeze(params))  # pytype: disable=wrong-arg-types
+  return jax.tree.map(lambda x: list(x.shape), frozen_dict.unfreeze(params))  # pytype: disable=wrong-arg-types
 
 
 def param_dtypes_shapes(params: Mapping[str, Any]) -> Dict[str, Any]:
   """Converts a tree of params into a tree of param dtypes and shapes."""
   params = param_remapping.filter_out_metadata(params)
-  return jax.tree_map(lambda x: [str(x.dtype)] + list(x.shape),
+  return jax.tree.map(lambda x: [str(x.dtype)] + list(x.shape),
                       frozen_dict.unfreeze(params))  # pytype: disable=wrong-arg-types
 
 
@@ -86,7 +86,7 @@ def param_dtypes_shapes_axes(params: Mapping[str, Any],
       output.append(f'{axis_name}={dim}')
     return output
 
-  return jax.tree_map(_create_entry, params, params_axes)
+  return jax.tree.map(_create_entry, params, params_axes)
 
 
 def format_params_shapes(params_shapes: Dict[str, Any]) -> str:

@@ -438,7 +438,7 @@ class EmbeddingTest(parameterized.TestCase):
         dtype=np.float32)
     outputs, params = embeds.init_with_output(
         jax.random.PRNGKey(0), inputs=positions)
-    param_shapes = jax.tree_map(lambda x: x.shape, params)
+    param_shapes = jax.tree.map(lambda x: x.shape, params)
     self.assertEqual(param_shapes['params'], {
         'pos_embedding': (32, 5),
     })
@@ -500,7 +500,7 @@ class HashEmbedTest(parameterized.TestCase):
     outputs, variables = embedder.init_with_output(key, ids)
     self.assertSequenceEqual(outputs.shape, (batch_size, seq_len, features))
 
-    param_shapes = jax.tree_map(lambda x: list(x.shape), variables['params'])
+    param_shapes = jax.tree.map(lambda x: list(x.shape), variables['params'])
     self.assertSameStructure(
         param_shapes, {
             'hash_embedder_table_0': {
@@ -530,7 +530,7 @@ class HashEmbedTest(parameterized.TestCase):
     self.assertSequenceEqual(outputs.shape,
                              (batch_size, seq_len, another_dim, features))
 
-    param_shapes = jax.tree_map(lambda x: list(x.shape), variables['params'])
+    param_shapes = jax.tree.map(lambda x: list(x.shape), variables['params'])
     self.assertSameStructure(
         param_shapes, {
             'hash_embedder_table_0': {
@@ -570,7 +570,7 @@ class NgramHashEmbedTest(parameterized.TestCase):
         embedder.init_with_output(key, ids, segment_ids=segment_ids))
     self.assertSequenceEqual(outputs.shape, (*batch_sizes, seq_len, features))
 
-    param_shapes = jax.tree_map(lambda x: list(x.shape), variables['params'])
+    param_shapes = jax.tree.map(lambda x: list(x.shape), variables['params'])
     expected_table_shape = [num_embeddings_per_table, features // num_tables]
     self.assertSameStructure(
         param_shapes, {

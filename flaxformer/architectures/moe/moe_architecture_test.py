@@ -518,7 +518,7 @@ class MoeArchitectureTest(parameterized.TestCase):
 
       # Verify model keys and param shapes for scan.
       self.assertEqual(
-          jax.tree_map(jnp.shape, variables['params']['encoder']),
+          jax.tree.map(jnp.shape, variables['params']['encoder']),
           flax.core.FrozenDict({
               'encoder': {
                   'subblock_0': {
@@ -611,7 +611,7 @@ class MoeArchitectureTest(parameterized.TestCase):
           }))
 
       self.assertEqual(
-          jax.tree_map(jnp.shape, variables['params']['decoder']),
+          jax.tree.map(jnp.shape, variables['params']['decoder']),
           flax.core.FrozenDict({
               'decoder': {
                   'subblock_0': {

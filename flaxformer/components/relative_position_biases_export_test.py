@@ -62,7 +62,7 @@ class RelativePositionBiasesTest(parameterized.TestCase):
         def create_var(value):
           return tf.Variable(value)
 
-        self._params = jax.tree_map(create_var, params)
+        self._params = jax.tree.map(create_var, params)
         # Use jax2tf graph serialization because test inspects the graph.
         self._apply = jax2tf.convert(apply_fn, native_serialization=False)
         self._apply = tf.autograph.experimental.do_not_convert(self._apply)

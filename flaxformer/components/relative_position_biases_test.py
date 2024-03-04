@@ -70,7 +70,7 @@ class RelativePositionBiasesTest(absltest.TestCase):
         self.key_len,
         bidirectional=True,
         mutable=['params'])
-    param_shapes = jax.tree_map(lambda x: x.shape, params)
+    param_shapes = jax.tree.map(lambda x: x.shape, params)
     self.assertEqual(param_shapes, {
         'params': {
             'rel_embedding': (3, 12),
@@ -97,7 +97,7 @@ class RelativePositionBiasesTest(absltest.TestCase):
         self.key_len,
         bidirectional=False,
         mutable=['params'])
-    param_shapes = jax.tree_map(lambda x: x.shape, params)
+    param_shapes = jax.tree.map(lambda x: x.shape, params)
     self.assertEqual(param_shapes, {
         'params': {
             'rel_embedding': (3, 12),
