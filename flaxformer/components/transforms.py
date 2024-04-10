@@ -22,6 +22,7 @@ from flax import linen as nn
 from flax.core.lift import Out as ScanOut  # pylint: disable=unused-import
 from flax.linen import partitioning
 import jax
+from jax.interpreters import pxla
 from jax.lax import with_sharding_constraint as jax_pjit_wsc
 
 # TODO: this file contains JAX transform workarounds to fix/move
@@ -223,7 +224,7 @@ factory_vmap = functools.partial(apply_transform_to_module_factory, nn.vmap)
 
 def global_mesh_defined():
   """Checks if global xmap/pjit mesh resource environment is defined."""
-  maps_env = jax.experimental.maps.thread_resources.env
+  maps_env = pxla.thread_resources.env
   return maps_env.physical_mesh.devices.shape != ()  # pylint: disable=g-explicit-bool-comparison
 
 

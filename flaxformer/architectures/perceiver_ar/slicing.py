@@ -18,10 +18,14 @@ import functools
 
 import jax
 from jax import lax
-from jax.experimental import maps
+from jax.experimental import shard_map
+from jax.interpreters import pxla
 import jax.numpy as jnp
-from t5x import partitioning
+
 from flaxformer.types import Array
+
+shard_map = shard_map.shard_map
+P = jax.sharding.PartitionSpec
 
 
 def get_sequence_lengths(decoder_target_tokens: Array) -> Array:
@@ -68,9 +72,10 @@ def slice_sequences_vmap(x: Array, sequence_lengths: Array, num_latents: int,
           axis=axis_within_vmap))(x, sequence_lengths)
 
 
-def slice_sequences_xmap(x: Array, sequence_lengths: Array, num_latents: int,
-                         axis_within_xmap: int) -> Array:
-  """Slice sequences using xmap for Perceiver AR usage.
+def slice_sequences_shard_map(
+    x: Array, sequence_lengths: Array, num_latents: int, axis_within_map: int
+) -> Array:
+  """Slice sequences using shard_map for Perceiver AR usage.
 
   Given the length of sequences and the number of latents, each sequence within
   the batch will be sliced to start at max(num_latents, length) - num_latents
@@ -78,34 +83,30 @@ def slice_sequences_xmap(x: Array, sequence_lengths: Array, num_latents: int,
 
   This method should be used for slicing sequences that are partitioned, such
   as the inputs to self-attention.
-  xmap is used to work around XLA partitioning issues with gathers.
+  shard_map is used to work around XLA partitioning issues with gathers.
   If regular vmap is used, a bunch of extra allgathers are added.
-
-  Requires the following flags:
-  --experimental_xmap_spmd_lowering=True
-  --experimental_xmap_spmd_lowering_manual=True
+  TODO: Check if this is still relevant.
 
   Args:
     x: Array to slice, expected to be of shape [batch, length, embedding].
     sequence_lengths: Length of the supplied sequences with shape [batch].
     num_latents: Number of Perceiver AR latents.
-    axis_within_xmap: Axis to slice, from within the xmap where the batch and
-      embedding axis will be hidden.
+    axis_within_map: Axis to slice, from within the shard_map where the batch
+      and embedding axis will be hidden.
 
   Returns:
     Sliced input array.
   """
-  if (jax.devices()[0].platform != 'cpu' and
-      partitioning.global_mesh_defined()):
-    xmap_axis_resources = {'batch': 'data', 'embed': 'model'}
-    xmap_embed_axis = 'embed'
-  else:
-    xmap_axis_resources = {}
-    xmap_embed_axis = None
-
-  return maps.xmap(
+  mesh = pxla.thread_resources.env.physical_mesh
+  if mesh.empty or jax.devices()[0].platform == 'cpu':
+    return slice_sequences_vmap(
+        x, sequence_lengths, num_latents, axis_within_map
+    )
+  return shard_map(
       functools.partial(
-          _slice_sequences, num_latents=num_latents, axis=axis_within_xmap),
-      in_axes=(['batch', None, xmap_embed_axis], ['batch']),
-      out_axes=['batch', None, xmap_embed_axis],
-      axis_resources=xmap_axis_resources)(x, sequence_lengths)
+          _slice_sequences, num_latents=num_latents, axis=axis_within_map
+      ),
+      mesh,
+      in_specs=(P('data', None, 'model'), P('data')),
+      out_specs=P('data', None, 'model'),
+  )(x, sequence_lengths)

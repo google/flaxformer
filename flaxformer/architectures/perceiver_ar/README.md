@@ -63,21 +63,3 @@ Right now, the default is to refill the cache to `num_latents - 128`, which
 seems to work well. But if it’s too slow or results are not as high a quality as
 expected, it may be worth exploring other values.
 
-## xmap workaround
-
-If you use model parallelism with pjit in T5X, some extra command line options
-are required for best performance.
-
-If no model parallelism is used, this can be safely ignored.
-
-Perceiver AR does slicing of sequences within the decoder layers, but the
-current XLA implementation causes extra allgather ops when using model
-parallelism. To work around this, the slices are done using manual partitioning
-annotations with xmap (see `slicing.py`). However, this requires
-launching jobs with the following flags:
-
-```sh
-    --extra_args=experimental_xmap_spmd_lowering=True \
-    --extra_args=experimental_xmap_spmd_lowering_manual=True
-```
-

@@ -19,12 +19,13 @@ from typing import Optional, Tuple, TypeVar
 from absl import logging
 from flax.linen import partitioning as flax_partitioning
 import jax
+from jax.interpreters import pxla
 from jax.lax import with_sharding_constraint as jax_pjit_wsc
 
 
 def global_mesh_defined():
   """Checks if global xmap/pjit mesh resource environment is defined."""
-  maps_env = jax.experimental.maps.thread_resources.env
+  maps_env = pxla.thread_resources.env
   return maps_env.physical_mesh.devices.shape != ()  # pylint: disable=g-explicit-bool-comparison
 
 
